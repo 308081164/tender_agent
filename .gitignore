@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.DS_Store
+*.egg-info/
+.venv/
+venv/
+backend/wheels/*.whl
+backend/secrets/
+*.core
+docs/Aspose.Words*/
+customer_data/**/pack/
+customer_data/**/engineered_templates/*.docx
+customer_data/**/manifest.json

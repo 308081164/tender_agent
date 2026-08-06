@@ -1,0 +1,42 @@
+{
+  "fields": [
+    {"key": "project_name", "name": "项目名称", "field_type": "文本", "required": true, "module": "封面", "is_company_default": false, "template_code": "common"},
+    {"key": "tender_no", "name": "招标编号/项目编号", "field_type": "文本", "required": true, "module": "封面", "is_company_default": false, "template_code": "common"},
+    {"key": "bid_amount_upper", "name": "投标总价大写", "field_type": "文本", "required": true, "module": "报价", "is_company_default": false, "template_code": "common"},
+    {"key": "bid_amount_lower", "name": "投标总价小写", "field_type": "金额", "required": true, "module": "报价", "is_company_default": false, "template_code": "common"},
+    {"key": "package_no", "name": "包件号", "field_type": "文本", "required": true, "module": "封面", "is_company_default": false, "template_code": "common"},
+    {"key": "material_type", "name": "物资品种", "field_type": "文本", "required": true, "module": "封面", "default_value": "RTU及能管系统", "is_company_default": false, "template_code": "tpl3"},
+    {"key": "bid_date", "name": "日期", "field_type": "日期", "required": true, "module": "封面", "is_company_default": false, "template_code": "common"},
+    {"key": "tenderer", "name": "采购人名称", "field_type": "文本", "required": true, "module": "报价函", "is_company_default": false, "template_code": "common"},
+    {"key": "bidder_name", "name": "投标人/供应商/制造厂名称", "field_type": "文本", "required": true, "module": "封面", "is_company_default": true, "company_field": "full_name", "template_code": "common"},
+    {"key": "address", "name": "地址", "field_type": "文本", "required": true, "module": "基本情况", "is_company_default": true, "company_field": "office_address", "template_code": "common"},
+    {"key": "website", "name": "网址", "field_type": "文本", "required": false, "module": "报价函", "is_company_default": true, "company_field": "website", "template_code": "common"},
+    {"key": "phone", "name": "电话", "field_type": "文本", "required": true, "module": "基本情况", "is_company_default": true, "company_field": "phone", "template_code": "common"},
+    {"key": "fax", "name": "传真", "field_type": "文本", "required": false, "module": "基本情况", "is_company_default": true, "company_field": "fax", "template_code": "common"},
+    {"key": "postcode", "name": "邮政编码", "field_type": "文本", "required": false, "module": "基本情况", "is_company_default": true, "company_field": "postcode", "template_code": "common"},
+    {"key": "legal_name", "name": "法人姓名", "field_type": "文本", "required": true, "module": "授权", "is_company_default": true, "company_field": "legal_name", "template_code": "common"},
+    {"key": "legal_gender", "name": "法人性别", "field_type": "文本", "required": false, "module": "授权", "is_company_default": true, "company_field": "legal_gender", "template_code": "common"},
+    {"key": "legal_age", "name": "法人年龄", "field_type": "数字", "required": false, "module": "授权", "is_company_default": true, "company_field": "legal_age", "template_code": "common"},
+    {"key": "legal_title", "name": "法人职务", "field_type": "文本", "required": false, "module": "授权", "is_company_default": true, "company_field": "legal_title", "template_code": "common"},
+    {"key": "auth_period", "name": "委托期限", "field_type": "文本", "required": false, "module": "授权", "default_value": "自签字之日起至本项目结束", "template_code": "common"},
+    {"key": "legal_id_no", "name": "法人身份证号", "field_type": "文本", "required": true, "module": "授权", "is_company_default": true, "company_field": "legal_id_no", "desensitized": true, "template_code": "common"},
+    {"key": "agent_id_no", "name": "被授权人身份证号", "field_type": "文本", "required": false, "module": "授权", "desensitized": true, "template_code": "common"},
+    {"key": "company_founded", "name": "公司成立时间", "field_type": "日期", "required": false, "module": "基本情况", "is_company_default": true, "company_field": "founded_date", "template_code": "common"},
+    {"key": "registered_capital", "name": "注册资金", "field_type": "文本", "required": true, "module": "基本情况", "is_company_default": true, "company_field": "registered_capital", "template_code": "common"},
+    {"key": "bank_name", "name": "基本账户开户银行", "field_type": "文本", "required": true, "module": "基本情况", "is_company_default": true, "company_field": "bank_name", "template_code": "common"},
+    {"key": "bank_account", "name": "基本账户银行账号", "field_type": "文本", "required": true, "module": "基本情况", "is_company_default": true, "company_field": "bank_account", "desensitized": true, "template_code": "common"},
+    {"key": "recent_revenue", "name": "近三年营业额", "field_type": "文本", "required": false, "module": "基本情况", "is_company_default": true, "company_field": "recent_revenue", "desensitized": true, "template_code": "common"},
+    {"key": "related_companies", "name": "关联企业情况", "field_type": "文本", "required": false, "module": "基本情况", "default_value": "无", "template_code": "common"},
+    {"key": "project_type", "name": "项目类型", "field_type": "下拉", "required": false, "module": "项目", "options": "RTU(电力远动）；接触网；电气火灾；能源管理/抄表；运维/环监/辅助监控；仪表；其他", "template_code": "common"},
+    {"key": "bid_method", "name": "招标方式", "field_type": "下拉", "required": false, "module": "项目", "options": "公开招标；邀请招标；竞争性谈判；议标；单一来源采购；框架入围；其他", "template_code": "common"},
+    {"key": "project_manager", "name": "项目经理", "field_type": "文本", "required": true, "module": "人员", "template_code": "common"}
+  ],
+  "ai_chapters": [
+    "技术规格书条款点对点应答",
+    "生产供应计划方案",
+    "运输方案",
+    "售后服务方案",
+    "应急预案和配套措施",
+    "质量保证措施"
+  ]
+}

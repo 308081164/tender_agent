@@ -1,0 +1,57 @@
+[
+  {
+    "src": "铁路工程投标模板1-半空白.docx",
+    "dst": "铁路工程投标模板1-工程化.docx",
+    "replacements": 79,
+    "placeholders": [
+      "address",
+      "bank_name",
+      "bidder_name",
+      "fax",
+      "legal_name",
+      "package_no",
+      "phone",
+      "postcode",
+      "project_name",
+      "registered_capital",
+      "tender_no",
+      "tenderer",
+      "website"
+    ],
+    "ai": [
+      "售后服务方案",
+      "应急预案和配套措施",
+      "技术规格书条款点对点应答",
+      "生产供应计划方案",
+      "质量保证措施",
+      "运输方案"
+    ],
+    "template_code": "tpl1",
+    "mode": "engineered"
+  },
+  {
+    "src": "铁路工程投标模板3- 半空白.docx",
+    "dst": "铁路工程投标模板3-工程化.docx",
+    "replacements": 80,
+    "placeholders": [
+      "address",
+      "bidder_name",
+      "material_type",
+      "package_no",
+      "phone",
+      "project_name",
+      "tender_no",
+      "tenderer"
+    ],
+    "ai": [
+      "售后服务方案",
+      "应急预案和配套措施",
+      "技术规格书条款点对点应答",
+      "生产供应计划方案",
+      "质量保证措施",
+      "运输方案"
+    ],
+    "template_code": "tpl3",
+    "mode": "engineered"
+  }
+]
