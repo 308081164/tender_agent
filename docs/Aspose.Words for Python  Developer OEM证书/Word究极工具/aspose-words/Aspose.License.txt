@@ -1,0 +1,22 @@
+<License>
+  <Data>
+    <LicensedTo>咸鱼-麦兹星幽默的南瓜</LicensedTo>
+    <EmailTo>Support@Microsoft.com</EmailTo>
+    <LicenseType>Site OEM</LicenseType>
+    <LicenseNote>Limited to 1000 developers, unlimited physical locations</LicenseNote>
+    <OrderID>366320085482</OrderID>
+    <UserID>654194386</UserID>
+    <OEM>This is a redistributable license</OEM>
+    <Products>
+      <Product>Aspose.Total for .NET</Product>
+      <Product>Aspose.Total for Python</Product>
+      <Product>Aspose.Total for Python via .NET</Product>
+    </Products>
+    <EditionType>Enterprise</EditionType>
+    <SerialNumber>88b75c99-23a1-4e55-9514-013ea2023da7</SerialNumber>
+    <SubscriptionExpiry>20591215</SubscriptionExpiry>
+    <LicenseExpiry>20590114</LicenseExpiry>
+    <LicenseVersion>3.0</LicenseVersion>
+  </Data>
+  <Signature>Hh1+3I6+Z8oHJkiTjk6k9zCDLrnjKw99+u/O3GgprjMDTXEwnTJq3FMg06WtpqKnUTI5Qqe+iGY8PYRKBa4ZJwL9MZZg5e7a/5olNXljoOAeiMNcdohHNEgGKt80UX2wFDa6/RWE+/vxBA0YI9ze1u0TRR9CZKqRlCRJn0IIY4A=</Signature>
+</License>

@@ -1,0 +1,3 @@
+1.pip install --force-reinstall "适合你操作系统的aspose产品.whl"
+2.lic.set_license(r"Aspose.License.txt") #自己看Program.py的案例
+3.把Aspose.License.txt放到上一步执行的路径下面
