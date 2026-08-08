@@ -12,8 +12,43 @@ $PgVersion = "16.6-1"
 $PgZipName = "postgresql-$PgVersion-windows-x64-binaries.zip"
 $PgUrl = "https://get.enterprisedb.com/postgresql/$PgZipName"
 $MinioUrl = "https://dl.min.io/server/minio/release/windows-amd64/minio.exe"
-$AsposeDir = Join-Path $Root "docs\Aspose.Words for Python  Developer OEM证书\Word究极工具\aspose-words"
-$AsposeWheel = Join-Path $AsposeDir "aspose_words-26.7.0-py3-none-win_amd64.whl"
+
+function Resolve-AsposeAssets {
+  param([string]$ProjectRoot)
+
+  $vendorDir = Join-Path $ProjectRoot "vendor\aspose-words"
+  $vendorLicense = Join-Path $vendorDir "Aspose.License.txt"
+  $vendorWheel = Get-ChildItem -Path $vendorDir -Filter "aspose_words-*-win_amd64.whl" -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($vendorWheel -and (Test-Path -LiteralPath $vendorLicense)) {
+    return @{
+      Dir = $vendorDir
+      Wheel = $vendorWheel.FullName
+      License = $vendorLicense
+    }
+  }
+
+  $docsRoot = Join-Path $ProjectRoot "docs"
+  if (-not (Test-Path -LiteralPath $docsRoot)) {
+    throw "Aspose assets not found: docs/ directory missing"
+  }
+
+  $licenses = Get-ChildItem -Path $docsRoot -Recurse -Filter "Aspose.License.txt" -File -ErrorAction SilentlyContinue
+  foreach ($license in $licenses) {
+    $dir = $license.DirectoryName
+    $wheel = Get-ChildItem -Path $dir -Filter "aspose_words-*-win_amd64.whl" -File -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($wheel) {
+      return @{
+        Dir = $dir
+        Wheel = $wheel.FullName
+        License = $license.FullName
+      }
+    }
+  }
+
+  throw "Aspose license + Windows wheel not found under docs/. Ensure Aspose.License.txt and aspose_words-*-win_amd64.whl are committed."
+}
 
 function Resolve-BuildPython {
   $candidates = @(
@@ -161,6 +196,12 @@ if (-not $VenvPip) { throw "pip not found in venv" }
 
 $ReqFile = Join-Path $Root "backend\requirements.txt"
 Invoke-PipInstall -PipExe $VenvPip -Label "install requirements" -InstallArgs @("--no-cache-dir", "-r", $ReqFile)
+
+$AsposeAssets = Resolve-AsposeAssets -ProjectRoot $Root
+$AsposeDir = $AsposeAssets.Dir
+$AsposeWheel = $AsposeAssets.Wheel
+Write-Host "  Aspose dir: $AsposeDir"
+Write-Host "  Aspose wheel: $AsposeWheel"
 if (-not (Test-Path -LiteralPath $AsposeWheel)) {
   throw "Aspose Windows wheel not found: $AsposeWheel"
 }
@@ -186,7 +227,7 @@ Download-File -Url $MinioUrl -Destination $MinioDest
 Write-Host "==> Copying Aspose license"
 $AsposeDest = Join-Path $Stage "aspose"
 New-Item -ItemType Directory -Path $AsposeDest -Force | Out-Null
-Copy-Item (Join-Path $AsposeDir "Aspose.License.txt") (Join-Path $AsposeDest "Aspose.License.txt") -Force
+Copy-Item -LiteralPath $AsposeAssets.License (Join-Path $AsposeDest "Aspose.License.txt") -Force
 
 Write-Host "==> Copying backend"
 $BackendDest = Join-Path $Stage "backend"

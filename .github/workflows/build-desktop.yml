@@ -58,6 +58,10 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      - name: Prepare Aspose assets
+        shell: pwsh
+        run: ./scripts/ci/prepare-aspose.ps1
+
       - name: Build offline installer
         shell: pwsh
         run: |
