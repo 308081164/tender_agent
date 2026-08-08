@@ -1,0 +1,65 @@
+{
+  "name": "tender-agent-desktop",
+  "version": "1.0.0",
+  "description": "标书智能体 Electron 桌面壳",
+  "author": "TenderAgent",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win dir",
+    "dist": "electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "^34.5.8",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.tenderagent.desktop",
+    "productName": "TenderAgent",
+    "directories": {
+      "output": "../../dist/electron-build",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "loading.html",
+      "package.json",
+      "icon.png",
+      "icon.ico"
+    ],
+    "icon": "icon.ico",
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "../../dist/tender-agent-installer-stage",
+        "to": "tender-agent",
+        "filter": [
+          "**/*",
+          "!electron-build/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "executableName": "TenderAgent"
+    },
+    "asar": true
+  }
+}

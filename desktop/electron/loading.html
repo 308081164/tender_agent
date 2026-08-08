@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>标书智能体</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      background: linear-gradient(160deg, #0f172a 0%, #1e3a5f 100%);
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+    }
+    .title {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      letter-spacing: 0.05em;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 28px;
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(148, 163, 184, 0.3);
+      border-top-color: #38bdf8;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+      margin-bottom: 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status { font-size: 14px; color: #94a3b8; text-align: center; padding: 0 24px; line-height: 1.5; }
+    .status.error { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="title">标书智能体</div>
+  <div class="subtitle">铁路行业标书 AI 辅助编写系统</div>
+  <div class="spinner"></div>
+  <div class="status" id="status">正在启动，请稍候…</div>
+  <script>
+    window.__setStatus = function (text) {
+      var el = document.getElementById("status");
+      if (!el) return;
+      el.textContent = text;
+      el.classList.toggle("error", String(text).indexOf("超时") >= 0 || String(text).indexOf("失败") >= 0);
+    };
+  </script>
+</body>
+</html>

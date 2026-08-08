@@ -1,0 +1,106 @@
+name: Build Desktop Installer
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "Override installer version (optional, e.g. 1.0.1)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event.inputs.app_version }}") {
+            "version=${{ github.event.inputs.app_version }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "artifact_suffix=${{ github.event.inputs.app_version }}-manual" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "is_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            & ./scripts/ci/compute-version.ps1 -Product desktop | Out-Null
+          }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/electron/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build offline installer
+        shell: pwsh
+        run: |
+          $env:PATH += ";C:\Program Files (x86)\Inno Setup 6"
+          ./package-desktop.ps1 -AppVersion "${{ steps.meta.outputs.version }}"
+
+      - name: Rename installer artifact
+        shell: pwsh
+        run: |
+          $src = "dist/TenderAgentSetup.exe"
+          $dest = "dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe"
+          Copy-Item $src $dest
+          Get-Item $src, $dest | Format-Table Name, Length, LastWriteTime
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}
+          path: dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ steps.meta.outputs.version }}
+          name: 标书智能体 Desktop ${{ steps.meta.outputs.version }}
+          body: |
+            ## 标书智能体 Desktop ${{ steps.meta.outputs.version }}
+
+            Windows 离线安装包，内含 Electron 壳、便携 Python 运行时、PostgreSQL、MinIO 与预编译前端。
+
+            ### 安装
+            1. 下载 `TenderAgentSetup-*.exe`
+            2. 运行安装向导（支持选择安装目录）
+            3. 启动「标书智能体」桌面应用
+
+            ### 构建信息
+            - Commit: ${{ github.sha }}
+            - Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
