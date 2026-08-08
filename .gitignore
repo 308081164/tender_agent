@@ -14,3 +14,4 @@ backend/secrets/
 customer_data/**/pack/
 customer_data/**/engineered_templates/*.docx
 customer_data/**/manifest.json
+vendor/aspose-words/
