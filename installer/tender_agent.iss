@@ -41,10 +41,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 chinesesimplified.AppComment=铁路行业标书 AI 辅助编写系统
 chinesesimplified.LaunchApp=启动 {#MyAppName}
-chinesesimplified.StageMissing=未找到 dist\tender-agent-installer-stage\，请先运行 desktop\build.ps1 生成安装包内容。
 english.AppComment=Railway tender document AI assistant
 english.LaunchApp=Launch {#MyAppName}
-english.StageMissing=dist\tender-agent-installer-stage\ not found. Run desktop\build.ps1 first.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -121,12 +119,6 @@ end;
 
 function InitializeSetup(): Boolean;
 begin
-  if not DirExists(ExpandConstant('{src}\..\dist\tender-agent-installer-stage')) then
-  begin
-    MsgBox(CustomMessage('StageMissing'), mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
   KillTenderAgentProcesses(GetExistingInstallDir());
   Result := True;
 end;
