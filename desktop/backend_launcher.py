@@ -186,10 +186,13 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
-def _subprocess_flags() -> int:
+def _subprocess_flags(*, detach: bool = False) -> int:
     if sys.platform != "win32":
         return 0
-    return CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+    flags = CREATE_NO_WINDOW
+    if detach:
+        flags |= CREATE_BREAKAWAY_FROM_JOB
+    return flags
 
 
 def _subprocess_capture_kwargs() -> dict[str, object]:
@@ -231,18 +234,69 @@ def _append_log_tail(data_dir: Path, name: str, lines: int = 12) -> None:
         pass
 
 
+def _wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _port_open(host, port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _ensure_postgres_database(
+    install_dir: Path, pgdata: Path, psql: Path | None = None
+) -> None:
+    if psql is None:
+        psql = _postgres_bin(install_dir, "psql.exe")
+    if not psql.is_file():
+        return
+    subprocess.run(
+        [
+            str(psql),
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(PG_PORT),
+            "-U",
+            "tender",
+            "-d",
+            "postgres",
+            "-c",
+            "CREATE DATABASE tender_agent;",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=_postgres_env(install_dir, pgdata),
+        creationflags=_subprocess_flags(),
+        timeout=15,
+        check=False,
+    )
+
+
 def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     global _PG_PROC
     if _port_open("127.0.0.1", PG_PORT):
         _log(f"postgres already listening on {PG_PORT}")
+        pgdata = data_dir / "pgdata"
+        _ensure_postgres_database(install_dir, pgdata)
+        _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
+        _log("postgres ready")
         return
 
     pgdata = data_dir / "pgdata"
     initdb = _postgres_bin(install_dir, "initdb.exe")
-    pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
+    postgres_exe = _postgres_bin(install_dir, "postgres.exe")
     psql = _postgres_bin(install_dir, "psql.exe")
-    if not initdb.is_file() or not pg_ctl.is_file():
+    if not initdb.is_file() or not postgres_exe.is_file():
         raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
+
+    pid_file = pgdata / "postmaster.pid"
+    if pid_file.is_file():
+        _log("removing stale postmaster.pid")
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
 
     if not (pgdata / "PG_VERSION").is_file():
         if pgdata.exists() and any(pgdata.iterdir()):
@@ -295,61 +349,28 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
             )
 
     log_path = data_dir / "postgres.log"
-    _log("starting postgres")
-    result = subprocess.run(
-        [
-            str(pg_ctl),
-            "-D",
-            str(pgdata),
-            "-l",
-            str(log_path),
-            "-o",
-            f"-p {PG_PORT}",
-            "-w",
-            "start",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    _log("starting postgres process")
+    log_file = open(log_path, "a", encoding="utf-8")
+    proc = subprocess.Popen(
+        [str(postgres_exe), "-D", str(pgdata), "-p", str(PG_PORT)],
         env=_postgres_env(install_dir, pgdata),
-        creationflags=_subprocess_flags(),
-        timeout=60,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        creationflags=_subprocess_flags(detach=True),
     )
-    if result.returncode != 0:
-        _log(f"pg_ctl start failed code={result.returncode}")
-        _append_log_tail(data_dir, "postgres.log")
-        raise RuntimeError(f"postgres start failed (code {result.returncode})")
+    _PG_PROC = proc
+    _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "pid": proc.pid, "data_dir": str(pgdata)})
 
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if _port_open("127.0.0.1", PG_PORT):
-            break
-        time.sleep(0.5)
-    else:
+    if proc.poll() is not None:
+        _log(f"postgres exited early code={proc.returncode}")
+        _append_log_tail(data_dir, "postgres.log")
+        raise RuntimeError(f"postgres exited early (code {proc.returncode})")
+
+    if not _wait_for_port("127.0.0.1", PG_PORT, 30):
         _append_log_tail(data_dir, "postgres.log")
         raise RuntimeError("postgres did not become ready")
 
-    if psql.is_file():
-        subprocess.run(
-            [
-                str(psql),
-                "-h",
-                "127.0.0.1",
-                "-p",
-                str(PG_PORT),
-                "-U",
-                "tender",
-                "-d",
-                "postgres",
-                "-c",
-                "CREATE DATABASE tender_agent;",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=_postgres_env(install_dir, pgdata),
-            creationflags=_subprocess_flags(),
-            check=False,
-        )
-    _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
+    _ensure_postgres_database(install_dir, pgdata, psql)
     _log("postgres ready")
 
 
@@ -399,7 +420,7 @@ def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
-        creationflags=_subprocess_flags(),
+        creationflags=_subprocess_flags(detach=True),
     )
     _MINIO_PROC = proc
     _write_json(data_dir, MINIO_STATE_FILE, {"port": MINIO_PORT, "pid": proc.pid})
@@ -455,6 +476,7 @@ def _verify_install_layout(install_dir: Path) -> None:
         ("frontend index", install_dir / "frontend" / "dist" / "index.html", True),
         ("frontend assets", install_dir / "frontend" / "dist" / "assets", False),
         ("postgres initdb", _postgres_bin(install_dir, "initdb.exe"), True),
+        ("postgres server", _postgres_bin(install_dir, "postgres.exe"), True),
         ("postgres pg_ctl", _postgres_bin(install_dir, "pg_ctl.exe"), True),
         ("minio", install_dir / "tools" / "minio.exe", True),
         ("aspose license", install_dir / "aspose" / "Aspose.License.txt", True),
@@ -528,7 +550,7 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
         cmd,
         cwd=str(data_dir),
         env=env,
-        creationflags=_subprocess_flags(),
+        creationflags=_subprocess_flags(detach=True),
         stdout=log_file,
         stderr=subprocess.STDOUT,
     )
@@ -546,6 +568,17 @@ def _wait_for_health(port: int, proc: subprocess.Popen, timeout: float = 120.0) 
 
 
 def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
+    global _PG_PROC
+    if _PG_PROC is not None and _PG_PROC.poll() is None:
+        _log(f"stopping postgres pid={_PG_PROC.pid}")
+        _kill_process_tree(_PG_PROC.pid)
+        try:
+            _PG_PROC.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        _PG_PROC = None
+        return
+
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
     pgdata = data_dir / "pgdata"
     if pg_ctl.is_file() and pgdata.is_dir():
@@ -555,6 +588,7 @@ def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
             stderr=subprocess.DEVNULL,
             env=_postgres_env(install_dir, pgdata),
             creationflags=_subprocess_flags(),
+            timeout=30,
             check=False,
         )
 
