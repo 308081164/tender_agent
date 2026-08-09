@@ -25,6 +25,23 @@ compose() {
   fi
 }
 
+install_aspose_deps() {
+  bash "$ROOT/scripts/ci/install-aspose-linux-deps.sh"
+}
+
+preflight_aspose() {
+  local license_path="$1"
+  echo "==> Aspose 运行时自检"
+  DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+    "$VENV/bin/python" -c "
+import os
+os.environ.setdefault('DOTNET_SYSTEM_GLOBALIZATION_INVARIANT', '1')
+from aspose.words import License
+License().set_license(os.environ['ASPOSE_LICENSE_PATH'])
+print('Aspose license OK')
+" ASPOSE_LICENSE_PATH="$license_path"
+}
+
 cleanup() {
   if [[ -n "${UVICORN_PID:-}" ]] && kill -0 "$UVICORN_PID" 2>/dev/null; then
     kill "$UVICORN_PID" 2>/dev/null || true
@@ -34,7 +51,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> [1/6] 启动基础设施 (PostgreSQL + MinIO)"
-compose up -d db minio >/dev/null
+compose up -d db minio
 
 echo "==> [2/6] 等待数据库就绪"
 for _ in $(seq 1 40); do
@@ -52,6 +69,7 @@ fi
 (cd "$ROOT/frontend" && npm run build)
 
 echo "==> [4/6] 准备 Python 运行时"
+install_aspose_deps
 if [[ ! -x "$VENV/bin/python" ]]; then
   python3 -m venv "$VENV"
   "$VENV/bin/pip" install -q -U pip
@@ -72,6 +90,11 @@ export TENDER_DESKTOP=1
 export TENDER_INSTALL_DIR="$ROOT"
 export TENDER_DATA_DIR="$VERIFY_DATA"
 export ASPOSE_LICENSE_PATH="$ASPOSE_DIR/Aspose.License.txt"
+if [[ ! -f "$ASPOSE_LICENSE_PATH" ]]; then
+  echo "ERROR: Aspose license not found: $ASPOSE_LICENSE_PATH" >&2
+  exit 1
+fi
+preflight_aspose "$ASPOSE_LICENSE_PATH"
 export DATABASE_URL="postgresql://tender:tender123@127.0.0.1:5432/tender_agent"
 export MINIO_ENDPOINT="127.0.0.1:9000"
 export MINIO_ACCESS_KEY="minioadmin"

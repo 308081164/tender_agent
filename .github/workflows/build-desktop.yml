@@ -36,9 +36,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install verification dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libicu74 libssl3 python3-venv
+        run: ./scripts/ci/install-aspose-linux-deps.sh
 
       - name: Verify desktop backend startup (Linux)
         run: ./scripts/verify_desktop_startup.sh
