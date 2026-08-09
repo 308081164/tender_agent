@@ -7,6 +7,12 @@ on:
       - '**.md'
       - 'LICENSE'
       - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       app_version:
@@ -39,6 +45,7 @@ jobs:
 
   build:
     needs: verify-linux
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
