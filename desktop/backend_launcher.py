@@ -192,6 +192,11 @@ def _subprocess_flags() -> int:
     return CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
 
 
+def _subprocess_capture_kwargs() -> dict[str, object]:
+    """Capture subprocess text safely on localized Windows consoles (GBK output)."""
+    return {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+
+
 def _postgres_root(install_dir: Path) -> Path:
     return install_dir / "tools" / "postgres"
 
@@ -205,6 +210,8 @@ def _postgres_env(install_dir: Path, pgdata: Path | None = None) -> dict[str, st
     pg_bin = str(_postgres_root(install_dir) / "bin")
     env["PATH"] = pg_bin + os.pathsep + env.get("PATH", "")
     env["PGPORT"] = str(PG_PORT)
+    env.setdefault("LC_ALL", "C")
+    env.setdefault("LANG", "C")
     if pgdata is not None:
         env["PGDATA"] = str(pgdata)
     return env
@@ -260,10 +267,9 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
             initdb_cmd.append("--locale=C")
         result = subprocess.run(
             initdb_cmd,
-            capture_output=True,
-            text=True,
             env=_postgres_env(install_dir, pgdata),
             creationflags=_subprocess_flags(),
+            **_subprocess_capture_kwargs(),
         )
         if result.returncode != 0:
             _log(f"initdb failed code={result.returncode}")
@@ -302,18 +308,14 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
             "-w",
             "start",
         ],
-        capture_output=True,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env=_postgres_env(install_dir, pgdata),
         creationflags=_subprocess_flags(),
         timeout=60,
     )
     if result.returncode != 0:
         _log(f"pg_ctl start failed code={result.returncode}")
-        if result.stdout.strip():
-            _log(f"pg_ctl stdout: {result.stdout.strip()}")
-        if result.stderr.strip():
-            _log(f"pg_ctl stderr: {result.stderr.strip()}")
         _append_log_tail(data_dir, "postgres.log")
         raise RuntimeError(f"postgres start failed (code {result.returncode})")
 
@@ -341,8 +343,8 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
                 "-c",
                 "CREATE DATABASE tender_agent;",
             ],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=_postgres_env(install_dir, pgdata),
             creationflags=_subprocess_flags(),
             check=False,
@@ -418,12 +420,8 @@ def _runtime_root(install_dir: Path) -> Path:
 
 
 def _runtime_python(install_dir: Path) -> Path:
-    runtime = _runtime_root(install_dir)
-    for rel in ("python.exe", "Scripts/python.exe", "bin/python.exe"):
-        candidate = runtime / rel.replace("/", os.sep)
-        if candidate.is_file():
-            return candidate
-    return runtime / "python.exe"
+    # Always use embed python.exe; Scripts/python.exe may be a pip stub pointing at CI paths.
+    return _runtime_root(install_dir) / "python.exe"
 
 
 def _runtime_env(install_dir: Path, data_dir: Path | None = None) -> dict[str, str]:
@@ -479,11 +477,10 @@ def _verify_runtime_imports(install_dir: Path, data_dir: Path) -> None:
             "-c",
             "import uvicorn, fastapi, sqlalchemy, psycopg2, minio, aspose.words; print('imports ok')",
         ],
-        capture_output=True,
-        text=True,
         env=env,
         cwd=str(data_dir),
         creationflags=_subprocess_flags(),
+        **_subprocess_capture_kwargs(),
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()

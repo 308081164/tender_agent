@@ -240,6 +240,15 @@ Write-Host "==> Verifying portable Python runtime"
 & $RuntimePython -c "import uvicorn, fastapi, sqlalchemy, psycopg2, minio, aspose.words; print('runtime self-test ok')"
 if ($LASTEXITCODE -ne 0) { throw "Portable runtime self-test failed" }
 
+Write-Host "  Removing pip python stubs from embed runtime"
+foreach ($stub in @("Scripts\python.exe", "Scripts\pythonw.exe", "pyvenv.cfg")) {
+  $stubPath = Join-Path $Runtime $stub
+  if (Test-Path -LiteralPath $stubPath) {
+    Remove-Item -LiteralPath $stubPath -Force
+    Write-Host "    removed $stub"
+  }
+}
+
 Write-Host "==> Downloading PostgreSQL portable binaries"
 $ToolsDir = Join-Path $Stage "tools"
 $PgZipPath = Join-Path $env:TEMP $PgZipName
