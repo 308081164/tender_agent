@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Per-boot startup for the Cloud Agent dev environment: bring up PostgreSQL and
-# MinIO, then return. Idempotent and safe to run repeatedly. The backend and
-# frontend dev servers are launched separately (see the "terminals" entries in
-# the environment configuration / scripts/backend_dev.sh + frontend_dev.sh).
+# Per-boot startup for the Cloud Agent dev environment. Brings the full stack up
+# in the background and returns: PostgreSQL, MinIO, the FastAPI backend (:8000)
+# and the Vite frontend (:3000). Idempotent and safe to run repeatedly.
+#
+# For interactive/foreground use you can instead run scripts/backend_dev.sh and
+# scripts/frontend_dev.sh in separate terminals.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,3 +48,36 @@ for _ in $(seq 1 30); do
 done
 
 echo "==> Infrastructure ready (PostgreSQL :$PGPORT, MinIO :9000 / console :9001)"
+
+port_in_use() { curl -fsS "http://127.0.0.1:$1" >/dev/null 2>&1; }
+
+echo "==> Starting FastAPI backend (:8000)"
+if curl -fsS "http://127.0.0.1:8000/api/health" >/dev/null 2>&1; then
+  echo "Backend already running"
+else
+  nohup "$TENDER_REPO/.venv/bin/uvicorn" app.main:app \
+    --app-dir "$TENDER_REPO/backend" --host 0.0.0.0 --port 8000 \
+    >"$TENDER_RUNTIME/backend.log" 2>&1 &
+  for _ in $(seq 1 40); do
+    curl -fsS "http://127.0.0.1:8000/api/health" >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
+
+echo "==> Starting Vite frontend (:3000)"
+if port_in_use 3000; then
+  echo "Frontend already running"
+else
+  ( cd "$TENDER_REPO/frontend" && \
+    nohup npm run dev -- --host 0.0.0.0 --port 3000 \
+    >"$TENDER_RUNTIME/frontend.log" 2>&1 & )
+  for _ in $(seq 1 30); do
+    port_in_use 3000 && break
+    sleep 1
+  done
+fi
+
+echo "==> Stack ready:"
+echo "    Frontend : http://localhost:3000"
+echo "    Backend  : http://localhost:8000/docs"
+echo "    MinIO    : http://localhost:9001 (minioadmin / minioadmin)"
