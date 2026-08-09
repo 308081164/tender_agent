@@ -218,7 +218,22 @@ $PgSource = Join-Path $env:TEMP "pgsql"
 if (-not (Test-Path $PgSource)) { throw "PostgreSQL extract missing pgsql folder" }
 $PgDest = Join-Path $ToolsDir "postgres"
 New-Item -ItemType Directory -Path $PgDest -Force | Out-Null
-Copy-Item -Recurse (Join-Path $PgSource "*") $PgDest -Force
+# Only ship server runtime (bin/lib/share). Skip pgAdmin 4 / StackBuilder / doc to avoid
+# Windows MAX_PATH failures during Inno Setup compression.
+foreach ($pgDir in @("bin", "lib", "share")) {
+  $src = Join-Path $PgSource $pgDir
+  if (-not (Test-Path -LiteralPath $src)) {
+    throw "PostgreSQL extract missing required directory: $pgDir"
+  }
+  Copy-Item -LiteralPath $src -Destination (Join-Path $PgDest $pgDir) -Recurse -Force
+}
+Write-Host "  PostgreSQL runtime copied (bin/lib/share only)"
+foreach ($required in @("bin\initdb.exe", "bin\pg_ctl.exe", "bin\psql.exe", "bin\postgres.exe")) {
+  $path = Join-Path $PgDest $required
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw "PostgreSQL runtime incomplete, missing $required"
+  }
+}
 
 Write-Host "==> Downloading MinIO"
 $MinioDest = Join-Path $ToolsDir "minio.exe"
