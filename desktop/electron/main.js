@@ -314,10 +314,10 @@ function startBackend(port) {
     if (!isQuitting) {
       showError(
         "标书智能体",
-        `后端已意外退出${code !== null ? `（代码 ${code}）` : ""}。\n\n请查看 ${path.join(
+        `后端已意外退出${code !== null ? `（代码 ${code}）` : ""}。\n\n请查看日志：\n${path.join(
           dataDir,
           "backend.log"
-        )}`
+        )}\n${path.join(dataDir, "launcher.log")}\n${path.join(dataDir, "postgres.log")}\n\n若首次安装后仍失败，可尝试删除数据目录后重试：\n${dataDir}`
       );
       app.quit();
     }

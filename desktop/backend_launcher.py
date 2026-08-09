@@ -19,17 +19,14 @@ DEFAULT_PORT = 18766
 PG_PORT = 55432
 MINIO_PORT = 59000
 CREATE_NO_WINDOW = 0x08000000
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 STATE_FILE = "server.json"
 LAUNCHER_PID_FILE = "launcher.pid"
 LAUNCHER_LOG_FILE = "launcher.log"
 PG_STATE_FILE = "postgres.json"
 MINIO_STATE_FILE = "minio.json"
 
-JobObjectExtendedLimitInformation = 9
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-
 _LOG_HANDLE: object | None = None
-_JOB_HANDLE: int | None = None
 _BACKEND_PROC: subprocess.Popen | None = None
 _PG_PROC: subprocess.Popen | None = None
 _MINIO_PROC: subprocess.Popen | None = None
@@ -142,69 +139,6 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _create_kill_on_close_job() -> int | None:
-    if sys.platform != "win32":
-        return None
-    kernel32 = ctypes.windll.kernel32
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        return None
-
-    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_int64),
-            ("PerJobUserTimeLimit", ctypes.c_int64),
-            ("LimitFlags", ctypes.c_uint32),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", ctypes.c_uint32),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", ctypes.c_uint32),
-            ("SchedulingClass", ctypes.c_uint32),
-        ]
-
-    class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [
-            ("ReadOperationCount", ctypes.c_uint64),
-            ("WriteOperationCount", ctypes.c_uint64),
-            ("OtherOperationCount", ctypes.c_uint64),
-            ("ReadTransferCount", ctypes.c_uint64),
-            ("WriteTransferCount", ctypes.c_uint64),
-            ("OtherTransferCount", ctypes.c_uint64),
-        ]
-
-    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-            ("IoInfo", IO_COUNTERS),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    ok = kernel32.SetInformationJobObject(
-        job,
-        JobObjectExtendedLimitInformation,
-        ctypes.byref(info),
-        ctypes.sizeof(info),
-    )
-    if not ok:
-        kernel32.CloseHandle(job)
-        return None
-    return job
-
-
-def _assign_process_to_job(job: int | None, proc: subprocess.Popen) -> None:
-    if not job or sys.platform != "win32":
-        return
-    handle = proc._handle  # noqa: SLF001
-    if handle:
-        ctypes.windll.kernel32.AssignProcessToJobObject(job, handle)
-
-
 def _kill_process_tree(pid: int) -> None:
     if pid <= 0:
         return
@@ -213,7 +147,7 @@ def _kill_process_tree(pid: int) -> None:
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
+            creationflags=_subprocess_flags(),
             check=False,
         )
         return
@@ -226,8 +160,42 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
+def _subprocess_flags() -> int:
+    if sys.platform != "win32":
+        return 0
+    return CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+
+
+def _postgres_root(install_dir: Path) -> Path:
+    return install_dir / "tools" / "postgres"
+
+
 def _postgres_bin(install_dir: Path, name: str) -> Path:
-    return install_dir / "tools" / "postgres" / "bin" / name
+    return _postgres_root(install_dir) / "bin" / name
+
+
+def _postgres_env(install_dir: Path, pgdata: Path | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    pg_bin = str(_postgres_root(install_dir) / "bin")
+    env["PATH"] = pg_bin + os.pathsep + env.get("PATH", "")
+    env["PGPORT"] = str(PG_PORT)
+    if pgdata is not None:
+        env["PGDATA"] = str(pgdata)
+    return env
+
+
+def _append_log_tail(data_dir: Path, name: str, lines: int = 12) -> None:
+    path = data_dir / name
+    if not path.is_file():
+        return
+    try:
+        tail = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+        if tail:
+            _log(f"{name} tail:")
+            for line in tail:
+                _log(f"  {line}")
+    except OSError:
+        pass
 
 
 def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
@@ -237,20 +205,48 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
         return
 
     pgdata = data_dir / "pgdata"
-    pgdata.mkdir(parents=True, exist_ok=True)
     initdb = _postgres_bin(install_dir, "initdb.exe")
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
     psql = _postgres_bin(install_dir, "psql.exe")
     if not initdb.is_file() or not pg_ctl.is_file():
-        raise FileNotFoundError(f"未找到 PostgreSQL 工具：{install_dir / 'tools' / 'postgres' / 'bin'}")
+        raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
 
     if not (pgdata / "PG_VERSION").is_file():
+        if pgdata.exists() and any(pgdata.iterdir()):
+            _log("resetting incomplete postgres data directory")
+            import shutil
+
+            shutil.rmtree(pgdata, ignore_errors=True)
+        pgdata.mkdir(parents=True, exist_ok=True)
         _log("initializing postgres data directory")
-        subprocess.run(
-            [str(initdb), "-D", str(pgdata), "-U", "tender", "-E", "UTF8", "--locale=C"],
-            check=True,
-            creationflags=CREATE_NO_WINDOW,
+        initdb_cmd = [
+            str(initdb),
+            "-D",
+            str(pgdata),
+            "-U",
+            "tender",
+            "-E",
+            "UTF8",
+            "--auth-local=trust",
+            "--auth-host=trust",
+        ]
+        if sys.platform != "win32":
+            initdb_cmd.append("--locale=C")
+        result = subprocess.run(
+            initdb_cmd,
+            capture_output=True,
+            text=True,
+            env=_postgres_env(install_dir, pgdata),
+            creationflags=_subprocess_flags(),
         )
+        if result.returncode != 0:
+            _log(f"initdb failed code={result.returncode}")
+            if result.stdout.strip():
+                _log(f"initdb stdout: {result.stdout.strip()}")
+            if result.stderr.strip():
+                _log(f"initdb stderr: {result.stderr.strip()}")
+            raise RuntimeError(f"postgres initdb failed (code {result.returncode})")
+
         conf = pgdata / "postgresql.conf"
         hba = pgdata / "pg_hba.conf"
         if conf.is_file():
@@ -268,15 +264,32 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
 
     log_path = data_dir / "postgres.log"
     _log("starting postgres")
-    proc = subprocess.Popen(
-        [str(pg_ctl), "-D", str(pgdata), "-l", str(log_path), "-w", "start"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=CREATE_NO_WINDOW,
+    result = subprocess.run(
+        [
+            str(pg_ctl),
+            "-D",
+            str(pgdata),
+            "-l",
+            str(log_path),
+            "-o",
+            f"-p {PG_PORT}",
+            "-w",
+            "start",
+        ],
+        capture_output=True,
+        text=True,
+        env=_postgres_env(install_dir, pgdata),
+        creationflags=_subprocess_flags(),
+        timeout=60,
     )
-    proc.wait(timeout=60)
-    if proc.returncode != 0:
-        raise RuntimeError(f"postgres start failed (code {proc.returncode})")
+    if result.returncode != 0:
+        _log(f"pg_ctl start failed code={result.returncode}")
+        if result.stdout.strip():
+            _log(f"pg_ctl stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+            _log(f"pg_ctl stderr: {result.stderr.strip()}")
+        _append_log_tail(data_dir, "postgres.log")
+        raise RuntimeError(f"postgres start failed (code {result.returncode})")
 
     deadline = time.time() + 30
     while time.time() < deadline:
@@ -284,28 +297,10 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
             break
         time.sleep(0.5)
     else:
+        _append_log_tail(data_dir, "postgres.log")
         raise RuntimeError("postgres did not become ready")
 
     if psql.is_file():
-        subprocess.run(
-            [
-                str(psql),
-                "-h",
-                "127.0.0.1",
-                "-p",
-                str(PG_PORT),
-                "-U",
-                "tender",
-                "-d",
-                "postgres",
-                "-tc",
-                "SELECT 1 FROM pg_database WHERE datname='tender_agent'",
-            ],
-            capture_output=True,
-            text=True,
-            creationflags=CREATE_NO_WINDOW,
-            check=False,
-        )
         subprocess.run(
             [
                 str(psql),
@@ -322,11 +317,26 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
             ],
             capture_output=True,
             text=True,
-            creationflags=CREATE_NO_WINDOW,
+            env=_postgres_env(install_dir, pgdata),
+            creationflags=_subprocess_flags(),
             check=False,
         )
     _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
     _log("postgres ready")
+
+
+def _ensure_postgres_with_retry(data_dir: Path, install_dir: Path) -> None:
+    try:
+        _ensure_postgres(data_dir, install_dir)
+    except RuntimeError as exc:
+        pgdata = data_dir / "pgdata"
+        if not pgdata.exists():
+            raise
+        _log(f"postgres setup failed ({exc}); resetting data directory and retrying once")
+        import shutil
+
+        shutil.rmtree(pgdata, ignore_errors=True)
+        _ensure_postgres(data_dir, install_dir)
 
 
 def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
@@ -361,7 +371,7 @@ def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
-        creationflags=CREATE_NO_WINDOW,
+        creationflags=_subprocess_flags(),
     )
     _MINIO_PROC = proc
     _write_json(data_dir, MINIO_STATE_FILE, {"port": MINIO_PORT, "pid": proc.pid})
@@ -419,7 +429,9 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
     env["TENDER_DESKTOP"] = "1"
     env["TENDER_INSTALL_DIR"] = str(install_dir)
     env["TENDER_DATA_DIR"] = str(data_dir)
+    env["ASPOSE_LICENSE_PATH"] = str(install_dir / "aspose" / "Aspose.License.txt")
     env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
 
     log_path = _backend_log_path(data_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,7 +445,7 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
         cmd,
         cwd=str(install_dir),
         env=env,
-        creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        creationflags=_subprocess_flags(),
         stdout=log_file,
         stderr=subprocess.STDOUT,
     )
@@ -458,13 +470,14 @@ def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
             [str(pg_ctl), "-D", str(pgdata), "-w", "stop", "fast"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
+            env=_postgres_env(install_dir, pgdata),
+            creationflags=_subprocess_flags(),
             check=False,
         )
 
 
 def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
-    global _SHUTTING_DOWN, _JOB_HANDLE
+    global _SHUTTING_DOWN
     if _SHUTTING_DOWN:
         return
     _SHUTTING_DOWN = True
@@ -498,10 +511,6 @@ def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
     if data_dir is not None:
         _remove_runtime_files(data_dir)
 
-    if _JOB_HANDLE and sys.platform == "win32":
-        ctypes.windll.kernel32.CloseHandle(_JOB_HANDLE)
-        _JOB_HANDLE = None
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="TenderAgent backend sidecar")
@@ -528,8 +537,8 @@ def main() -> int:
                 pass
             return 0
 
-    global _JOB_HANDLE, _BACKEND_PROC
-    _JOB_HANDLE = _create_kill_on_close_job()
+    global _BACKEND_PROC
+    _BACKEND_PROC = None
 
     def _on_exit() -> None:
         _shutdown(install_dir, data_dir)
@@ -558,19 +567,24 @@ def main() -> int:
         _ensure_postgres(data_dir, install_dir)
         _ensure_minio(data_dir, install_dir)
         proc = _start_server(install_dir, data_dir, port)
-    except (FileNotFoundError, RuntimeError) as exc:
+    except Exception as exc:
         _log(f"start failed: {exc}")
         print(str(exc), file=sys.stderr)
+        _append_log_tail(data_dir, "postgres.log")
+        _append_log_tail(data_dir, "minio.log")
+        _append_log_tail(data_dir, "backend.log")
         _shutdown(install_dir, data_dir)
         return 1
 
-    _assign_process_to_job(_JOB_HANDLE, proc)
     _BACKEND_PROC = proc
     _log(f"backend started pid={proc.pid} port={port}")
 
     if not _wait_for_health(port, proc):
         exit_code = proc.poll()
         _log(f"health check failed exit_code={exit_code}")
+        _append_log_tail(data_dir, "backend.log")
+        _append_log_tail(data_dir, "postgres.log")
+        _append_log_tail(data_dir, "minio.log")
         _shutdown(install_dir, data_dir)
         return 1
 
