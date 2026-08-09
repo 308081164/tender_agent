@@ -42,6 +42,45 @@ print('Aspose license OK')
 " ASPOSE_LICENSE_PATH="$license_path"
 }
 
+wait_for_db() {
+  local max_attempts="${1:-90}"
+  local attempt
+  for attempt in $(seq 1 "$max_attempts"); do
+    if compose exec -T db pg_isready -U tender -d tender_agent >/dev/null 2>&1; then
+      echo "postgres ready (attempt ${attempt})"
+      return 0
+    fi
+    if compose exec -T db pg_isready -U tender >/dev/null 2>&1; then
+      echo "postgres accepting connections (attempt ${attempt})"
+      return 0
+    fi
+    if (( attempt % 10 == 0 )); then
+      echo "  still waiting for postgres... (${attempt}/${max_attempts})"
+      compose ps db minio || true
+    fi
+    sleep 2
+  done
+  echo "ERROR: postgres did not become ready in time" >&2
+  compose ps db minio || true
+  compose logs db --tail 40 || true
+  return 1
+}
+
+wait_for_minio() {
+  local max_attempts="${1:-60}"
+  local attempt
+  for attempt in $(seq 1 "$max_attempts"); do
+    if curl -fsS "http://127.0.0.1:9000/minio/health/live" >/dev/null 2>&1; then
+      echo "minio ready (attempt ${attempt})"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: minio did not become ready in time" >&2
+  compose logs minio --tail 40 || true
+  return 1
+}
+
 cleanup() {
   if [[ -n "${UVICORN_PID:-}" ]] && kill -0 "$UVICORN_PID" 2>/dev/null; then
     kill "$UVICORN_PID" 2>/dev/null || true
@@ -51,16 +90,15 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> [1/6] 启动基础设施 (PostgreSQL + MinIO)"
-compose up -d db minio
+if compose up -d --wait db minio 2>/dev/null; then
+  echo "docker compose --wait: services healthy"
+else
+  compose up -d db minio
+fi
 
 echo "==> [2/6] 等待数据库就绪"
-for _ in $(seq 1 40); do
-  if compose exec -T db pg_isready -U tender -d tender_agent >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
-compose exec -T db pg_isready -U tender -d tender_agent
+wait_for_db 90
+wait_for_minio 60
 
 echo "==> [3/6] 构建前端"
 if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
