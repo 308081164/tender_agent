@@ -16,16 +16,17 @@ on:
   workflow_dispatch:
     inputs:
       app_version:
-        description: "Override installer version (optional, e.g. 1.0.1)"
+        description: "Override installer version (optional, e.g. 1.0.99)"
         required: false
         type: string
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
-  group: build-desktop-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-desktop-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify-linux:
@@ -43,7 +44,6 @@ jobs:
 
   build:
     needs: verify-linux
-    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
@@ -53,11 +53,16 @@ jobs:
       - name: Compute version
         id: meta
         shell: pwsh
+        env:
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if ("${{ github.event.inputs.app_version }}") {
-            "version=${{ github.event.inputs.app_version }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            "artifact_suffix=${{ github.event.inputs.app_version }}-manual" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            $v = "${{ github.event.inputs.app_version }}"
+            "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "display_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "artifact_suffix=$v-manual" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             "is_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "build_number=${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           } else {
             & ./scripts/ci/compute-version.ps1 -Product desktop | Out-Null
           }
@@ -89,6 +94,9 @@ jobs:
 
       - name: Build offline installer
         shell: pwsh
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
           $env:PATH += ";C:\Program Files (x86)\Inno Setup 6"
           ./package-desktop.ps1 -SkipStagingBuild -AppVersion "${{ steps.meta.outputs.version }}"
@@ -110,26 +118,58 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: desktop-v${{ steps.meta.outputs.version }}
-          name: 标书智能体 Desktop ${{ steps.meta.outputs.version }}
+          name: 标书智能体 Desktop ${{ steps.meta.outputs.display_version }}
           body: |
-            ## 标书智能体 Desktop ${{ steps.meta.outputs.version }}
+            ## 标书智能体 Desktop ${{ steps.meta.outputs.display_version }}
 
             Windows 离线安装包，内含 Electron 壳、便携 Python 运行时、PostgreSQL、MinIO 与预编译前端。
 
+            ### 版本识别
+            - 安装包文件名：`TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe`
+            - 应用内版本：启动页与窗口标题显示 **v${{ steps.meta.outputs.display_version }}**
+            - 也可查看安装目录下 `resources\tender-agent\version.json`
+
             ### 安装
-            1. 下载 `TenderAgentSetup-*.exe`
+            1. 下载 `TenderAgentSetup-*.exe`（请确认版本号与 GitHub 最新 Release 一致）
             2. 运行安装向导（支持选择安装目录）
-            3. 启动「标书智能体」桌面应用
+            3. 首次安装前建议删除旧数据：`%LOCALAPPDATA%\TenderAgent\data`
+            4. 启动「标书智能体」桌面应用
 
             ### 构建信息
+            - Build: ${{ github.run_number }}
             - Commit: ${{ github.sha }}
             - Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(steps.meta.outputs.version, '-pr') }}
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment PR with installer artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.meta.outputs.display_version }}';
+            const suffix = '${{ steps.meta.outputs.artifact_suffix }}';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '## 桌面安装包已构建（PR 预览）',
+              '',
+              `- **版本**: \`${version}\``,
+              `- **安装包**: 请在本 Workflow Run 的 **Artifacts** 中下载 \`TenderAgentSetup-${suffix}.exe\``,
+              `- **说明**: PR 构建不会发布到 Releases；合并到 \`main\` 后才会自动发布正式 Release`,
+              '',
+              `[查看构建日志](${runUrl})`
+            ].join('\n');
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

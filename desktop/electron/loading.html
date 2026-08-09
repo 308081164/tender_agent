@@ -38,11 +38,13 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .status { font-size: 14px; color: #94a3b8; text-align: center; padding: 0 24px; line-height: 1.5; }
     .status.error { color: #f87171; }
+    .version { font-size: 12px; color: #64748b; margin-bottom: 18px; }
   </style>
 </head>
 <body>
   <div class="title">标书智能体</div>
   <div class="subtitle">铁路行业标书 AI 辅助编写系统</div>
+  <div class="version" id="version"></div>
   <div class="spinner"></div>
   <div class="status" id="status">正在启动，请稍候…</div>
   <script>
@@ -51,6 +53,11 @@
       if (!el) return;
       el.textContent = text;
       el.classList.toggle("error", String(text).indexOf("超时") >= 0 || String(text).indexOf("失败") >= 0);
+    };
+    window.__setVersion = function (text) {
+      var el = document.getElementById("version");
+      if (!el) return;
+      el.textContent = "版本 v" + String(text);
     };
   </script>
 </body>

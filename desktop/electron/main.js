@@ -46,6 +46,29 @@ let logStream = null;
 let isQuitting = false;
 let bootstrapDone = false;
 let loadingErrorTimer = null;
+let appVersionLabel = "";
+
+function readAppVersion(dir) {
+  const candidates = [
+    path.join(dir || ".", "version.json"),
+    path.join(__dirname, "version.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        const data = JSON.parse(fs.readFileSync(candidate, "utf8"));
+        return data.display_version || data.version || "";
+      }
+    } catch (_err) {
+      /* ignore */
+    }
+  }
+  return "";
+}
+
+function windowTitleWithVersion() {
+  return appVersionLabel ? `${WINDOW_TITLE} v${appVersionLabel}` : WINDOW_TITLE;
+}
 
 function resolveInstallDir() {
   if (process.env.TENDER_INSTALL_DIR) {
@@ -155,8 +178,8 @@ function armLoadingErrorTimer(phase) {
 function createLoadingWindow() {
   loadingWindow = new BrowserWindow({
     width: 480,
-    height: 320,
-    title: WINDOW_TITLE,
+    height: 340,
+    title: windowTitleWithVersion(),
     icon: APP_ICON,
     resizable: false,
     minimizable: true,
@@ -170,6 +193,15 @@ function createLoadingWindow() {
     },
   });
   loadingWindow.loadFile(path.join(__dirname, "loading.html"));
+  loadingWindow.webContents.on("did-finish-load", () => {
+    if (!appVersionLabel) {
+      return;
+    }
+    const payload = JSON.stringify(appVersionLabel);
+    loadingWindow.webContents
+      .executeJavaScript(`window.__setVersion && window.__setVersion(${payload})`)
+      .catch(() => {});
+  });
   loadingWindow.on("closed", () => {
     loadingWindow = null;
   });
@@ -184,7 +216,7 @@ function createMainWindow(url) {
   mainWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
-    title: WINDOW_TITLE,
+    title: windowTitleWithVersion(),
     icon: APP_ICON,
     show: false,
     autoHideMenuBar: true,
@@ -386,8 +418,9 @@ async function attachToExistingBackend(port) {
 async function bootstrap() {
   installDir = resolveInstallDir();
   dataDir = resolveDataDir();
+  appVersionLabel = readAppVersion(installDir);
   initLog();
-  log(`install_dir=${installDir} packaged=${app.isPackaged}`);
+  log(`install_dir=${installDir} packaged=${app.isPackaged} version=${appVersionLabel || "unknown"}`);
 
   createLoadingWindow();
   setLoadingStatus("正在启动数据库与存储服务…");

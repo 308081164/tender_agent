@@ -49,6 +49,33 @@ function Format-FileSize([long]$Bytes) {
   return "$Bytes B"
 }
 
+function Write-AppVersionManifest {
+  param(
+    [string]$StagePath,
+    [string]$Version,
+    [string]$DisplayVersion = "",
+    [string]$BuildNumber = ""
+  )
+  if (-not $Version) { return }
+
+  $installRoot = Join-Path $StagePath "resources\tender-agent"
+  if (-not (Test-Path -LiteralPath $installRoot)) {
+    $installRoot = $StagePath
+  }
+
+  $commit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA.Substring(0, [Math]::Min(7, $env:GITHUB_SHA.Length)) } else { "local" }
+  $manifest = [ordered]@{
+    version = $Version
+    display_version = if ($DisplayVersion) { $DisplayVersion } else { $Version }
+    build = if ($BuildNumber) { [int]$BuildNumber } else { 0 }
+    commit = $commit
+    built_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  }
+  $path = Join-Path $installRoot "version.json"
+  $manifest | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding UTF8
+  Write-Host "Wrote version manifest: $path ($Version)"
+}
+
 Write-Host "标书智能体离线安装包构建" -ForegroundColor Green
 Write-Host "Root: $Root" -ForegroundColor Gray
 
@@ -103,8 +130,15 @@ if (-not (Test-Path (Join-Path $Stage "TenderAgent.exe"))) {
 }
 
 if ($StageOnly) {
+  if ($AppVersion) {
+    Write-AppVersionManifest -StagePath $Stage -Version $AppVersion
+  }
   Write-Host "Staging ready: $Stage\TenderAgent.exe"
   exit 0
+}
+
+if ($AppVersion) {
+  Write-AppVersionManifest -StagePath $Stage -Version $AppVersion
 }
 
 Write-Step "Compiling installer (Inno Setup)"
