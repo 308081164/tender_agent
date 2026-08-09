@@ -413,8 +413,12 @@ def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
     raise RuntimeError("minio did not become ready")
 
 
+def _runtime_root(install_dir: Path) -> Path:
+    return install_dir / "runtime"
+
+
 def _runtime_python(install_dir: Path) -> Path:
-    runtime = install_dir / "runtime"
+    runtime = _runtime_root(install_dir)
     for rel in ("python.exe", "Scripts/python.exe", "bin/python.exe"):
         candidate = runtime / rel.replace("/", os.sep)
         if candidate.is_file():
@@ -422,8 +426,68 @@ def _runtime_python(install_dir: Path) -> Path:
     return runtime / "python.exe"
 
 
+def _runtime_env(install_dir: Path, data_dir: Path | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    runtime = _runtime_root(install_dir)
+    env["PYTHONHOME"] = str(runtime)
+    runtime_bin = str(runtime)
+    scripts = runtime / "Scripts"
+    if scripts.is_dir():
+        runtime_bin = str(scripts) + os.pathsep + runtime_bin
+    env["PATH"] = runtime_bin + os.pathsep + env.get("PATH", "")
+    env["TENDER_INSTALL_DIR"] = str(install_dir)
+    if data_dir is not None:
+        env["TENDER_DATA_DIR"] = str(data_dir)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    if data_dir is not None:
+        env["PYTHONPYCACHEPREFIX"] = str(data_dir / "pycache")
+    return env
+
+
 def _backend_log_path(data_dir: Path) -> Path:
     return data_dir / "backend.log"
+
+
+def _verify_install_layout(install_dir: Path) -> None:
+    checks: list[tuple[str, Path, bool]] = [
+        ("runtime python", _runtime_python(install_dir), True),
+        ("backend dir", install_dir / "backend", False),
+        ("frontend index", install_dir / "frontend" / "dist" / "index.html", True),
+        ("frontend assets", install_dir / "frontend" / "dist" / "assets", False),
+        ("postgres initdb", _postgres_bin(install_dir, "initdb.exe"), True),
+        ("postgres pg_ctl", _postgres_bin(install_dir, "pg_ctl.exe"), True),
+        ("minio", install_dir / "tools" / "minio.exe", True),
+        ("aspose license", install_dir / "aspose" / "Aspose.License.txt", True),
+    ]
+    missing: list[str] = []
+    for label, path, is_file in checks:
+        ok = path.is_file() if is_file else path.is_dir()
+        if not ok:
+            missing.append(f"{label}: {path}")
+    if missing:
+        raise FileNotFoundError("安装目录不完整：\n" + "\n".join(missing))
+
+
+def _verify_runtime_imports(install_dir: Path, data_dir: Path) -> None:
+    python = _runtime_python(install_dir)
+    env = _runtime_env(install_dir, data_dir)
+    result = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import uvicorn, fastapi, sqlalchemy, psycopg2, minio, aspose.words; print('imports ok')",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(data_dir),
+        creationflags=_subprocess_flags(),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"嵌入式 Python 自检失败 (code {result.returncode}): {detail}")
 
 
 def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Popen:
@@ -451,15 +515,9 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
         str(port),
     ]
 
-    env = os.environ.copy()
+    env = _runtime_env(install_dir, data_dir)
     env["TENDER_DESKTOP"] = "1"
-    env["TENDER_INSTALL_DIR"] = str(install_dir)
-    env["TENDER_DATA_DIR"] = str(data_dir)
     env["ASPOSE_LICENSE_PATH"] = str(install_dir / "aspose" / "Aspose.License.txt")
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONPYCACHEPREFIX"] = str(data_dir / "pycache")
 
     log_path = _backend_log_path(data_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -540,13 +598,38 @@ def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
         _remove_runtime_files(data_dir)
 
 
+def _run_check_only(install_dir: Path, data_dir: Path) -> int:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    _init_log(data_dir)
+    _log(f"check-only install_dir={install_dir}")
+    try:
+        _verify_install_layout(install_dir)
+        _log("install layout ok")
+        _verify_runtime_imports(install_dir, data_dir)
+        _log("runtime imports ok")
+        _log("check-only passed")
+        return 0
+    except Exception as exc:
+        _log(f"check-only failed: {exc}")
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="TenderAgent backend sidecar")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="验证安装目录与嵌入式 Python，不启动服务",
+    )
     args = parser.parse_args()
 
     install_dir = _install_dir()
     data_dir = _data_dir()
+    if args.check_only:
+        return _run_check_only(install_dir, data_dir)
+
     port = args.port
     data_dir.mkdir(parents=True, exist_ok=True)
     _init_log(data_dir)

@@ -268,13 +268,13 @@ async function waitForBackend(port, timeoutMs = HEALTH_TIMEOUT_MS) {
 }
 
 function startBackend(port) {
-  const python = runtimePython();
+  const starter = path.join(installDir, "desktop", "start_backend.cmd");
   const script = path.join(installDir, "desktop", "backend_launcher.py");
-  if (!fs.existsSync(python)) {
-    throw new Error(`未找到运行时 Python：${python}`);
+  if (!fs.existsSync(starter)) {
+    throw new Error(`未找到后端启动脚本：${starter}`);
   }
   if (!fs.existsSync(script)) {
-    throw new Error(`未找到后端启动脚本：${script}`);
+    throw new Error(`未找到后端启动器：${script}`);
   }
 
   const env = {
@@ -282,6 +282,7 @@ function startBackend(port) {
     TENDER_DESKTOP: "1",
     TENDER_INSTALL_DIR: installDir,
     TENDER_DATA_DIR: dataDir,
+    PYTHONHOME: path.join(installDir, "runtime"),
     PYTHONUTF8: "1",
     PYTHONDONTWRITEBYTECODE: "1",
     PYTHONPYCACHEPREFIX: path.join(dataDir, "pycache"),
@@ -290,12 +291,12 @@ function startBackend(port) {
   ensureDataDirReady();
   fs.appendFileSync(
     path.join(dataDir, "electron.log"),
-    `python=${python}\nscript=${script}\n`,
+    `starter=${starter}\nscript=${script}\n`,
     "utf8"
   );
 
-  log(`starting backend: ${python} ${script} --port ${port}`);
-  backendProc = spawn(python, [script, "--port", String(port)], {
+  log(`starting backend: ${starter} --port ${port}`);
+  backendProc = spawn("cmd.exe", ["/d", "/c", starter, "--port", String(port)], {
     cwd: dataDir,
     env,
     windowsHide: true,

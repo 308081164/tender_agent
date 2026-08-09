@@ -301,6 +301,7 @@ Write-Host "==> Copying desktop Python scripts"
 $DesktopDest = Join-Path $Stage "desktop"
 New-Item -ItemType Directory -Path $DesktopDest -Force | Out-Null
 Copy-Item (Join-Path $Root "desktop\backend_launcher.py") (Join-Path $DesktopDest "backend_launcher.py") -Force
+Copy-Item (Join-Path $Root "desktop\start_backend.cmd") (Join-Path $DesktopDest "start_backend.cmd") -Force
 
 Write-Host "==> Syncing brand icons"
 $BrandIco = Join-Path $Root "assets\brand\icon.ico"

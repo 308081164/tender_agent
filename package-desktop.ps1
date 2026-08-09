@@ -8,6 +8,7 @@
 
 param(
   [switch]$StageOnly,
+  [switch]$SkipStagingBuild,
   [string]$AppVersion = ""
 )
 
@@ -89,8 +90,12 @@ if (-not $StageOnly) {
 }
 
 Write-Step "Building staging"
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "desktop\build.ps1")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (-not $SkipStagingBuild) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "desktop\build.ps1")
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+} else {
+  Write-Host "Skipping staging build (reusing existing dist/tender-agent-installer-stage)"
+}
 
 if (-not (Test-Path (Join-Path $Stage "TenderAgent.exe"))) {
   Write-Host "TenderAgent.exe not found in staging." -ForegroundColor Red

@@ -22,7 +22,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libicu74 libssl3 python3-venv
+
+      - name: Verify desktop backend startup (Linux)
+        run: ./scripts/verify_desktop_startup.sh
+
   build:
+    needs: verify-linux
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
@@ -62,11 +78,15 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/prepare-aspose.ps1
 
+      - name: Verify desktop runtime (Windows staging)
+        shell: pwsh
+        run: ./scripts/verify_desktop_runtime.ps1
+
       - name: Build offline installer
         shell: pwsh
         run: |
           $env:PATH += ";C:\Program Files (x86)\Inno Setup 6"
-          ./package-desktop.ps1 -AppVersion "${{ steps.meta.outputs.version }}"
+          ./package-desktop.ps1 -SkipStagingBuild -AppVersion "${{ steps.meta.outputs.version }}"
 
       - name: Rename installer artifact
         shell: pwsh
