@@ -26,6 +26,32 @@ LAUNCHER_LOG_FILE = "launcher.log"
 PG_STATE_FILE = "postgres.json"
 MINIO_STATE_FILE = "minio.json"
 
+
+def _bootstrap_touch() -> None:
+    """Write a log line as early as possible to diagnose pre-main failures."""
+    try:
+        data = os.environ.get("TENDER_DATA_DIR")
+        if not data:
+            local = os.environ.get("LOCALAPPDATA")
+            data = str(Path(local) / "TenderAgent" / "data") if local else str(
+                Path.home() / "AppData" / "Local" / "TenderAgent" / "data"
+            )
+        path = Path(data)
+        path.mkdir(parents=True, exist_ok=True)
+        with open(path / LAUNCHER_LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"\n--- bootstrap import pid={os.getpid()} exe={sys.executable} ---\n"
+            )
+    except Exception as exc:
+        try:
+            fallback = Path(os.environ.get("TEMP", ".")) / "TenderAgent-bootstrap.log"
+            fallback.write_text(f"bootstrap failed: {exc}\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
+_bootstrap_touch()
+
 _LOG_HANDLE: object | None = None
 _BACKEND_PROC: subprocess.Popen | None = None
 _PG_PROC: subprocess.Popen | None = None
@@ -389,11 +415,11 @@ def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
 
 def _runtime_python(install_dir: Path) -> Path:
     runtime = install_dir / "runtime"
-    for rel in ("Scripts/python.exe", "bin/python.exe"):
+    for rel in ("python.exe", "Scripts/python.exe", "bin/python.exe"):
         candidate = runtime / rel.replace("/", os.sep)
         if candidate.is_file():
             return candidate
-    return runtime / "Scripts" / "python.exe"
+    return runtime / "python.exe"
 
 
 def _backend_log_path(data_dir: Path) -> Path:
@@ -432,6 +458,8 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
     env["ASPOSE_LICENSE_PATH"] = str(install_dir / "aspose" / "Aspose.License.txt")
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPYCACHEPREFIX"] = str(data_dir / "pycache")
 
     log_path = _backend_log_path(data_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -443,7 +471,7 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
 
     return subprocess.Popen(
         cmd,
-        cwd=str(install_dir),
+        cwd=str(data_dir),
         env=env,
         creationflags=_subprocess_flags(),
         stdout=log_file,
@@ -564,7 +592,7 @@ def main() -> int:
     _remove_runtime_files(data_dir)
 
     try:
-        _ensure_postgres(data_dir, install_dir)
+        _ensure_postgres_with_retry(data_dir, install_dir)
         _ensure_minio(data_dir, install_dir)
         proc = _start_server(install_dir, data_dir, port)
     except Exception as exc:

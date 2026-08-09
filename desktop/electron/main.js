@@ -87,6 +87,7 @@ function log(message) {
 
 function runtimePython() {
   const candidates = [
+    path.join(installDir, "runtime", "python.exe"),
     path.join(installDir, "runtime", "Scripts", "python.exe"),
     path.join(installDir, "runtime", "bin", "python.exe"),
   ];
@@ -96,6 +97,17 @@ function runtimePython() {
     }
   }
   return candidates[0];
+}
+
+function ensureDataDirReady() {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const logPath = path.join(dataDir, "electron.log");
+  const lines = [
+    `\n--- spawn backend ${new Date().toISOString()} ---`,
+    `install_dir=${installDir}`,
+    `data_dir=${dataDir}`,
+  ];
+  fs.appendFileSync(logPath, `${lines.join("\n")}\n`, "utf8");
 }
 
 function showError(title, message) {
@@ -271,11 +283,20 @@ function startBackend(port) {
     TENDER_INSTALL_DIR: installDir,
     TENDER_DATA_DIR: dataDir,
     PYTHONUTF8: "1",
+    PYTHONDONTWRITEBYTECODE: "1",
+    PYTHONPYCACHEPREFIX: path.join(dataDir, "pycache"),
   };
+
+  ensureDataDirReady();
+  fs.appendFileSync(
+    path.join(dataDir, "electron.log"),
+    `python=${python}\nscript=${script}\n`,
+    "utf8"
+  );
 
   log(`starting backend: ${python} ${script} --port ${port}`);
   backendProc = spawn(python, [script, "--port", String(port)], {
-    cwd: installDir,
+    cwd: dataDir,
     env,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
