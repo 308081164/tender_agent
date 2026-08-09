@@ -4,8 +4,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-import aspose.words as aw
-
 _license_ready = False
 
 
@@ -19,6 +17,17 @@ def license_path() -> str:
     return get_settings().aspose_license_path
 
 
+def _load_aspose():
+    try:
+        import aspose.words as aw
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "无法加载 Aspose.Words 运行时。请确认已安装 Visual C++ 2015-2022 运行库，"
+            f"并重新安装本程序。原始错误: {exc}"
+        ) from exc
+    return aw
+
+
 def ensure_license(path: str | None = None) -> None:
     global _license_ready
     if _license_ready:
@@ -27,8 +36,9 @@ def ensure_license(path: str | None = None) -> None:
     if not lic_path or not os.path.isfile(lic_path):
         raise RuntimeError(
             f"Aspose 授权文件不存在: {lic_path}。"
-            "请将 Aspose.License.txt 挂载到容器并设置 ASPOSE_LICENSE_PATH。"
+            "请重新安装桌面版，或联系技术支持。"
         )
+    aw = _load_aspose()
     aw.License().set_license(lic_path)
     _license_ready = True
 
@@ -36,6 +46,7 @@ def ensure_license(path: str | None = None) -> None:
 def smoke_test() -> dict:
     """生成最小 docx，用于部署后自检。"""
     ensure_license()
+    aw = _load_aspose()
     doc = aw.Document()
     builder = aw.DocumentBuilder(doc)
     builder.writeln("Aspose.Words smoke test OK")
