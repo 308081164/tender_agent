@@ -12,6 +12,10 @@ $PgVersion = "16.6-1"
 $PgZipName = "postgresql-$PgVersion-windows-x64-binaries.zip"
 $PgUrl = "https://get.enterprisedb.com/postgresql/$PgZipName"
 $MinioUrl = "https://dl.min.io/server/minio/release/windows-amd64/minio.exe"
+$PythonVersion = "3.11.9"
+$EmbedZipName = "python-$PythonVersion-embed-amd64.zip"
+$EmbedUrl = "https://www.python.org/ftp/python/$PythonVersion/$EmbedZipName"
+$GetPipUrl = "https://bootstrap.pypa.io/get-pip.py"
 
 function Resolve-AsposeAssets {
   param([string]$ProjectRoot)
@@ -72,13 +76,22 @@ function Resolve-BuildPython {
   throw "Windows Python 3.11+ not found. Install from python.org."
 }
 
+function Get-RuntimePython {
+  param([string]$RuntimeRoot)
+  $candidates = @(
+    (Join-Path $RuntimeRoot "python.exe"),
+    (Join-Path $RuntimeRoot "Scripts\python.exe"),
+    (Join-Path $RuntimeRoot "bin\python.exe")
+  )
+  foreach ($path in $candidates) {
+    if (Test-Path $path) { return $path }
+  }
+  throw "runtime python.exe missing under $RuntimeRoot"
+}
+
 function Get-VenvPython {
   param([string]$RuntimeRoot)
-  $scripts = Join-Path $RuntimeRoot "Scripts\python.exe"
-  if (Test-Path $scripts) { return $scripts }
-  $bin = Join-Path $RuntimeRoot "bin\python.exe"
-  if (Test-Path $bin) { return $bin }
-  throw "venv python.exe missing under $RuntimeRoot"
+  return Get-RuntimePython -RuntimeRoot $RuntimeRoot
 }
 
 function Get-VenvTool {
@@ -185,17 +198,33 @@ Write-Host "==> Preparing staging directory"
 Remove-DirectorySafe $Stage
 New-Item -ItemType Directory -Path $Stage | Out-Null
 
-Write-Host "==> Creating portable Python runtime"
+Write-Host "==> Creating portable Python embed runtime"
 $Runtime = Join-Path $Stage "runtime"
-& $BuildPython -m venv $Runtime --copies
-$VenvPython = Get-VenvPython $Runtime
-Invoke-PipInstall -PythonExe $VenvPython -Label "upgrade pip" -InstallArgs @("--upgrade", "pip", "-q")
-$VenvPip = Get-VenvTool $Runtime "pip.exe"
-if (-not $VenvPip) { $VenvPip = Get-VenvTool $Runtime "pip3.exe" }
-if (-not $VenvPip) { throw "pip not found in venv" }
+New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
+$EmbedZipPath = Join-Path $env:TEMP $EmbedZipName
+Download-File -Url $EmbedUrl -Destination $EmbedZipPath
+Expand-Archive -Path $EmbedZipPath -DestinationPath $Runtime -Force
+
+$SitePackages = Join-Path $Runtime "Lib\site-packages"
+New-Item -ItemType Directory -Path $SitePackages -Force | Out-Null
+$PthPath = Join-Path $Runtime "python311._pth"
+Set-Content -Path $PthPath -Value @(
+  "python311.zip",
+  ".",
+  "Lib\site-packages",
+  "import site"
+) -Encoding ASCII
+
+$GetPipPath = Join-Path $env:TEMP "get-pip.py"
+Download-File -Url $GetPipUrl -Destination $GetPipPath
+$RuntimePython = Join-Path $Runtime "python.exe"
+& $RuntimePython $GetPipPath --no-warn-script-location
+if ($LASTEXITCODE -ne 0) { throw "get-pip failed for embed runtime" }
+
+Invoke-PipInstall -PythonExe $RuntimePython -Label "upgrade pip" -InstallArgs @("--upgrade", "pip", "-q")
 
 $ReqFile = Join-Path $Root "backend\requirements.txt"
-Invoke-PipInstall -PipExe $VenvPip -Label "install requirements" -InstallArgs @("--no-cache-dir", "-r", $ReqFile)
+Invoke-PipInstall -PythonExe $RuntimePython -Label "install requirements" -InstallArgs @("--no-cache-dir", "-r", $ReqFile)
 
 $AsposeAssets = Resolve-AsposeAssets -ProjectRoot $Root
 $AsposeDir = $AsposeAssets.Dir
@@ -205,7 +234,11 @@ Write-Host "  Aspose wheel: $AsposeWheel"
 if (-not (Test-Path -LiteralPath $AsposeWheel)) {
   throw "Aspose Windows wheel not found: $AsposeWheel"
 }
-Invoke-PipInstall -PipExe $VenvPip -Label "install aspose.words" -InstallArgs @("--no-cache-dir", $AsposeWheel)
+Invoke-PipInstall -PythonExe $RuntimePython -Label "install aspose.words" -InstallArgs @("--no-cache-dir", $AsposeWheel)
+
+Write-Host "==> Verifying portable Python runtime"
+& $RuntimePython -c "import uvicorn, fastapi, sqlalchemy, psycopg2, minio, aspose.words; print('runtime self-test ok')"
+if ($LASTEXITCODE -ne 0) { throw "Portable runtime self-test failed" }
 
 Write-Host "==> Downloading PostgreSQL portable binaries"
 $ToolsDir = Join-Path $Stage "tools"
@@ -342,7 +375,7 @@ foreach ($name in @("runtime", "backend", "frontend", "sample_data", "customer_d
 if (-not (Test-Path (Join-Path $Stage "TenderAgent.exe"))) {
   throw "TenderAgent.exe missing after Electron merge"
 }
-if (-not (Test-Path (Join-Path $Stage "resources\tender-agent\runtime\Scripts\python.exe"))) {
+if (-not (Test-Path (Join-Path $Stage "resources\tender-agent\runtime\python.exe"))) {
   throw "resources/tender-agent runtime missing"
 }
 
