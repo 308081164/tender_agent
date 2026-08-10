@@ -8,6 +8,7 @@
 
 param(
   [switch]$StageOnly,
+  [switch]$SkipStagingBuild,
   [string]$AppVersion = ""
 )
 
@@ -46,6 +47,33 @@ function Format-FileSize([long]$Bytes) {
   if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
   if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
   return "$Bytes B"
+}
+
+function Write-AppVersionManifest {
+  param(
+    [string]$StagePath,
+    [string]$Version,
+    [string]$DisplayVersion = "",
+    [string]$BuildNumber = ""
+  )
+  if (-not $Version) { return }
+
+  $installRoot = Join-Path $StagePath "resources\tender-agent"
+  if (-not (Test-Path -LiteralPath $installRoot)) {
+    $installRoot = $StagePath
+  }
+
+  $commit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA.Substring(0, [Math]::Min(7, $env:GITHUB_SHA.Length)) } else { "local" }
+  $manifest = [ordered]@{
+    version = $Version
+    display_version = if ($DisplayVersion) { $DisplayVersion } else { $Version }
+    build = if ($BuildNumber) { [int]$BuildNumber } else { 0 }
+    commit = $commit
+    built_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  }
+  $path = Join-Path $installRoot "version.json"
+  $manifest | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding UTF8
+  Write-Host "Wrote version manifest: $path ($Version)"
 }
 
 Write-Host "标书智能体离线安装包构建" -ForegroundColor Green
@@ -89,8 +117,12 @@ if (-not $StageOnly) {
 }
 
 Write-Step "Building staging"
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "desktop\build.ps1")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (-not $SkipStagingBuild) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "desktop\build.ps1")
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+} else {
+  Write-Host "Skipping staging build (reusing existing dist/tender-agent-installer-stage)"
+}
 
 if (-not (Test-Path (Join-Path $Stage "TenderAgent.exe"))) {
   Write-Host "TenderAgent.exe not found in staging." -ForegroundColor Red
@@ -98,8 +130,15 @@ if (-not (Test-Path (Join-Path $Stage "TenderAgent.exe"))) {
 }
 
 if ($StageOnly) {
+  if ($AppVersion) {
+    Write-AppVersionManifest -StagePath $Stage -Version $AppVersion
+  }
   Write-Host "Staging ready: $Stage\TenderAgent.exe"
   exit 0
+}
+
+if ($AppVersion) {
+  Write-AppVersionManifest -StagePath $Stage -Version $AppVersion
 }
 
 Write-Step "Compiling installer (Inno Setup)"

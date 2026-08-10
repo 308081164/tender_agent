@@ -612,6 +612,17 @@ def _wait_for_health(port: int, proc: subprocess.Popen, timeout: float = 120.0) 
 
 
 def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
+    global _PG_PROC
+    if _PG_PROC is not None and _PG_PROC.poll() is None:
+        _log(f"stopping postgres pid={_PG_PROC.pid}")
+        _kill_process_tree(_PG_PROC.pid)
+        try:
+            _PG_PROC.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        _PG_PROC = None
+        return
+
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
     pgdata = data_dir / "pgdata"
     if pg_ctl.is_file() and pgdata.is_dir():
