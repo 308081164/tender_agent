@@ -403,7 +403,7 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
         if result.stderr.strip():
             _log(f"pg_ctl stderr: {result.stderr.strip()}")
         _append_log_tail(data_dir, "postgres.log")
-        if _postgres_log_has_admin_error(data_dir) or _is_windows_admin():
+        if _postgres_log_has_admin_error(data_dir):
             raise RuntimeError(_postgres_admin_error_message())
         raise RuntimeError(f"postgres start failed (code {result.returncode})")
 

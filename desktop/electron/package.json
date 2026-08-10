@@ -58,7 +58,8 @@
         }
       ],
       "icon": "icon.ico",
-      "executableName": "TenderAgent"
+      "executableName": "TenderAgent",
+      "requestedExecutionLevel": "asInvoker"
     },
     "asar": true
   }

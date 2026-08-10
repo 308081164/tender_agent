@@ -47,6 +47,50 @@ let isQuitting = false;
 let bootstrapDone = false;
 let loadingErrorTimer = null;
 let appVersionLabel = "";
+let lastBackendStderr = "";
+
+function readLauncherLogTail(maxLines = 8) {
+  try {
+    const logPath = path.join(dataDir, "launcher.log");
+    if (!fs.existsSync(logPath)) {
+      return "";
+    }
+    const lines = fs.readFileSync(logPath, "utf8").split(/\r?\n/).filter(Boolean);
+    const tail = lines.slice(-maxLines);
+    return tail.length ? tail.join("\n") : "";
+  } catch (_err) {
+    return "";
+  }
+}
+
+function formatBackendFailureMessage(code) {
+  const parts = [];
+  if (lastBackendStderr.trim()) {
+    parts.push(`错误详情：${lastBackendStderr.trim()}`);
+  }
+  const launcherTail = readLauncherLogTail();
+  if (launcherTail) {
+    parts.push(`最近日志（launcher.log）：\n${launcherTail}`);
+  }
+  parts.push(
+    `请查看完整日志：\n${path.join(dataDir, "backend.log")}\n${path.join(
+      dataDir,
+      "launcher.log"
+    )}\n${path.join(dataDir, "postgres.log")}`
+  );
+  if (
+    lastBackendStderr.includes("管理员") ||
+    lastBackendStderr.includes("administrative permissions") ||
+    launcherTail.includes("administrative permissions")
+  ) {
+    parts.push(
+      "\n提示：请不要以管理员身份运行标书智能体。右键快捷方式 → 属性 → 兼容性，取消勾选「以管理员身份运行此程序」。"
+    );
+  } else {
+    parts.push(`\n若首次安装后仍失败，可尝试删除数据目录后重试：\n${dataDir}`);
+  }
+  return `后端已意外退出${code !== null ? `（代码 ${code}）` : ""}。\n\n${parts.join("\n\n")}`;
+}
 
 function readAppVersion(dir) {
   const candidates = [
@@ -300,6 +344,7 @@ async function waitForBackend(port, timeoutMs = HEALTH_TIMEOUT_MS) {
 }
 
 function startBackend(port) {
+  lastBackendStderr = "";
   const starter = path.join(installDir, "desktop", "start_backend.cmd");
   const script = path.join(installDir, "desktop", "backend_launcher.py");
   if (!fs.existsSync(starter)) {
@@ -346,6 +391,7 @@ function startBackend(port) {
   backendProc.stderr?.on("data", (chunk) => {
     for (const line of chunk.toString().split(/\r?\n/)) {
       if (line.trim()) {
+        lastBackendStderr = line.trim();
         log(`backend stderr: ${line.trim()}`);
       }
     }
@@ -366,13 +412,7 @@ function startBackend(port) {
     log(`backend exited code=${code} signal=${signal}`);
     backendProc = null;
     if (!isQuitting) {
-      showError(
-        "标书智能体",
-        `后端已意外退出${code !== null ? `（代码 ${code}）` : ""}。\n\n请查看日志：\n${path.join(
-          dataDir,
-          "backend.log"
-        )}\n${path.join(dataDir, "launcher.log")}\n${path.join(dataDir, "postgres.log")}\n\n若首次安装后仍失败，可尝试删除数据目录后重试：\n${dataDir}`
-      );
+      showError("标书智能体", formatBackendFailureMessage(code));
       app.quit();
     }
   });
