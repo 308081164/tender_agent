@@ -259,6 +259,41 @@ def _wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
     return False
 
 
+def _wait_for_port_close(host: str, port: int, timeout: float = 15.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _port_open(host, port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _read_postmaster_pid(pgdata: Path) -> int | None:
+    pid_file = pgdata / "postmaster.pid"
+    if not pid_file.is_file():
+        return None
+    try:
+        first_line = pid_file.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        return int(first_line.strip())
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _cleanup_stale_postmaster_pid(pgdata: Path) -> None:
+    pid_file = pgdata / "postmaster.pid"
+    if not pid_file.is_file():
+        return
+    pid = _read_postmaster_pid(pgdata)
+    if pid is not None and _pid_alive(pid):
+        _log(f"postmaster.pid references live pid={pid}; leaving in place")
+        return
+    _log("removing stale postmaster.pid")
+    try:
+        pid_file.unlink()
+    except OSError:
+        pass
+
+
 def _ensure_postgres_database(
     install_dir: Path, pgdata: Path, psql: Path | None = None
 ) -> None:
@@ -313,17 +348,25 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     pgdata = data_dir / "pgdata"
     initdb = _postgres_bin(install_dir, "initdb.exe")
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
+    postgres_exe = _postgres_bin(install_dir, "postgres.exe")
     psql = _postgres_bin(install_dir, "psql.exe")
-    if not initdb.is_file() or not pg_ctl.is_file():
+    if not initdb.is_file() or not pg_ctl.is_file() or not postgres_exe.is_file():
         raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
 
-    pid_file = pgdata / "postmaster.pid"
-    if pid_file.is_file():
-        _log("removing stale postmaster.pid")
-        try:
-            pid_file.unlink()
-        except OSError:
-            pass
+    existing_pid = _read_postmaster_pid(pgdata)
+    if existing_pid is not None and _pid_alive(existing_pid):
+        _log(f"existing postgres pid={existing_pid}; waiting for port {PG_PORT}")
+        if _wait_for_port("127.0.0.1", PG_PORT, 15):
+            _ensure_postgres_database(install_dir, pgdata, psql)
+            _write_json(
+                data_dir, PG_STATE_FILE, {"port": PG_PORT, "pid": existing_pid, "data_dir": str(pgdata)}
+            )
+            _log("postgres ready")
+            return
+        _log(f"postgres pid={existing_pid} alive but port {PG_PORT} closed; stopping stale process")
+        _kill_process_tree(existing_pid)
+
+    _cleanup_stale_postmaster_pid(pgdata)
 
     if not (pgdata / "PG_VERSION").is_file():
         if pgdata.exists() and any(pgdata.iterdir()):
@@ -378,43 +421,53 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     log_path = data_dir / "postgres.log"
     if _is_windows_admin():
         _log("running as Windows administrator; starting postgres via pg_ctl to drop privileges")
-    _log("starting postgres via pg_ctl")
-    result = subprocess.run(
-        [
-            str(pg_ctl),
-            "-D",
-            str(pgdata),
-            "-l",
-            str(log_path),
-            "-o",
-            f"-p {PG_PORT}",
-            "-w",
-            "start",
-        ],
-        env=_postgres_env(install_dir, pgdata),
-        creationflags=_subprocess_flags(),
-        timeout=60,
-        **_subprocess_capture_kwargs(),
-    )
-    if result.returncode != 0:
-        _log(f"pg_ctl start failed code={result.returncode}")
-        if result.stdout.strip():
-            _log(f"pg_ctl stdout: {result.stdout.strip()}")
-        if result.stderr.strip():
-            _log(f"pg_ctl stderr: {result.stderr.strip()}")
-        _append_log_tail(data_dir, "postgres.log")
-        if _postgres_log_has_admin_error(data_dir):
-            raise RuntimeError(_postgres_admin_error_message())
-        raise RuntimeError(f"postgres start failed (code {result.returncode})")
+        _log("starting postgres via pg_ctl (no wait)")
+        subprocess.Popen(
+            [
+                str(pg_ctl),
+                "-D",
+                str(pgdata),
+                "-l",
+                str(log_path),
+                "-o",
+                f"-p {PG_PORT}",
+                "start",
+            ],
+            env=_postgres_env(install_dir, pgdata),
+            creationflags=_subprocess_flags(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        _log("starting postgres process")
+        log_file = open(log_path, "a", encoding="utf-8")
+        proc = subprocess.Popen(
+            [str(postgres_exe), "-D", str(pgdata), "-p", str(PG_PORT)],
+            env=_postgres_env(install_dir, pgdata),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            creationflags=_subprocess_flags(detach=True),
+        )
+        _PG_PROC = proc
+        _write_json(
+            data_dir, PG_STATE_FILE, {"port": PG_PORT, "pid": proc.pid, "data_dir": str(pgdata)}
+        )
+        if proc.poll() is not None:
+            _log(f"postgres exited early code={proc.returncode}")
+            _append_log_tail(data_dir, "postgres.log")
+            if _postgres_log_has_admin_error(data_dir):
+                raise RuntimeError(_postgres_admin_error_message())
+            raise RuntimeError(f"postgres exited early (code {proc.returncode})")
 
-    if not _wait_for_port("127.0.0.1", PG_PORT, 30):
+    if not _wait_for_port("127.0.0.1", PG_PORT, 60):
         _append_log_tail(data_dir, "postgres.log")
         if _postgres_log_has_admin_error(data_dir):
             raise RuntimeError(_postgres_admin_error_message())
         raise RuntimeError("postgres did not become ready")
 
     _ensure_postgres_database(install_dir, pgdata, psql)
-    _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
+    if _PG_PROC is None:
+        _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
     _log("postgres ready")
 
 
@@ -626,15 +679,14 @@ def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
     pgdata = data_dir / "pgdata"
     if pg_ctl.is_file() and pgdata.is_dir():
-        subprocess.run(
-            [str(pg_ctl), "-D", str(pgdata), "-w", "stop", "fast"],
+        subprocess.Popen(
+            [str(pg_ctl), "-D", str(pgdata), "stop", "fast"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=_postgres_env(install_dir, pgdata),
             creationflags=_subprocess_flags(),
-            timeout=30,
-            check=False,
         )
+        _wait_for_port_close("127.0.0.1", PG_PORT, 15)
 
 
 def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
