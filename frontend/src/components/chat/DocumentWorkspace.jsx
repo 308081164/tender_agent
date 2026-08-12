@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import PdfPreview from '../PdfPreview'
-import SelectableDocPreview from './admin/SelectableDocPreview'
+import SelectableDocPreview from '../admin/SelectableDocPreview'
+import OnlyOfficeEditor from './OnlyOfficeEditor'
 
 export default function DocumentWorkspace({
   sessionId,
@@ -10,6 +11,7 @@ export default function DocumentWorkspace({
   onSelectText,
   onParagraphEdit,
   onRefresh,
+  onlyOfficeEnabled = false,
 }) {
   const [mode, setMode] = useState('pdf')
   const [editingIndex, setEditingIndex] = useState(null)
@@ -21,8 +23,12 @@ export default function DocumentWorkspace({
 
   useEffect(() => {
     setPdfFailed(false)
-    setMode(hasDoc ? 'pdf' : 'structure')
-  }, [sessionId, hasDoc])
+    if (hasDoc && onlyOfficeEnabled) {
+      setMode('onlyoffice')
+    } else {
+      setMode(hasDoc ? 'pdf' : 'structure')
+    }
+  }, [sessionId, hasDoc, onlyOfficeEnabled])
 
   const startEdit = (p) => {
     setEditingIndex(p.index)
@@ -44,6 +50,9 @@ export default function DocumentWorkspace({
           {workspace?.version ? <span className="muted"> v{workspace.version}</span> : null}
         </div>
         <div className="doc-workspace-tabs">
+          {onlyOfficeEnabled && hasDoc ? (
+            <button type="button" className={mode === 'onlyoffice' ? 'active' : ''} onClick={() => setMode('onlyoffice')}>Word 编辑</button>
+          ) : null}
           <button type="button" className={mode === 'pdf' ? 'active' : ''} onClick={() => setMode('pdf')} disabled={!hasDoc}>PDF 预览</button>
           <button type="button" className={mode === 'structure' ? 'active' : ''} onClick={() => setMode('structure')}>段落编辑</button>
           {hasDoc ? (
@@ -56,7 +65,10 @@ export default function DocumentWorkspace({
         <div className="doc-workspace-empty">
           <p>请通过右侧聊天框上传模板 DOCX，或点击 📎 按钮。</p>
           <p className="muted">上传后可按编写要求生成标书，并支持选中片段多轮修改。</p>
+          {onlyOfficeEnabled ? <p className="muted">OnlyOffice 已启用，上传后将自动进入 Word 在线编辑模式。</p> : null}
         </div>
+      ) : mode === 'onlyoffice' && onlyOfficeEnabled ? (
+        <OnlyOfficeEditor sessionId={sessionId} workspace={workspace} onSaved={onRefresh} />
       ) : mode === 'pdf' && pdfSrc && !pdfFailed ? (
         <PdfPreview
           src={pdfSrc}

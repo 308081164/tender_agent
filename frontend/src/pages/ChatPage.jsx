@@ -183,6 +183,7 @@ export default function ChatPage() {
             onSelectText={setSelectedText}
             onParagraphEdit={onParagraphEdit}
             onRefresh={() => refreshWorkspace(sessionId)}
+            onlyOfficeEnabled={!!features.onlyoffice?.enabled}
           />
         </section>
 

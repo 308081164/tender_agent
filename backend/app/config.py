@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     aspose_license_path: str = "/aspose/Aspose.License.txt"
     prefer_customer_pack: bool = True
+    onlyoffice_enabled: bool = False
+    onlyoffice_document_server_url: str = "http://localhost:8080"
+    onlyoffice_jwt_secret: str = "onlyoffice-jwt-secret-change-me"
+    # Document Server 容器访问后端的地址（Docker 内用 http://backend:8000，本机后端用 http://host.docker.internal:8000）
+    onlyoffice_internal_url: str = "http://backend:8000"
 
     @model_validator(mode="before")
     @classmethod

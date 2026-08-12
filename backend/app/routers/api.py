@@ -984,9 +984,12 @@ def list_chat_sessions(db: Session = Depends(get_db)):
 
 @router.get("/chat/features")
 def chat_features():
+    from app.services import onlyoffice as oo_svc
+
     return {
         "feature_cards": chat_assistant.get_feature_cards(),
         "suggested_prompts": chat_assistant.get_suggested_prompts(),
+        "onlyoffice": oo_svc.status_payload(),
     }
 
 
