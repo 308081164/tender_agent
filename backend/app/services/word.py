@@ -91,7 +91,7 @@ def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
     doc = _load_document(docx_bytes)
     headings = []
     paragraphs = []
-    for para in _iter_paragraphs(doc):
+    for idx, para in enumerate(_iter_paragraphs(doc)):
         style = _paragraph_style_name(para)
         text = para.get_text().strip()
         if not text:
@@ -101,6 +101,7 @@ def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
         if is_heading:
             headings.append({"level": level, "text": text})
         paragraphs.append({
+            "index": idx,
             "text": text,
             "style": style,
             "is_heading": is_heading,
@@ -312,3 +313,56 @@ def validate_export(docx_bytes: bytes, required_fields: list[str], fields: dict)
         warnings.append({"level": "yellow", "message": "仍有未生成的 AI 章节标记"})
     status = "green" if not issues and not warnings else ("yellow" if not issues else "red")
     return {"status": status, "issues": issues, "warnings": warnings}
+
+
+def replace_paragraph_text(docx_bytes: bytes, paragraph_index: int, new_text: str) -> bytes:
+    """按段落索引替换正文（保留段落样式）。"""
+    doc = _load_document(docx_bytes)
+    nodes = doc.get_child_nodes(aw.NodeType.PARAGRAPH, True)
+    if paragraph_index < 0 or paragraph_index >= nodes.count:
+        raise ValueError(f"段落索引越界: {paragraph_index}")
+    para = nodes[paragraph_index].as_paragraph()
+    para.remove_all_children()
+    run = aw.Run(doc, new_text or "")
+    para.append_child(run)
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
+def replace_text_snippet(docx_bytes: bytes, old_text: str, new_text: str, *, highlight: bool = False) -> bytes:
+    """替换文档中指定文本片段（用于 Agent 局部修改）。"""
+    if not old_text:
+        raise ValueError("old_text 不能为空")
+    doc = _load_document(docx_bytes)
+    _replace_text(doc, old_text, new_text or "", highlight=highlight)
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
+def simulate_mapping_preview(paragraphs: list[dict], mappings: list[dict]) -> list[dict]:
+    """在前端/后端预览映射效果，不修改实际文档。"""
+    approved = [
+        m for m in mappings
+        if m.get("approved", True) and m.get("action", "replace") != "keep"
+        and (m.get("original_text") or "").strip() and (m.get("key") or "").strip()
+    ]
+    approved.sort(key=lambda x: len(x.get("original_text") or ""), reverse=True)
+    result = []
+    for p in paragraphs:
+        text = p.get("text") or ""
+        display = text
+        applied_keys: list[str] = []
+        for m in approved:
+            original = m.get("original_text") or ""
+            key = m.get("key") or ""
+            if original and original in display:
+                display = display.replace(original, f"{{{{{key}}}}}")
+                applied_keys.append(key)
+        item = dict(p)
+        item["display_text"] = display
+        item["applied_keys"] = applied_keys
+        item["changed"] = display != text
+        result.append(item)
+    return result

@@ -12,7 +12,7 @@ from app.models import (
     ChecklistItem, FAQItem, FieldDef, ChatSession, ChatMessage,
 )
 from app.services import storage, word, checklist as checklist_svc, ai as ai_svc
-from app.services import settings_svc, chat_assistant
+from app.services import settings_svc, chat_assistant, document_agent
 from app.services import pdf_convert
 
 router = APIRouter()
@@ -98,6 +98,7 @@ class ChatSessionUpdate(BaseModel):
 
 class ChatMessageCreate(BaseModel):
     content: str
+    context: dict | None = None
 
 
 class RollbackRequest(BaseModel):
@@ -944,6 +945,7 @@ def session_to_dict(s: ChatSession, include_messages: bool = False) -> dict:
     data = {
         "id": s.id,
         "title": s.title,
+        "workspace": getattr(s, "workspace", None) or {},
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
         "message_count": len(s.messages or []),
@@ -1051,7 +1053,75 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
         for f in faqs
     ]
-    result = await chat_assistant.process_chat_message(content, db, history=history, faq_items=items)
+    result = await chat_assistant.process_chat_message(
+        content,
+        db,
+        history=history,
+        faq_items=items,
+        workspace=getattr(s, "workspace", None) or {},
+        context=body.context or {},
+    )
+
+    meta = dict(result.get("metadata") or {})
+    ws = dict(getattr(s, "workspace", None) or {})
+
+    # 工作区：按模板生成标书
+    if meta.get("needs_workspace_generate"):
+        doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+        if doc_key:
+            from app.models import CompanyProfile
+            company = db.query(CompanyProfile).filter(CompanyProfile.id == 1).first()
+            ctx = ""
+            if company:
+                ctx = f"{company.full_name}\n{company.intro}\n{company.qual_overview}"
+            doc_bytes = storage.download_bytes(doc_key)
+            requirements = meta.get("requirements") or content
+            new_bytes, gen_meta = await document_agent.generate_document_from_template(
+                doc_bytes, requirements, db=db, company_context=ctx,
+            )
+            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_generated.docx"
+            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ws["draft_object_key"] = new_key
+            ws["version"] = int(ws.get("version") or 0) + 1
+            ws["last_action"] = "generate"
+            ws["generation_meta"] = gen_meta
+            s.workspace = ws
+            result["answer"] = (
+                (result.get("answer") or "")
+                + f"\n\n✅ 已生成新标书（版本 v{ws['version']}），请在左侧预览查看。"
+                f" 共填充 {len(gen_meta.get('generated_keys') or [])} 个字段/章节。"
+            )
+            meta["workspace_updated"] = True
+
+    # 工作区：局部修改
+    if meta.get("needs_workspace_edit"):
+        doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+        if doc_key:
+            from app.models import CompanyProfile
+            company = db.query(CompanyProfile).filter(CompanyProfile.id == 1).first()
+            ctx = company.intro if company else ""
+            doc_bytes = storage.download_bytes(doc_key)
+            ctx_sel = body.context or {}
+            new_bytes, revised, edit_meta = await document_agent.edit_document_fragment(
+                doc_bytes,
+                meta.get("instruction") or content,
+                selected_text=meta.get("selected_text") or ctx_sel.get("selected_text") or "",
+                paragraph_index=meta.get("paragraph_index") if meta.get("paragraph_index") is not None else ctx_sel.get("paragraph_index"),
+                db=db,
+                company_context=ctx,
+            )
+            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_edited.docx"
+            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ws["draft_object_key"] = new_key
+            ws["version"] = int(ws.get("version") or 0) + 1
+            ws["last_action"] = "edit"
+            s.workspace = ws
+            result["answer"] = (
+                f"✅ 已应用修订（版本 v{ws['version']}）。\n\n"
+                f"修订后片段预览：\n{revised[:500]}{'…' if len(revised) > 500 else ''}"
+            )
+            meta["workspace_updated"] = True
+            meta["revised_preview"] = revised[:1000]
 
     bot_msg = ChatMessage(
         session_id=s.id,
@@ -1059,7 +1129,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         content=result.get("answer") or "",
         source=result.get("source") or "",
         matched_question=result.get("matched_question") or "",
-        metadata_json=result.get("metadata") or {},
+        metadata_json=meta,
     )
     db.add(bot_msg)
 
@@ -1078,8 +1148,87 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         "source": result.get("source"),
         "matched_question": result.get("matched_question"),
         "mode": result.get("mode"),
-        "metadata": result.get("metadata") or {},
+        "metadata": meta,
     }
+
+
+@router.get("/chat/sessions/{session_id}/workspace")
+def get_chat_workspace(session_id: int, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    ws = getattr(s, "workspace", None) or {}
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    paragraphs = []
+    if doc_key:
+        data = storage.download_bytes(doc_key)
+        preview = word.extract_preview(data, max_paragraphs=800)
+        paragraphs = preview.get("paragraphs") or []
+    return {
+        "workspace": ws,
+        "paragraphs": paragraphs,
+        "pdf_preview_url": f"/api/chat/sessions/{session_id}/workspace/preview.pdf" if doc_key else None,
+        "download_url": f"/api/chat/sessions/{session_id}/workspace/download" if doc_key else None,
+    }
+
+
+@router.get("/chat/sessions/{session_id}/workspace/preview.pdf")
+def chat_workspace_preview_pdf(session_id: int, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    ws = getattr(s, "workspace", None) or {}
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if not doc_key:
+        raise HTTPException(404, "工作区暂无文档")
+    data = storage.download_bytes(doc_key)
+    pdf_bytes = word.convert_docx_to_pdf(data)
+    fname = ws.get("filename") or "workspace.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{quote(fname.replace(".docx", ".pdf"))}"'},
+    )
+
+
+@router.get("/chat/sessions/{session_id}/workspace/download")
+def chat_workspace_download(session_id: int, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    ws = getattr(s, "workspace", None) or {}
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if not doc_key:
+        raise HTTPException(404, "工作区暂无文档")
+    data = storage.download_bytes(doc_key)
+    fname = ws.get("filename") or "document.docx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{quote(fname)}"'},
+    )
+
+
+@router.post("/chat/sessions/{session_id}/workspace/paragraph")
+async def update_workspace_paragraph(
+    session_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+):
+    """用户手动编辑某段落。"""
+    s = get_session_or_404(db, session_id)
+    ws = dict(getattr(s, "workspace", None) or {})
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if not doc_key:
+        raise HTTPException(400, "请先上传模板文档")
+    paragraph_index = int(body.get("paragraph_index", -1))
+    new_text = str(body.get("text") or "")
+    data = storage.download_bytes(doc_key)
+    new_bytes = word.replace_paragraph_text(data, paragraph_index, new_text)
+    new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_manual.docx"
+    storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    ws["draft_object_key"] = new_key
+    ws["version"] = int(ws.get("version") or 0) + 1
+    ws["last_action"] = "manual_edit"
+    s.workspace = ws
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    preview = word.extract_preview(new_bytes, max_paragraphs=800)
+    return {"workspace": ws, "paragraphs": preview.get("paragraphs") or []}
 
 
 @router.post("/chat/sessions/{session_id}/upload")
@@ -1101,14 +1250,21 @@ async def upload_chat_file(
     is_docx = fname.lower().endswith(".docx")
     if is_docx:
         placeholders = word.extract_placeholders(data)
+        ws = dict(getattr(s, "workspace", None) or {})
+        ws["template_object_key"] = key
+        ws["draft_object_key"] = key
+        ws["filename"] = fname
+        ws["version"] = 1
+        ws["last_action"] = "upload"
+        s.workspace = ws
         answer = (
-            f"已收到文件「{fname}」（{len(data) // 1024} KB）。\n\n"
-            f"检测到 {len(placeholders)} 个已有占位符。"
-            "如需将完整标书转为模板，请前往「数据管理 → 模板」上传并使用「智能识别占位符」功能。"
+            f"已加载模板「{fname}」到左侧工作区（{len(data) // 1024} KB）。\n\n"
+            f"检测到 {len(placeholders)} 个占位符。\n"
+            "请说明编写要求，例如：「按模板生成标书，项目名称…，招标人…」。"
+            "也可选中左侧段落发送修改指令。"
         )
         actions = [
-            {"type": "link", "label": "上传为模板", "url": "/admin/templates/new", "primary": True},
-            {"type": "link", "label": "智能识别占位符说明", "url": "/admin/templates"},
+            {"type": "link", "label": "下载当前文档", "url": f"/api/chat/sessions/{session_id}/workspace/download"},
         ]
     else:
         answer = f"已收到文件「{fname}」。当前支持 DOCX 标书文件的模板化分析，其他格式可作为参考资料。"
@@ -1139,6 +1295,7 @@ async def upload_chat_file(
         "assistant_message": message_to_dict(bot_msg),
         "filename": fname,
         "object_key": key,
+        "workspace": getattr(s, "workspace", None) or {},
     }
 
 

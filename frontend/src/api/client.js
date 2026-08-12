@@ -98,10 +98,21 @@ export const api = {
       body: JSON.stringify({ mappings }),
     }),
   listChatMessages: (id) => request(`/chat/sessions/${id}/messages`),
-  sendChatMessage: (sessionId, content) =>
+  sendChatMessage: (sessionId, content, context = null) =>
     request(`/chat/sessions/${sessionId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, context }),
+    }),
+  getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),
+  updateWorkspaceParagraph: (sessionId, paragraphIndex, text) =>
+    request(`/chat/sessions/${sessionId}/workspace/paragraph`, {
+      method: 'POST',
+      body: JSON.stringify({ paragraph_index: paragraphIndex, text }),
+    }),
+  previewTemplateMappings: (id, mappings) =>
+    request(`/admin/templates/${id}/preview-mappings`, {
+      method: 'POST',
+      body: JSON.stringify({ mappings }),
     }),
   faqs: () => request('/chatbot/faqs'),
   getSettings: () => request('/settings'),

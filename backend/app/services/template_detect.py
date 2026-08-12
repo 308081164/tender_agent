@@ -120,7 +120,10 @@ def apply_placeholder_mappings(
     """应用用户确认的映射，返回新文档、source_snapshot、占位符列表。"""
     approved = [
         m for m in (mappings or [])
-        if m.get("approved", True) and (m.get("original_text") or "").strip() and (m.get("key") or "").strip()
+        if m.get("approved", True)
+        and m.get("action", "replace") != "keep"
+        and (m.get("original_text") or "").strip()
+        and (m.get("key") or "").strip()
     ]
     pairs: list[tuple[str, str]] = []
     snapshot: dict[str, str] = {}

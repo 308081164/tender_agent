@@ -502,6 +502,7 @@ class PlaceholderMappingIn(BaseModel):
     key: str
     original_text: str
     approved: bool = True
+    action: str = "replace"  # replace | keep
     field_name: str = ""
 
 
@@ -509,6 +510,32 @@ class ApplyPlaceholdersIn(BaseModel):
     mappings: list[PlaceholderMappingIn]
     kind: str | None = None
     set_enabled: bool = True
+
+
+class PreviewMappingsIn(BaseModel):
+    mappings: list[PlaceholderMappingIn]
+
+
+@router.post("/templates/{template_id}/preview-mappings")
+def preview_template_mappings(
+    template_id: int,
+    body: PreviewMappingsIn,
+    db: Session = Depends(get_db),
+):
+    """预览映射效果（不写入文档），用于工程化编辑工作台。"""
+    t = _get_template_or_404(db, template_id)
+    if not t.object_key:
+        raise HTTPException(400, "模板文件不存在")
+    data = storage.download_bytes(t.object_key)
+    preview = word.extract_preview(data, max_paragraphs=800)
+    mappings = [m.model_dump() for m in body.mappings]
+    paragraphs = word.simulate_mapping_preview(preview.get("paragraphs") or [], mappings)
+    approved = [m for m in mappings if m.get("approved", True) and m.get("action", "replace") != "keep"]
+    return {
+        "paragraphs": paragraphs,
+        "approved_count": len(approved),
+        "placeholder_keys": sorted({m.get("key") for m in approved if m.get("key")}),
+    }
 
 
 @router.post("/templates/{template_id}/detect-placeholders")

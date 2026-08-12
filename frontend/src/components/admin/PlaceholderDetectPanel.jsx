@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react'
 import { useApp } from '../../App'
 import { api } from '../../api/client'
 
-export default function PlaceholderDetectPanel({ templateId, onApplied, onCandidatesChange }) {
+export default function PlaceholderDetectPanel({ templateId, onApplied, onCandidatesChange, onOpenEngineer }) {
   const { showToast } = useApp()
   const [detecting, setDetecting] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -60,9 +60,16 @@ export default function PlaceholderDetectPanel({ templateId, onApplied, onCandid
             基于大语言模型分析完整标书，自动识别项目名称、招标编号等可替换信息，并工程化为 <code>{'{{key}}'}</code> 占位符。
           </p>
         </div>
-        <button type="button" onClick={detect} disabled={detecting}>
-          {detecting ? '识别中…' : '开始识别'}
-        </button>
+        <div className="placeholder-detect-actions-row">
+          <button type="button" onClick={detect} disabled={detecting}>
+            {detecting ? '识别中…' : '快速识别'}
+          </button>
+          {onOpenEngineer ? (
+            <button type="button" className="primary" onClick={onOpenEngineer}>
+              进入工程化工作台
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {existing.length > 0 ? (

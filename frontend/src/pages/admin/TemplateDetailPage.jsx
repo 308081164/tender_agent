@@ -95,6 +95,7 @@ export default function TemplateDetailPage() {
         saving={saving}
         extra={!isNew ? (
           <>
+            <button type="button" className="ghost" onClick={() => navigate(`/admin/templates/${id}/engineer`)}>模板工程化</button>
             <button type="button" className="ghost" onClick={() => navigate(`/admin/templates/${id}/preview`)}>查看内容</button>
             <a className="ghost linkish" href={api.adminTemplateDownloadUrl(id)} download>下载 DOCX</a>
           </>
@@ -106,6 +107,7 @@ export default function TemplateDetailPage() {
             templateId={id}
             onApplied={onApplied}
             onCandidatesChange={onDetectPreview}
+            onOpenEngineer={() => navigate(`/admin/templates/${id}/engineer`)}
           />
           <div className="card-block admin-template-preview-page" style={{ marginBottom: 16 }}>
             <div className="placeholder-preview-legend">
