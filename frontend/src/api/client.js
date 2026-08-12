@@ -80,11 +80,41 @@ export const api = {
     request('/chat/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   getChatSession: (id) => request(`/chat/sessions/${id}`),
   deleteChatSession: (id) => request(`/chat/sessions/${id}`, { method: 'DELETE' }),
+  renameChatSession: (id, title) =>
+    request(`/chat/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  getChatFeatures: () => request('/chat/features'),
+  uploadChatFile: async (sessionId, file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/chat/sessions/${sessionId}/upload`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
+  detectTemplatePlaceholders: (id) =>
+    request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
+  applyTemplatePlaceholders: (id, mappings) =>
+    request(`/admin/templates/${id}/apply-placeholders`, {
+      method: 'POST',
+      body: JSON.stringify({ mappings }),
+    }),
   listChatMessages: (id) => request(`/chat/sessions/${id}/messages`),
-  sendChatMessage: (sessionId, content) =>
+  sendChatMessage: (sessionId, content, context = null) =>
     request(`/chat/sessions/${sessionId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, context }),
+    }),
+  getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),
+  getOnlyOfficeConfig: (sessionId) => request(`/chat/sessions/${sessionId}/onlyoffice/config`),
+  getOnlyOfficeStatus: () => request('/onlyoffice/status'),
+  updateWorkspaceParagraph: (sessionId, paragraphIndex, text) =>
+    request(`/chat/sessions/${sessionId}/workspace/paragraph`, {
+      method: 'POST',
+      body: JSON.stringify({ paragraph_index: paragraphIndex, text }),
+    }),
+  previewTemplateMappings: (id, mappings) =>
+    request(`/admin/templates/${id}/preview-mappings`, {
+      method: 'POST',
+      body: JSON.stringify({ mappings }),
     }),
   faqs: () => request('/chatbot/faqs'),
   getSettings: () => request('/settings'),

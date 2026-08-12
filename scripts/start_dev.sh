@@ -14,14 +14,18 @@ export MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
 export MINIO_BUCKET="${MINIO_BUCKET:-tender-agent}"
 export SAMPLE_DATA_DIR="${SAMPLE_DATA_DIR:-$ROOT/sample_data}"
 export CORS_ORIGINS="${CORS_ORIGINS:-*}"
+export ONLYOFFICE_ENABLED="${ONLYOFFICE_ENABLED:-true}"
+export ONLYOFFICE_DOCUMENT_SERVER_URL="${ONLYOFFICE_DOCUMENT_SERVER_URL:-http://localhost:8080}"
+export ONLYOFFICE_JWT_SECRET="${ONLYOFFICE_JWT_SECRET:-onlyoffice-jwt-secret-change-me}"
+export ONLYOFFICE_INTERNAL_URL="${ONLYOFFICE_INTERNAL_URL:-http://host.docker.internal:8000}"
 
 if [ ! -x "$ROOT/.venv/bin/python" ]; then
   echo "未找到 .venv，请先运行: bash scripts/setup_python.sh"
   exit 1
 fi
 
-echo "启动基础设施 (db / minio / frontend)..."
-docker compose up -d db minio frontend
+echo "启动基础设施 (db / minio / onlyoffice / frontend)..."
+docker compose up -d db minio onlyoffice frontend
 
 echo "停止 Docker 内 backend（改用本机 Python 3.11）..."
 docker compose stop backend 2>/dev/null || true

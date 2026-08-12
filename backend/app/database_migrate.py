@@ -23,6 +23,8 @@ ALTERS = [
     "ALTER TABLE field_defs ADD COLUMN IF NOT EXISTS company_field VARCHAR(100) DEFAULT ''",
     "ALTER TABLE field_defs ADD COLUMN IF NOT EXISTS desensitized BOOLEAN DEFAULT FALSE",
     "ALTER TABLE field_defs ALTER COLUMN default_value TYPE VARCHAR(500)",
+    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata JSON DEFAULT '{}'::json",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS workspace JSON DEFAULT '{}'::json",
 ]
 
 

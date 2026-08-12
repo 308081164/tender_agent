@@ -3,7 +3,7 @@ import { api } from '../../api/client'
 import PdfPreview from '../PdfPreview'
 import DocxTextPreview from './DocxTextPreview'
 
-export default function TemplatePreviewPanel({ templateId, compact = false }) {
+export default function TemplatePreviewPanel({ templateId, compact = false, highlightTexts = [] }) {
   const [preview, setPreview] = useState(null)
   const [mode, setMode] = useState('pdf')
   const [loading, setLoading] = useState(true)
@@ -82,7 +82,11 @@ export default function TemplatePreviewPanel({ templateId, compact = false }) {
           }}
         />
       ) : (
-        <DocxTextPreview paragraphs={preview.paragraphs} truncated={preview.truncated} />
+        <DocxTextPreview
+          paragraphs={preview.paragraphs}
+          truncated={preview.truncated}
+          highlightTexts={highlightTexts}
+        />
       )}
       {preview.placeholder_count > 0 ? (
         <div className="admin-preview-meta muted">

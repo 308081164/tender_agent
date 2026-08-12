@@ -15,6 +15,7 @@ import FieldDetailPage from './pages/admin/FieldDetailPage'
 import TemplatesListPage from './pages/admin/TemplatesListPage'
 import TemplateDetailPage from './pages/admin/TemplateDetailPage'
 import TemplatePreviewPage from './pages/admin/TemplatePreviewPage'
+import TemplateEngineerPage from './pages/admin/TemplateEngineerPage'
 import QualificationsListPage from './pages/admin/QualificationsListPage'
 import QualificationDetailPage from './pages/admin/QualificationDetailPage'
 import ChecklistListPage from './pages/admin/ChecklistListPage'
@@ -22,6 +23,7 @@ import ChecklistDetailPage from './pages/admin/ChecklistDetailPage'
 import FaqsListPage from './pages/admin/FaqsListPage'
 import FaqDetailPage from './pages/admin/FaqDetailPage'
 import ImportPage from './pages/admin/ImportPage'
+import ChatPage from './pages/ChatPage'
 import './styles/app.css'
 
 createRoot(document.getElementById('root')).render(
@@ -29,6 +31,7 @@ createRoot(document.getElementById('root')).render(
     <BrowserRouter>
       <Routes>
         <Route element={<App />}>
+          <Route path="chat" element={<ChatPage />} />
           <Route element={<MainLayoutRoute />}>
             <Route index element={<HomePage />} />
             <Route path="projects/new" element={<NewProjectPage />} />
@@ -43,6 +46,7 @@ createRoot(document.getElementById('root')).render(
             <Route path="fields" element={<FieldsListPage />} />
             <Route path="fields/:id" element={<FieldDetailPage />} />
             <Route path="templates" element={<TemplatesListPage />} />
+            <Route path="templates/:id/engineer" element={<TemplateEngineerPage />} />
             <Route path="templates/:id/preview" element={<TemplatePreviewPage />} />
             <Route path="templates/:id" element={<TemplateDetailPage />} />
             <Route path="qualifications" element={<QualificationsListPage />} />

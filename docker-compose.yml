@@ -32,6 +32,17 @@ services:
       timeout: 5s
       retries: 10
 
+  onlyoffice:
+    image: onlyoffice/documentserver:8.2.2
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-onlyoffice-jwt-secret-change-me}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
   # 注意：Aspose.Words 仅提供 Linux x86_64 whl。
   # Apple Silicon（Colima/arm64）请用 scripts/dev_mac.sh 在宿主机跑后端。
   # x86_64 Linux 服务器可用：docker compose --profile linux-backend up -d
@@ -52,6 +63,10 @@ services:
       ASPOSE_LICENSE_PATH: /aspose/Aspose.License.txt
       CUSTOMER_DATA_DIR: /app/customer_data/heyuanzhineng_20260729
       PREFER_CUSTOMER_PACK: "true"
+      ONLYOFFICE_ENABLED: ${ONLYOFFICE_ENABLED:-true}
+      ONLYOFFICE_DOCUMENT_SERVER_URL: ${ONLYOFFICE_DOCUMENT_SERVER_URL:-http://localhost:8080}
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:-onlyoffice-jwt-secret-change-me}
+      ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://backend:8000}
     volumes:
       - ./sample_data:/app/sample_data:ro
       - ./customer_data:/app/customer_data:ro

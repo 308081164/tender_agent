@@ -20,7 +20,7 @@ from app.models import (
     ChecklistItem,
     FAQItem,
 )
-from app.services import storage, word, pdf_convert
+from app.services import storage, word, pdf_convert, template_detect
 from app.seed.import_customer_pack import run_import
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -496,6 +496,110 @@ async def admin_upload_template(
     db.commit()
     db.refresh(t)
     return tpl_dict(t)
+
+
+class PlaceholderMappingIn(BaseModel):
+    key: str
+    original_text: str
+    approved: bool = True
+    action: str = "replace"  # replace | keep
+    field_name: str = ""
+
+
+class ApplyPlaceholdersIn(BaseModel):
+    mappings: list[PlaceholderMappingIn]
+    kind: str | None = None
+    set_enabled: bool = True
+
+
+class PreviewMappingsIn(BaseModel):
+    mappings: list[PlaceholderMappingIn]
+
+
+@router.post("/templates/{template_id}/preview-mappings")
+def preview_template_mappings(
+    template_id: int,
+    body: PreviewMappingsIn,
+    db: Session = Depends(get_db),
+):
+    """预览映射效果（不写入文档），用于工程化编辑工作台。"""
+    t = _get_template_or_404(db, template_id)
+    if not t.object_key:
+        raise HTTPException(400, "模板文件不存在")
+    data = storage.download_bytes(t.object_key)
+    preview = word.extract_preview(data, max_paragraphs=800)
+    mappings = [m.model_dump() for m in body.mappings]
+    paragraphs = word.simulate_mapping_preview(preview.get("paragraphs") or [], mappings)
+    approved = [m for m in mappings if m.get("approved", True) and m.get("action", "replace") != "keep"]
+    return {
+        "paragraphs": paragraphs,
+        "approved_count": len(approved),
+        "placeholder_keys": sorted({m.get("key") for m in approved if m.get("key")}),
+    }
+
+
+@router.post("/templates/{template_id}/detect-placeholders")
+async def detect_template_placeholders(template_id: int, db: Session = Depends(get_db)):
+    """使用 LLM + 规则从完整标书中识别可模板化的字段原文。"""
+    t = _get_template_or_404(db, template_id)
+    if not t.object_key:
+        raise HTTPException(400, "模板文件不存在")
+    data = storage.download_bytes(t.object_key)
+    field_defs = [
+        {
+            "key": f.key,
+            "name": f.name,
+            "field_type": f.field_type,
+            "module": f.module,
+        }
+        for f in db.query(FieldDef).order_by(FieldDef.sort_order.asc()).all()
+    ]
+    result = await template_detect.detect_placeholder_candidates(data, field_defs, db=db)
+    result["template_id"] = t.id
+    result["template_name"] = t.name
+    return result
+
+
+@router.post("/templates/{template_id}/apply-placeholders")
+async def apply_template_placeholders(
+    template_id: int,
+    body: ApplyPlaceholdersIn,
+    db: Session = Depends(get_db),
+):
+    """将确认的映射应用到 DOCX，替换为 {{key}} 并更新模板元数据。"""
+    t = _get_template_or_404(db, template_id)
+    if not t.object_key:
+        raise HTTPException(400, "模板文件不存在")
+    data = storage.download_bytes(t.object_key)
+    mappings = [m.model_dump() for m in body.mappings]
+    new_bytes, snapshot, placeholders = template_detect.apply_placeholder_mappings(data, mappings)
+    new_key = f"templates/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_engineered_{t.name}.docx"
+    storage.upload_bytes(
+        new_key,
+        new_bytes,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    old_key = t.object_key
+    t.object_key = new_key
+    t.placeholders = {"list": placeholders, "detected": True}
+    t.source_snapshot = {**(t.source_snapshot or {}), **snapshot}
+    if body.kind:
+        t.kind = body.kind
+    if body.set_enabled:
+        t.enabled = True
+    db.commit()
+    db.refresh(t)
+    if old_key and old_key != new_key:
+        try:
+            storage.delete_object(old_key)
+        except Exception:
+            pass
+    return {
+        "template": tpl_dict(t),
+        "applied_count": len(snapshot),
+        "placeholders": placeholders,
+        "source_snapshot": snapshot,
+    }
 
 
 def qual_dict(q: Qualification) -> dict:

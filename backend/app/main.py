@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import IS_DESKTOP, ROOT, get_settings
 from app.database_migrate import ensure_schema
-from app.routers import api, admin
+from app.routers import api, admin, onlyoffice
 from app.seed.load_sample import run_seed
 from app.seed.import_customer_pack import run_import, pack_root
 from app.services.aspose_runtime import ensure_license
@@ -48,6 +48,7 @@ app.add_middleware(
 
 app.include_router(api.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(onlyoffice.router, prefix="/api")
 
 
 STATIC_DIR = ROOT / "frontend" / "dist"
