@@ -201,6 +201,40 @@ async def answer_faq(
     }
 
 
+async def detect_placeholder_candidates(
+    document_text: str,
+    field_defs: list[dict],
+    db: Session | None = None,
+) -> list[dict]:
+    """使用 LLM 从标书正文中识别可替换为占位符的原文片段。"""
+    import json
+
+    if not document_text.strip() or not field_defs:
+        return []
+
+    catalog = json.dumps(field_defs[:80], ensure_ascii=False)
+    prompt = (
+        "你是铁路/轨道交通行业标书模板工程化专家。"
+        "请分析文档正文，找出应替换为模板占位符的具体原文片段。\n\n"
+        f"可用字段目录（key 必须从中选择）：\n{catalog}\n\n"
+        f"文档正文（节选）：\n{document_text[:14000]}\n\n"
+        "要求：\n"
+        "1. original_text 必须是文档中可精确搜索到的连续原文，优先较长片段\n"
+        "2. 同一 key 可有多处，但避免过短（<4字）或泛化词\n"
+        "3. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason\n"
+        "4. 只返回 JSON，不要 markdown 代码块\n"
+        "5. 最多 25 项，按 confidence 降序"
+    )
+    raw = await chat_completion([
+        {"role": "system", "content": "你是标书模板工程化助手，只输出合法 JSON 数组。"},
+        {"role": "user", "content": prompt},
+    ], db=db)
+    if not raw:
+        return []
+    from app.services.template_detect import parse_llm_candidate_json
+    return parse_llm_candidate_json(raw)
+
+
 async def test_provider(provider: str, db: Session | None = None) -> dict:
     """连通性测试"""
     cfg = settings_svc.resolve_ai_config(db)

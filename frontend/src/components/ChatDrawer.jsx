@@ -38,6 +38,7 @@ export default function ChatDrawer({
             >
               {showHistory ? '返回对话' : '历史'}
             </button>
+            <a className="ghost linkish" href="/chat" onClick={(e) => { e.preventDefault(); onClose(); window.location.href = '/chat' }}>全屏模式</a>
             <button type="button" className="ghost" onClick={onClose} aria-label="关闭">
               ×
             </button>

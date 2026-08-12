@@ -12,7 +12,7 @@ from app.models import (
     ChecklistItem, FAQItem, FieldDef, ChatSession, ChatMessage,
 )
 from app.services import storage, word, checklist as checklist_svc, ai as ai_svc
-from app.services import settings_svc
+from app.services import settings_svc, chat_assistant
 from app.services import pdf_convert
 
 router = APIRouter()
@@ -90,6 +90,10 @@ class ChatRequest(BaseModel):
 
 class ChatSessionCreate(BaseModel):
     title: str = "新对话"
+
+
+class ChatSessionUpdate(BaseModel):
+    title: str
 
 
 class ChatMessageCreate(BaseModel):
@@ -950,6 +954,7 @@ def session_to_dict(s: ChatSession, include_messages: bool = False) -> dict:
 
 
 def message_to_dict(m: ChatMessage) -> dict:
+    meta = getattr(m, "metadata_json", None) or {}
     return {
         "id": m.id,
         "session_id": m.session_id,
@@ -957,6 +962,7 @@ def message_to_dict(m: ChatMessage) -> dict:
         "content": m.content,
         "source": m.source or "",
         "matched_question": m.matched_question or "",
+        "metadata": meta if isinstance(meta, dict) else {},
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }
 
@@ -972,6 +978,14 @@ def get_session_or_404(db: Session, session_id: int) -> ChatSession:
 def list_chat_sessions(db: Session = Depends(get_db)):
     items = db.query(ChatSession).order_by(ChatSession.updated_at.desc()).all()
     return [session_to_dict(s) for s in items]
+
+
+@router.get("/chat/features")
+def chat_features():
+    return {
+        "feature_cards": chat_assistant.get_feature_cards(),
+        "suggested_prompts": chat_assistant.get_suggested_prompts(),
+    }
 
 
 @router.post("/chat/sessions")
@@ -995,6 +1009,19 @@ def delete_chat_session(session_id: int, db: Session = Depends(get_db)):
     db.delete(s)
     db.commit()
     return {"ok": True}
+
+
+@router.patch("/chat/sessions/{session_id}")
+def update_chat_session(session_id: int, body: ChatSessionUpdate, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "标题不能为空")
+    s.title = title[:200]
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(s)
+    return session_to_dict(s)
 
 
 @router.get("/chat/sessions/{session_id}/messages")
@@ -1024,7 +1051,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
         for f in faqs
     ]
-    result = await ai_svc.answer_faq(content, items, db=db, history=history)
+    result = await chat_assistant.process_chat_message(content, db, history=history, faq_items=items)
 
     bot_msg = ChatMessage(
         session_id=s.id,
@@ -1032,6 +1059,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         content=result.get("answer") or "",
         source=result.get("source") or "",
         matched_question=result.get("matched_question") or "",
+        metadata_json=result.get("metadata") or {},
     )
     db.add(bot_msg)
 
@@ -1050,6 +1078,67 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         "source": result.get("source"),
         "matched_question": result.get("matched_question"),
         "mode": result.get("mode"),
+        "metadata": result.get("metadata") or {},
+    }
+
+
+@router.post("/chat/sessions/{session_id}/upload")
+async def upload_chat_file(
+    session_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """上传文件到对话上下文（如标书 DOCX），并返回引导信息。"""
+    s = get_session_or_404(db, session_id)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "文件为空")
+    fname = file.filename or "upload.bin"
+    key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{fname}"
+    content_type = file.content_type or "application/octet-stream"
+    storage.upload_bytes(key, data, content_type)
+
+    is_docx = fname.lower().endswith(".docx")
+    if is_docx:
+        placeholders = word.extract_placeholders(data)
+        answer = (
+            f"已收到文件「{fname}」（{len(data) // 1024} KB）。\n\n"
+            f"检测到 {len(placeholders)} 个已有占位符。"
+            "如需将完整标书转为模板，请前往「数据管理 → 模板」上传并使用「智能识别占位符」功能。"
+        )
+        actions = [
+            {"type": "link", "label": "上传为模板", "url": "/admin/templates/new", "primary": True},
+            {"type": "link", "label": "智能识别占位符说明", "url": "/admin/templates"},
+        ]
+    else:
+        answer = f"已收到文件「{fname}」。当前支持 DOCX 标书文件的模板化分析，其他格式可作为参考资料。"
+        actions = [{"type": "link", "label": "前往数据管理", "url": "/admin"}]
+
+    user_msg = ChatMessage(
+        session_id=s.id,
+        role="user",
+        content=f"[上传文件] {fname}",
+        metadata_json={"attachment": {"filename": fname, "object_key": key, "size": len(data)}},
+    )
+    db.add(user_msg)
+    bot_msg = ChatMessage(
+        session_id=s.id,
+        role="assistant",
+        content=answer,
+        metadata_json={"intent": "file_upload", "actions": actions, "attachment_key": key},
+    )
+    db.add(bot_msg)
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(bot_msg)
+    db.refresh(s)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": message_to_dict(bot_msg),
+        "filename": fname,
+        "object_key": key,
     }
 
 

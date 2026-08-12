@@ -6,6 +6,7 @@ import AdminDetailHeader from '../../components/admin/AdminDetailHeader'
 import AdminConfirmDialog from '../../components/admin/AdminConfirmDialog'
 import AdminFormSection, { AdminField } from '../../components/admin/AdminFormSection'
 import TemplatePreviewPanel from '../../components/admin/TemplatePreviewPanel'
+import PlaceholderDetectPanel from '../../components/admin/PlaceholderDetectPanel'
 import { TEMPLATE_CODES, TEMPLATE_KINDS } from '../../constants/admin'
 
 export default function TemplateDetailPage() {
@@ -20,19 +21,26 @@ export default function TemplateDetailPage() {
   const [tpl, setTpl] = useState(null)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [highlightTexts, setHighlightTexts] = useState([])
+  const [previewKey, setPreviewKey] = useState(0)
+
+  const reload = async () => {
+    const t = await api.getTemplate(id)
+    setTpl(t)
+    setForm({
+      name: t.name || '',
+      description: t.description || '',
+      template_code: t.template_code || 'common',
+      kind: t.kind || 'template',
+      enabled: t.enabled !== false,
+    })
+    setPreviewKey((k) => k + 1)
+    return t
+  }
 
   useEffect(() => {
     if (isNew) return
-    api.getTemplate(id).then((t) => {
-      setTpl(t)
-      setForm({
-        name: t.name || '',
-        description: t.description || '',
-        template_code: t.template_code || 'common',
-        kind: t.kind || 'template',
-        enabled: t.enabled !== false,
-      })
-    }).catch((e) => showToast(e.message))
+    reload().catch((e) => showToast(e.message))
   }, [id, isNew, showToast])
 
   const save = async () => {
@@ -65,6 +73,16 @@ export default function TemplateDetailPage() {
     navigate('/admin/templates')
   }
 
+  const onDetectPreview = (candidates) => {
+    setHighlightTexts((candidates || []).map((c) => c.original_text).filter(Boolean))
+  }
+
+  const onApplied = async () => {
+    setHighlightTexts([])
+    await reload()
+    await refreshBaseData?.()
+  }
+
   const placeholders = tpl?.placeholders?.list || []
 
   return (
@@ -83,10 +101,29 @@ export default function TemplateDetailPage() {
         ) : null}
       />
       {!isNew ? (
-        <div className="card-block admin-template-preview-page" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginTop: 0 }}>文档预览</h3>
-          <TemplatePreviewPanel templateId={id} compact />
-        </div>
+        <>
+          <PlaceholderDetectPanel
+            templateId={id}
+            onApplied={onApplied}
+            onCandidatesChange={onDetectPreview}
+          />
+          <div className="card-block admin-template-preview-page" style={{ marginBottom: 16 }}>
+            <div className="placeholder-preview-legend">
+              <h3 style={{ margin: 0 }}>文档预览</h3>
+              <div className="legend-items">
+                <span><mark className="placeholder-token">{'{{key}}'}</mark> 已应用占位符</span>
+                <span><mark className="detected-token">原文</mark> 待替换高亮</span>
+                <span><mark className="ai-marker-token">AI 标记</mark> AI 生成章节位</span>
+              </div>
+            </div>
+            <TemplatePreviewPanel
+              key={previewKey}
+              templateId={id}
+              compact
+              highlightTexts={highlightTexts}
+            />
+          </div>
+        </>
       ) : null}
       <div className="admin-detail-grid">
         <div className="card-block">
@@ -118,9 +155,9 @@ export default function TemplateDetailPage() {
             <h3>占位符 ({placeholders.length})</h3>
             {placeholders.length ? (
               <ul className="admin-tag-list">
-                {placeholders.map((p) => <li key={p}><code>{`{{${p}}}`}</code></li>)}
+                {placeholders.map((p) => <li key={p}><code className="placeholder-tag">{`{{${p}}}`}</code></li>)}
               </ul>
-            ) : <p className="muted">未检测到占位符</p>}
+            ) : <p className="muted">未检测到占位符，可使用上方「智能识别」从完整标书生成</p>}
             {tpl?.kind === 'history' && tpl?.source_snapshot ? (
               <>
                 <h3 style={{ marginTop: 16 }}>智能替换快照</h3>

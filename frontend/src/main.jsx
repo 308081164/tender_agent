@@ -22,6 +22,7 @@ import ChecklistDetailPage from './pages/admin/ChecklistDetailPage'
 import FaqsListPage from './pages/admin/FaqsListPage'
 import FaqDetailPage from './pages/admin/FaqDetailPage'
 import ImportPage from './pages/admin/ImportPage'
+import ChatPage from './pages/ChatPage'
 import './styles/app.css'
 
 createRoot(document.getElementById('root')).render(
@@ -29,6 +30,7 @@ createRoot(document.getElementById('root')).render(
     <BrowserRouter>
       <Routes>
         <Route element={<App />}>
+          <Route path="chat" element={<ChatPage />} />
           <Route element={<MainLayoutRoute />}>
             <Route index element={<HomePage />} />
             <Route path="projects/new" element={<NewProjectPage />} />

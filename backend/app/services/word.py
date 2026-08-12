@@ -131,6 +131,22 @@ def _replace_text(doc: aw.Document, old: str, new: str, highlight: bool = False)
     doc.range.replace(str(old), str(new), _replace_options(highlight))
 
 
+def apply_literal_replacements(
+    docx_bytes: bytes,
+    replacements: list[tuple[str, str]],
+    *,
+    highlight: bool = False,
+) -> bytes:
+    """将文档中的指定原文批量替换为目标文本（用于模板工程化）。"""
+    doc = _load_document(docx_bytes)
+    for old, new in sorted(replacements, key=lambda x: len(x[0]), reverse=True):
+        if old and new is not None and old != new:
+            _replace_text(doc, old, new, highlight=highlight)
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
 def smart_replace_document(
     template_bytes: bytes,
     old_values: dict,

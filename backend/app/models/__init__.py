@@ -199,6 +199,7 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(300), default="")
     matched_question: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     session: Mapped["ChatSession"] = relationship(back_populates="messages")

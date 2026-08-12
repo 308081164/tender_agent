@@ -80,6 +80,23 @@ export const api = {
     request('/chat/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   getChatSession: (id) => request(`/chat/sessions/${id}`),
   deleteChatSession: (id) => request(`/chat/sessions/${id}`, { method: 'DELETE' }),
+  renameChatSession: (id, title) =>
+    request(`/chat/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  getChatFeatures: () => request('/chat/features'),
+  uploadChatFile: async (sessionId, file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/chat/sessions/${sessionId}/upload`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
+  detectTemplatePlaceholders: (id) =>
+    request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
+  applyTemplatePlaceholders: (id, mappings) =>
+    request(`/admin/templates/${id}/apply-placeholders`, {
+      method: 'POST',
+      body: JSON.stringify({ mappings }),
+    }),
   listChatMessages: (id) => request(`/chat/sessions/${id}/messages`),
   sendChatMessage: (sessionId, content) =>
     request(`/chat/sessions/${sessionId}/messages`, {

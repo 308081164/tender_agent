@@ -33,6 +33,7 @@ export default function Layout({
         <div className="actions" style={{ marginTop: 24 }}>
           <button className="secondary" onClick={() => navigate('/')}>项目列表</button>
           <button onClick={onStartNew} disabled={loading}>新建标书</button>
+          <button className="ghost" onClick={() => navigate('/chat')} disabled={loading}>智能助手</button>
           <button className="ghost" onClick={() => navigate('/settings')} disabled={loading}>系统设置</button>
           <button className="ghost" onClick={() => navigate('/admin')} disabled={loading}>数据管理</button>
         </div>

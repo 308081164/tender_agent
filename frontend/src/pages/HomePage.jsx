@@ -37,6 +37,7 @@ export default function HomePage() {
           </div>
           <div className="actions" style={{ marginTop: 0 }}>
             <button onClick={startNew} disabled={bootLoading}>新建标书</button>
+            <button className="secondary" onClick={() => navigate('/chat')} disabled={bootLoading}>智能助手</button>
             <button className="secondary" onClick={() => navigate('/settings')} disabled={bootLoading}>
               系统设置
             </button>
