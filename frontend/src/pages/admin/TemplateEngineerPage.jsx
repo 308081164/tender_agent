@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../../App'
 import { api } from '../../api/client'
-import AdminDetailHeader from './AdminDetailHeader'
-import SelectableDocPreview from './SelectableDocPreview'
+import AdminDetailHeader from '../../components/admin/AdminDetailHeader'
+import SelectableDocPreview from '../../components/admin/SelectableDocPreview'
 
 const STEPS = ['智能识别', '编辑确认', '应用生成']
 
