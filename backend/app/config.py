@@ -22,6 +22,7 @@ def _is_frozen() -> bool:
 
 IS_DESKTOP = _env_bool("TENDER_DESKTOP") or _is_frozen()
 DESKTOP_DEFAULT_PORT = 18766
+DESKTOP_PG_HOST = os.environ.get("TENDER_PG_HOST", "127.0.0.1")
 DESKTOP_PG_PORT = int(os.environ.get("TENDER_PG_PORT", "25432"))
 DESKTOP_MINIO_PORT = 59000
 
@@ -68,10 +69,17 @@ _settings_config = (
 
 def _desktop_defaults() -> dict:
     customer = INSTALL_DIR / "customer_data" / "heyuanzhineng_20260729"
+    if DESKTOP_PG_HOST == ".":
+        database_url = (
+            f"postgresql://tender:tender123@/tender_agent"
+            f"?host=.&port={DESKTOP_PG_PORT}"
+        )
+    else:
+        database_url = (
+            f"postgresql://tender:tender123@{DESKTOP_PG_HOST}:{DESKTOP_PG_PORT}/tender_agent"
+        )
     return {
-        "database_url": (
-            f"postgresql://tender:tender123@127.0.0.1:{DESKTOP_PG_PORT}/tender_agent"
-        ),
+        "database_url": database_url,
         "minio_endpoint": f"127.0.0.1:{DESKTOP_MINIO_PORT}",
         "sample_data_dir": str(INSTALL_DIR / "sample_data"),
         "customer_data_dir": str(customer) if customer.exists() else "",

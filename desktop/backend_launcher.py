@@ -19,7 +19,8 @@ from pathlib import Path
 DEFAULT_PORT = 18766
 PG_PORT_DEFAULT = 25432
 PG_PORT_LEGACY = 55432
-PG_PORT_CANDIDATES = (25432, 25433, 25434, 25435, 25436)
+PG_TCP_HOST = "127.0.0.1"
+PG_PIPE_HOST = "."
 MINIO_PORT = 59000
 CREATE_NO_WINDOW = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -61,6 +62,7 @@ _PG_PROC: subprocess.Popen | None = None
 _MINIO_PROC: subprocess.Popen | None = None
 _SHUTTING_DOWN = False
 _ACTIVE_PG_PORT: int | None = None
+_ACTIVE_PG_HOST: str = PG_TCP_HOST
 
 
 def _install_dir() -> Path:
@@ -224,7 +226,15 @@ def _postgres_bind_error_message(port: int) -> str:
     return (
         f"PostgreSQL 无法绑定本地端口 {port}（Permission denied）。"
         "这通常由 Windows/Hyper-V 保留端口范围导致。"
-        "请删除数据目录后重试，或联系管理员检查 excludedportrange。"
+        "安装包会自动尝试其他端口或命名管道；若仍失败，请删除数据目录后重试。"
+    )
+
+
+def _postgres_start_failed_message() -> str:
+    return (
+        "PostgreSQL 无法启动（TCP 端口与命名管道均失败）。"
+        "请删除 %LOCALAPPDATA%\\TenderAgent\\data 后重试，"
+        "并确保未勾选快捷方式的「以管理员身份运行」。"
     )
 
 
@@ -276,6 +286,16 @@ def _read_pg_port_from_conf(pgdata: Path) -> int | None:
 
 
 def _read_pg_port_from_state(data_dir: Path) -> int | None:
+    saved = _read_pg_state(data_dir)
+    return saved[1] if saved else None
+
+
+def _read_pg_host_from_state(data_dir: Path) -> str | None:
+    saved = _read_pg_state(data_dir)
+    return saved[0] if saved else None
+
+
+def _read_pg_state(data_dir: Path) -> tuple[str, int] | None:
     state = _read_json(data_dir, PG_STATE_FILE)
     if not state:
         return None
@@ -283,23 +303,140 @@ def _read_pg_port_from_state(data_dir: Path) -> int | None:
         port = int(state.get("port") or 0)
     except (TypeError, ValueError):
         return None
-    return port if port > 0 else None
+    if port <= 0:
+        return None
+    host = str(state.get("host") or PG_TCP_HOST).strip() or PG_TCP_HOST
+    return host, port
+
+
+def _save_pg_state(data_dir: Path, pgdata: Path, host: str, port: int, pid: int | None = None) -> None:
+    payload: dict[str, object] = {"host": host, "port": port, "data_dir": str(pgdata)}
+    if pid is not None:
+        payload["pid"] = pid
+    _write_json(data_dir, PG_STATE_FILE, payload)
 
 
 def _postgres_port_candidates(data_dir: Path, pgdata: Path) -> list[int]:
     seen: set[int] = set()
     ordered: list[int] = []
-    for port in (
-        _read_pg_port_from_state(data_dir),
-        _read_pg_port_from_conf(pgdata),
-        PG_PORT_DEFAULT,
-        *PG_PORT_CANDIDATES,
-        PG_PORT_LEGACY,
-    ):
-        if port and port not in seen:
+
+    def add(port: int | None) -> None:
+        if port and 1024 <= port <= 65535 and port not in seen:
             seen.add(port)
             ordered.append(port)
+
+    add(_read_pg_port_from_state(data_dir))
+    add(_read_pg_port_from_conf(pgdata))
+    add(PG_PORT_DEFAULT)
+    for base in (7432, 8432, 9432, 10432, 12432, 15432):
+        for offset in range(10):
+            add(base + offset)
+    for port in range(DEFAULT_PORT + 100, DEFAULT_PORT + 120):
+        add(port)
+    for port in range(MINIO_PORT - 250, MINIO_PORT - 200):
+        add(port)
+    for offset in range(6):
+        add(PG_PORT_DEFAULT + offset)
+    add(PG_PORT_LEGACY)
     return ordered
+
+
+def _update_postgresql_conf_listen(pgdata: Path, *, tcp: bool) -> None:
+    conf = pgdata / "postgresql.conf"
+    if not conf.is_file():
+        return
+    listen = "listen_addresses = '127.0.0.1'" if tcp else "listen_addresses = ''"
+    text = conf.read_text(encoding="utf-8")
+    if re.search(r"^listen_addresses\s*=", text, flags=re.MULTILINE):
+        text = re.sub(
+            r"^listen_addresses\s*=.*$", listen, text, count=1, flags=re.MULTILINE
+        )
+    else:
+        text += f"\n{listen}\n"
+    conf.write_text(text, encoding="utf-8")
+
+
+def _log_windows_port_diagnostics() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        result = subprocess.run(
+            ["netsh", "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_subprocess_flags(),
+            timeout=10,
+        )
+        if result.stdout.strip():
+            _log("windows excluded TCP port ranges:")
+            for line in result.stdout.strip().splitlines()[:12]:
+                _log(f"  {line.strip()}")
+    except OSError as exc:
+        _log(f"could not read excluded port ranges: {exc}")
+
+
+def _kill_stale_postgres_for_pgdata(data_dir: Path) -> None:
+    if sys.platform != "win32":
+        return
+    pgdata = str(data_dir / "pgdata")
+    if not pgdata:
+        return
+    escaped = pgdata.replace("'", "''")
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='postgres.exe'\" | "
+        f"Where-Object {{ $_.CommandLine -like '*{escaped}*' }} | "
+        "ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_subprocess_flags(),
+            timeout=20,
+        )
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line.isdigit():
+                continue
+            pid = int(line)
+            if _pid_alive(pid):
+                _log(f"killing stale postgres.exe pid={pid} for pgdata")
+                _kill_process_tree(pid)
+    except OSError as exc:
+        _log(f"could not scan stale postgres processes: {exc}")
+
+
+def _postgres_accepts_connections(
+    install_dir: Path,
+    pgdata: Path,
+    port: int,
+    host: str,
+    timeout: float = 30.0,
+) -> bool:
+    pg_isready = _postgres_bin(install_dir, "pg_isready.exe")
+    if pg_isready.is_file():
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            result = subprocess.run(
+                [str(pg_isready), "-h", host, "-p", str(port), "-q"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=_postgres_env(install_dir, pgdata, port),
+                creationflags=_subprocess_flags(),
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return True
+            time.sleep(0.5)
+        return False
+    if host == PG_PIPE_HOST:
+        return False
+    return _wait_for_port(host, port, timeout)
 
 
 def _update_postgresql_conf_port(pgdata: Path, port: int) -> None:
@@ -394,7 +531,11 @@ def _cleanup_stale_postmaster_pid(pgdata: Path) -> bool:
 
 
 def _ensure_postgres_database(
-    install_dir: Path, pgdata: Path, pg_port: int, psql: Path | None = None
+    install_dir: Path,
+    pgdata: Path,
+    pg_port: int,
+    pg_host: str,
+    psql: Path | None = None,
 ) -> None:
     if psql is None:
         psql = _postgres_bin(install_dir, "psql.exe")
@@ -404,7 +545,7 @@ def _ensure_postgres_database(
         [
             str(psql),
             "-h",
-            "127.0.0.1",
+            pg_host,
             "-p",
             str(pg_port),
             "-U",
@@ -458,12 +599,18 @@ def _start_postgres_via_pg_ctl(
     install_dir: Path,
     pgdata: Path,
     pg_port: int,
+    pg_host: str,
     pg_ctl: Path,
+    *,
+    tcp: bool,
 ) -> None:
     log_path = data_dir / "postgres.log"
+    mode = "tcp" if tcp else "pipe"
     if _is_windows_admin():
         _log("running as Windows administrator; starting postgres via pg_ctl to drop privileges")
-    _log(f"starting postgres via pg_ctl on port {pg_port}")
+    _log(f"starting postgres via pg_ctl ({mode}) host={pg_host} port={pg_port}")
+    _update_postgresql_conf_listen(pgdata, tcp=tcp)
+    _update_postgresql_conf_port(pgdata, pg_port)
     result = subprocess.run(
         [
             str(pg_ctl),
@@ -482,7 +629,7 @@ def _start_postgres_via_pg_ctl(
         **_subprocess_capture_kwargs(),
     )
     if result.returncode != 0:
-        _log(f"pg_ctl start failed code={result.returncode} port={pg_port}")
+        _log(f"pg_ctl start failed code={result.returncode} mode={mode} port={pg_port}")
         if result.stdout.strip():
             _log(f"pg_ctl stdout: {result.stdout.strip()}")
         if result.stderr.strip():
@@ -490,32 +637,161 @@ def _start_postgres_via_pg_ctl(
         _append_log_tail(data_dir, "postgres.log")
         if _postgres_log_has_admin_error(data_dir):
             raise RuntimeError(_postgres_admin_error_message())
-        if _postgres_log_has_bind_error(data_dir):
+        if tcp and _postgres_log_has_bind_error(data_dir):
             raise RuntimeError(_postgres_bind_error_message(pg_port))
-        raise RuntimeError(f"postgres start failed on port {pg_port} (code {result.returncode})")
+        raise RuntimeError(f"postgres start failed ({mode}) on port {pg_port} (code {result.returncode})")
 
-    if not _wait_for_port("127.0.0.1", pg_port, 30):
+    if not _postgres_accepts_connections(install_dir, pgdata, pg_port, pg_host, 30):
         _append_log_tail(data_dir, "postgres.log")
         if _postgres_log_has_admin_error(data_dir):
             raise RuntimeError(_postgres_admin_error_message())
-        if _postgres_log_has_bind_error(data_dir):
+        if tcp and _postgres_log_has_bind_error(data_dir):
             raise RuntimeError(_postgres_bind_error_message(pg_port))
-        raise RuntimeError(f"postgres did not become ready on port {pg_port}")
+        raise RuntimeError(f"postgres did not become ready ({mode}) on {pg_host}:{pg_port}")
+
+
+def _postgres_running(
+    install_dir: Path, pgdata: Path, host: str, port: int
+) -> bool:
+    if host == PG_TCP_HOST and not _port_open(host, port):
+        return False
+    return _postgres_accepts_connections(install_dir, pgdata, port, host, timeout=3)
+
+
+def _reuse_running_postgres(
+    data_dir: Path,
+    install_dir: Path,
+    pgdata: Path,
+    host: str,
+    port: int,
+    psql: Path | None = None,
+    pid: int | None = None,
+) -> bool:
+    if not _postgres_running(install_dir, pgdata, host, port):
+        return False
+    global _ACTIVE_PG_PORT, _ACTIVE_PG_HOST
+    _ACTIVE_PG_PORT = port
+    _ACTIVE_PG_HOST = host
+    _ensure_postgres_database(install_dir, pgdata, port, host, psql)
+    _save_pg_state(data_dir, pgdata, host, port, pid)
+    _log(f"postgres ready on {host}:{port}")
+    return True
+
+
+def _init_postgres_data_dir(
+    data_dir: Path, install_dir: Path, pgdata: Path, initdb: Path
+) -> None:
+    if (pgdata / "PG_VERSION").is_file():
+        return
+    if pgdata.exists() and any(pgdata.iterdir()):
+        _log("resetting incomplete postgres data directory")
+        import shutil
+
+        shutil.rmtree(pgdata, ignore_errors=True)
+    pgdata.mkdir(parents=True, exist_ok=True)
+    _log("initializing postgres data directory")
+    initdb_cmd = [
+        str(initdb),
+        "-D",
+        str(pgdata),
+        "-U",
+        "tender",
+        "-E",
+        "UTF8",
+        "--auth-local=trust",
+        "--auth-host=trust",
+    ]
+    if sys.platform != "win32":
+        initdb_cmd.append("--locale=C")
+    result = subprocess.run(
+        initdb_cmd,
+        env=_postgres_env(install_dir, pgdata, PG_PORT_DEFAULT),
+        creationflags=_subprocess_flags(),
+        **_subprocess_capture_kwargs(),
+    )
+    if result.returncode != 0:
+        _log(f"initdb failed code={result.returncode}")
+        if result.stdout.strip():
+            _log(f"initdb stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+            _log(f"initdb stderr: {result.stderr.strip()}")
+        raise RuntimeError(f"postgres initdb failed (code {result.returncode})")
+
+    _update_postgresql_conf_port(pgdata, PG_PORT_DEFAULT)
+    _update_postgresql_conf_listen(pgdata, tcp=True)
+    _append_hba_rules(pgdata)
+
+
+def _try_start_postgres_tcp(
+    data_dir: Path,
+    install_dir: Path,
+    pgdata: Path,
+    pg_port: int,
+    pg_ctl: Path,
+    psql: Path | None,
+) -> bool:
+    if not _can_bind_port(pg_port):
+        _log(f"port {pg_port} is not bindable locally, trying next")
+        return False
+    _update_postgresql_conf_port(pgdata, pg_port)
+    try:
+        _start_postgres_via_pg_ctl(
+            data_dir,
+            install_dir,
+            pgdata,
+            pg_port,
+            PG_TCP_HOST,
+            pg_ctl,
+            tcp=True,
+        )
+        global _ACTIVE_PG_PORT, _ACTIVE_PG_HOST
+        _ACTIVE_PG_PORT = pg_port
+        _ACTIVE_PG_HOST = PG_TCP_HOST
+        _ensure_postgres_database(install_dir, pgdata, pg_port, PG_TCP_HOST, psql)
+        _save_pg_state(data_dir, pgdata, PG_TCP_HOST, pg_port)
+        _log(f"postgres ready on tcp 127.0.0.1:{pg_port}")
+        return True
+    except RuntimeError as exc:
+        _log(f"postgres tcp start failed on port {pg_port}: {exc}")
+        _stop_postgres(data_dir, install_dir, pg_port)
+        return False
+
+
+def _try_start_postgres_pipe(
+    data_dir: Path,
+    install_dir: Path,
+    pgdata: Path,
+    pg_port: int,
+    pg_ctl: Path,
+    psql: Path | None,
+) -> bool:
+    _log(f"trying postgres named-pipe mode on port {pg_port}")
+    try:
+        _start_postgres_via_pg_ctl(
+            data_dir,
+            install_dir,
+            pgdata,
+            pg_port,
+            PG_PIPE_HOST,
+            pg_ctl,
+            tcp=False,
+        )
+        global _ACTIVE_PG_PORT, _ACTIVE_PG_HOST
+        _ACTIVE_PG_PORT = pg_port
+        _ACTIVE_PG_HOST = PG_PIPE_HOST
+        _ensure_postgres_database(install_dir, pgdata, pg_port, PG_PIPE_HOST, psql)
+        _save_pg_state(data_dir, pgdata, PG_PIPE_HOST, pg_port)
+        _log(f"postgres ready on named pipe host=. port={pg_port}")
+        return True
+    except RuntimeError as exc:
+        _log(f"postgres pipe start failed on port {pg_port}: {exc}")
+        _stop_postgres(data_dir, install_dir, pg_port)
+        return False
 
 
 def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
-    global _ACTIVE_PG_PORT
     pgdata = data_dir / "pgdata"
-    for port in _postgres_port_candidates(data_dir, pgdata):
-        if _port_open("127.0.0.1", port):
-            _ACTIVE_PG_PORT = port
-            _log(f"postgres already listening on {port}")
-            _ensure_postgres_database(install_dir, pgdata, port)
-            _write_json(
-                data_dir, PG_STATE_FILE, {"port": port, "data_dir": str(pgdata)}
-            )
-            _log("postgres ready")
-            return
+    _kill_stale_postgres_for_pgdata(data_dir)
 
     initdb = _postgres_bin(install_dir, "initdb.exe")
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
@@ -523,98 +799,64 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     if not initdb.is_file() or not pg_ctl.is_file():
         raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
 
+    saved = _read_pg_state(data_dir)
+    if saved and _reuse_running_postgres(
+        data_dir, install_dir, pgdata, saved[0], saved[1], psql
+    ):
+        return
+
+    for port in _postgres_port_candidates(data_dir, pgdata):
+        if _port_open(PG_TCP_HOST, port) and _reuse_running_postgres(
+            data_dir, install_dir, pgdata, PG_TCP_HOST, port, psql
+        ):
+            return
+
     existing_pid = _read_postmaster_pid(pgdata)
     if existing_pid is not None and _pid_alive(existing_pid):
         for port in _postgres_port_candidates(data_dir, pgdata):
             _log(f"existing postgres pid={existing_pid}; waiting for port {port}")
-            if _wait_for_port("127.0.0.1", port, 15):
-                _ACTIVE_PG_PORT = port
-                _ensure_postgres_database(install_dir, pgdata, port, psql)
-                _write_json(
-                    data_dir,
-                    PG_STATE_FILE,
-                    {"port": port, "pid": existing_pid, "data_dir": str(pgdata)},
-                )
-                _log("postgres ready")
+            if _reuse_running_postgres(
+                data_dir,
+                install_dir,
+                pgdata,
+                PG_TCP_HOST,
+                port,
+                psql,
+                pid=existing_pid,
+            ):
                 return
         _log(f"postgres pid={existing_pid} alive but no known port open; stopping stale process")
         _kill_process_tree(existing_pid)
 
     if _cleanup_stale_postmaster_pid(pgdata):
         for port in _postgres_port_candidates(data_dir, pgdata):
-            if _port_open("127.0.0.1", port):
-                _ACTIVE_PG_PORT = port
-                _ensure_postgres_database(install_dir, pgdata, port, psql)
-                _write_json(
-                    data_dir, PG_STATE_FILE, {"port": port, "data_dir": str(pgdata)}
-                )
-                _log("postgres ready")
+            if _reuse_running_postgres(
+                data_dir, install_dir, pgdata, PG_TCP_HOST, port, psql
+            ):
                 return
 
-    if not (pgdata / "PG_VERSION").is_file():
-        if pgdata.exists() and any(pgdata.iterdir()):
-            _log("resetting incomplete postgres data directory")
-            import shutil
+    _init_postgres_data_dir(data_dir, install_dir, pgdata, initdb)
 
-            shutil.rmtree(pgdata, ignore_errors=True)
-        pgdata.mkdir(parents=True, exist_ok=True)
-        _log("initializing postgres data directory")
-        initdb_cmd = [
-            str(initdb),
-            "-D",
-            str(pgdata),
-            "-U",
-            "tender",
-            "-E",
-            "UTF8",
-            "--auth-local=trust",
-            "--auth-host=trust",
-        ]
-        if sys.platform != "win32":
-            initdb_cmd.append("--locale=C")
-        result = subprocess.run(
-            initdb_cmd,
-            env=_postgres_env(install_dir, pgdata, PG_PORT_DEFAULT),
-            creationflags=_subprocess_flags(),
-            **_subprocess_capture_kwargs(),
-        )
-        if result.returncode != 0:
-            _log(f"initdb failed code={result.returncode}")
-            if result.stdout.strip():
-                _log(f"initdb stdout: {result.stdout.strip()}")
-            if result.stderr.strip():
-                _log(f"initdb stderr: {result.stderr.strip()}")
-            raise RuntimeError(f"postgres initdb failed (code {result.returncode})")
-
-        _update_postgresql_conf_port(pgdata, PG_PORT_DEFAULT)
-        _append_hba_rules(pgdata)
-
-    last_error: Exception | None = None
     for pg_port in _postgres_port_candidates(data_dir, pgdata):
-        if not _can_bind_port(pg_port):
-            _log(f"port {pg_port} is not bindable locally, trying next")
-            continue
-        _update_postgresql_conf_port(pgdata, pg_port)
-        try:
-            _start_postgres_via_pg_ctl(data_dir, install_dir, pgdata, pg_port, pg_ctl)
-            _ACTIVE_PG_PORT = pg_port
-            _ensure_postgres_database(install_dir, pgdata, pg_port, psql)
-            _write_json(
-                data_dir, PG_STATE_FILE, {"port": pg_port, "data_dir": str(pgdata)}
-            )
-            _log(f"postgres ready on port {pg_port}")
+        if _try_start_postgres_tcp(
+            data_dir, install_dir, pgdata, pg_port, pg_ctl, psql
+        ):
             return
-        except RuntimeError as exc:
-            last_error = exc
-            _log(f"postgres start failed on port {pg_port}: {exc}")
-            _stop_postgres(data_dir, install_dir, pg_port)
-            if _postgres_log_has_bind_error(data_dir):
-                continue
-            raise
 
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("postgres could not find a bindable local port")
+    _log_windows_port_diagnostics()
+    pipe_ports: list[int] = []
+    seen_pipe: set[int] = set()
+    for pg_port in (PG_PORT_DEFAULT, PG_PORT_LEGACY, *_postgres_port_candidates(data_dir, pgdata)):
+        if pg_port not in seen_pipe:
+            seen_pipe.add(pg_port)
+            pipe_ports.append(pg_port)
+    for pg_port in pipe_ports:
+        if _try_start_postgres_pipe(
+            data_dir, install_dir, pgdata, pg_port, pg_ctl, psql
+        ):
+            return
+
+    raise RuntimeError(_postgres_start_failed_message())
 
 
 def _ensure_postgres_with_retry(data_dir: Path, install_dir: Path) -> None:
@@ -782,6 +1024,7 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
     env["ASPOSE_LICENSE_PATH"] = str(install_dir / "aspose" / "Aspose.License.txt")
     if _ACTIVE_PG_PORT is not None:
         env["TENDER_PG_PORT"] = str(_ACTIVE_PG_PORT)
+    env["TENDER_PG_HOST"] = _ACTIVE_PG_HOST
 
     log_path = _backend_log_path(data_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
