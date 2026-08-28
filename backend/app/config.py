@@ -22,7 +22,7 @@ def _is_frozen() -> bool:
 
 IS_DESKTOP = _env_bool("TENDER_DESKTOP") or _is_frozen()
 DESKTOP_DEFAULT_PORT = 18766
-DESKTOP_PG_PORT = 55432
+DESKTOP_PG_PORT = int(os.environ.get("TENDER_PG_PORT", "25432"))
 DESKTOP_MINIO_PORT = 59000
 
 

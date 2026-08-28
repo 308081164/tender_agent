@@ -86,6 +86,15 @@ function formatBackendFailureMessage(code) {
     parts.push(
       "\n提示：请不要以管理员身份运行标书智能体。右键快捷方式 → 属性 → 兼容性，取消勾选「以管理员身份运行此程序」。"
     );
+  } else if (
+    lastBackendStderr.includes("无法绑定") ||
+    lastBackendStderr.includes("Permission denied") ||
+    launcherTail.includes("无法绑定") ||
+    launcherTail.includes("Permission denied")
+  ) {
+    parts.push(
+      `\n提示：PostgreSQL 端口可能被 Windows/Hyper-V 保留。请删除数据目录后重试：\n${dataDir}`
+    );
   } else {
     parts.push(`\n若首次安装后仍失败，可尝试删除数据目录后重试：\n${dataDir}`);
   }
