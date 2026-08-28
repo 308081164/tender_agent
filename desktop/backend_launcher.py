@@ -7,6 +7,7 @@ import atexit
 import ctypes
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -16,7 +17,9 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_PORT = 18766
-PG_PORT = 55432
+PG_PORT_DEFAULT = 25432
+PG_PORT_LEGACY = 55432
+PG_PORT_CANDIDATES = (25432, 25433, 25434, 25435, 25436)
 MINIO_PORT = 59000
 CREATE_NO_WINDOW = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -57,6 +60,7 @@ _BACKEND_PROC: subprocess.Popen | None = None
 _PG_PROC: subprocess.Popen | None = None
 _MINIO_PROC: subprocess.Popen | None = None
 _SHUTTING_DOWN = False
+_ACTIVE_PG_PORT: int | None = None
 
 
 def _install_dir() -> Path:
@@ -216,6 +220,14 @@ def _postgres_admin_error_message() -> str:
     )
 
 
+def _postgres_bind_error_message(port: int) -> str:
+    return (
+        f"PostgreSQL 无法绑定本地端口 {port}（Permission denied）。"
+        "这通常由 Windows/Hyper-V 保留端口范围导致。"
+        "请删除数据目录后重试，或联系管理员检查 excludedportrange。"
+    )
+
+
 def _postgres_root(install_dir: Path) -> Path:
     return install_dir / "tools" / "postgres"
 
@@ -224,16 +236,94 @@ def _postgres_bin(install_dir: Path, name: str) -> Path:
     return _postgres_root(install_dir) / "bin" / name
 
 
-def _postgres_env(install_dir: Path, pgdata: Path | None = None) -> dict[str, str]:
+def _postgres_env(
+    install_dir: Path, pgdata: Path | None = None, port: int | None = None
+) -> dict[str, str]:
     env = os.environ.copy()
     pg_bin = str(_postgres_root(install_dir) / "bin")
     env["PATH"] = pg_bin + os.pathsep + env.get("PATH", "")
-    env["PGPORT"] = str(PG_PORT)
+    env["PGPORT"] = str(port if port is not None else (_ACTIVE_PG_PORT or PG_PORT_DEFAULT))
     env.setdefault("LC_ALL", "C")
     env.setdefault("LANG", "C")
     if pgdata is not None:
         env["PGDATA"] = str(pgdata)
     return env
+
+
+def _can_bind_port(port: int) -> bool:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+
+
+def _read_pg_port_from_conf(pgdata: Path) -> int | None:
+    conf = pgdata / "postgresql.conf"
+    if not conf.is_file():
+        return None
+    try:
+        match = re.search(r"^port\s*=\s*(\d+)", conf.read_text(encoding="utf-8"), re.MULTILINE)
+        if match:
+            return int(match.group(1))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _read_pg_port_from_state(data_dir: Path) -> int | None:
+    state = _read_json(data_dir, PG_STATE_FILE)
+    if not state:
+        return None
+    try:
+        port = int(state.get("port") or 0)
+    except (TypeError, ValueError):
+        return None
+    return port if port > 0 else None
+
+
+def _postgres_port_candidates(data_dir: Path, pgdata: Path) -> list[int]:
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for port in (
+        _read_pg_port_from_state(data_dir),
+        _read_pg_port_from_conf(pgdata),
+        PG_PORT_DEFAULT,
+        *PG_PORT_CANDIDATES,
+        PG_PORT_LEGACY,
+    ):
+        if port and port not in seen:
+            seen.add(port)
+            ordered.append(port)
+    return ordered
+
+
+def _update_postgresql_conf_port(pgdata: Path, port: int) -> None:
+    conf = pgdata / "postgresql.conf"
+    if not conf.is_file():
+        return
+    text = conf.read_text(encoding="utf-8")
+    if re.search(r"^port\s*=", text, flags=re.MULTILINE):
+        text = re.sub(r"^port\s*=.*$", f"port = {port}", text, count=1, flags=re.MULTILINE)
+    else:
+        text += f"\nport = {port}\n"
+    if "listen_addresses" not in text:
+        text += "listen_addresses = '127.0.0.1'\n"
+    conf.write_text(text, encoding="utf-8")
+
+
+def _append_hba_rules(pgdata: Path) -> None:
+    hba = pgdata / "pg_hba.conf"
+    if not hba.is_file():
+        return
+    text = hba.read_text(encoding="utf-8")
+    extra = "\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust\n"
+    if "127.0.0.1/32" not in text:
+        hba.write_text(text + extra, encoding="utf-8")
 
 
 def _append_log_tail(data_dir: Path, name: str, lines: int = 12) -> None:
@@ -260,7 +350,7 @@ def _wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
 
 
 def _ensure_postgres_database(
-    install_dir: Path, pgdata: Path, psql: Path | None = None
+    install_dir: Path, pgdata: Path, pg_port: int, psql: Path | None = None
 ) -> None:
     if psql is None:
         psql = _postgres_bin(install_dir, "psql.exe")
@@ -272,7 +362,7 @@ def _ensure_postgres_database(
             "-h",
             "127.0.0.1",
             "-p",
-            str(PG_PORT),
+            str(pg_port),
             "-U",
             "tender",
             "-d",
@@ -282,7 +372,7 @@ def _ensure_postgres_database(
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env=_postgres_env(install_dir, pgdata),
+        env=_postgres_env(install_dir, pgdata, pg_port),
         creationflags=_subprocess_flags(),
         timeout=15,
         check=False,
@@ -300,30 +390,130 @@ def _postgres_log_has_admin_error(data_dir: Path) -> bool:
     return "administrative permissions is not permitted" in text
 
 
-def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
-    global _PG_PROC
-    if _port_open("127.0.0.1", PG_PORT):
-        _log(f"postgres already listening on {PG_PORT}")
-        pgdata = data_dir / "pgdata"
-        _ensure_postgres_database(install_dir, pgdata)
-        _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
-        _log("postgres ready")
-        return
+def _postgres_log_has_bind_error(data_dir: Path) -> bool:
+    path = data_dir / "postgres.log"
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+    markers = (
+        "permission denied",
+        "could not bind",
+        "could not create listen socket",
+        "无法绑定",
+        "无法创建tcp/ip套接字",
+        "无法创建监听套接字",
+    )
+    return any(marker in text for marker in markers)
 
+
+def _cleanup_stale_postmaster_pid(pgdata: Path) -> bool:
+    """Return True when an existing postgres instance appears to be running."""
+    pid_file = pgdata / "postmaster.pid"
+    if not pid_file.is_file():
+        return False
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").splitlines()[0].strip())
+    except (IndexError, ValueError, OSError):
+        _log("removing invalid postmaster.pid")
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+        return False
+    if _pid_alive(pid):
+        _log(f"postgres already running pid={pid}")
+        return True
+    _log(f"removing stale postmaster.pid for dead pid={pid}")
+    try:
+        pid_file.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def _start_postgres_via_pg_ctl(
+    data_dir: Path,
+    install_dir: Path,
+    pgdata: Path,
+    pg_port: int,
+    pg_ctl: Path,
+) -> None:
+    log_path = data_dir / "postgres.log"
+    if _is_windows_admin():
+        _log("running as Windows administrator; starting postgres via pg_ctl to drop privileges")
+    _log(f"starting postgres via pg_ctl on port {pg_port}")
+    result = subprocess.run(
+        [
+            str(pg_ctl),
+            "-D",
+            str(pgdata),
+            "-l",
+            str(log_path),
+            "-o",
+            f"-p {pg_port}",
+            "-w",
+            "start",
+        ],
+        env=_postgres_env(install_dir, pgdata, pg_port),
+        creationflags=_subprocess_flags(),
+        timeout=60,
+        **_subprocess_capture_kwargs(),
+    )
+    if result.returncode != 0:
+        _log(f"pg_ctl start failed code={result.returncode} port={pg_port}")
+        if result.stdout.strip():
+            _log(f"pg_ctl stdout: {result.stdout.strip()}")
+        if result.stderr.strip():
+            _log(f"pg_ctl stderr: {result.stderr.strip()}")
+        _append_log_tail(data_dir, "postgres.log")
+        if _postgres_log_has_admin_error(data_dir):
+            raise RuntimeError(_postgres_admin_error_message())
+        if _postgres_log_has_bind_error(data_dir):
+            raise RuntimeError(_postgres_bind_error_message(pg_port))
+        raise RuntimeError(f"postgres start failed on port {pg_port} (code {result.returncode})")
+
+    if not _wait_for_port("127.0.0.1", pg_port, 30):
+        _append_log_tail(data_dir, "postgres.log")
+        if _postgres_log_has_admin_error(data_dir):
+            raise RuntimeError(_postgres_admin_error_message())
+        if _postgres_log_has_bind_error(data_dir):
+            raise RuntimeError(_postgres_bind_error_message(pg_port))
+        raise RuntimeError(f"postgres did not become ready on port {pg_port}")
+
+
+def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
+    global _ACTIVE_PG_PORT
     pgdata = data_dir / "pgdata"
+    for port in _postgres_port_candidates(data_dir, pgdata):
+        if _port_open("127.0.0.1", port):
+            _ACTIVE_PG_PORT = port
+            _log(f"postgres already listening on {port}")
+            _ensure_postgres_database(install_dir, pgdata, port)
+            _write_json(
+                data_dir, PG_STATE_FILE, {"port": port, "data_dir": str(pgdata)}
+            )
+            _log("postgres ready")
+            return
+
     initdb = _postgres_bin(install_dir, "initdb.exe")
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
     psql = _postgres_bin(install_dir, "psql.exe")
     if not initdb.is_file() or not pg_ctl.is_file():
         raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
 
-    pid_file = pgdata / "postmaster.pid"
-    if pid_file.is_file():
-        _log("removing stale postmaster.pid")
-        try:
-            pid_file.unlink()
-        except OSError:
-            pass
+    if _cleanup_stale_postmaster_pid(pgdata):
+        for port in _postgres_port_candidates(data_dir, pgdata):
+            if _port_open("127.0.0.1", port):
+                _ACTIVE_PG_PORT = port
+                _ensure_postgres_database(install_dir, pgdata, port)
+                _write_json(
+                    data_dir, PG_STATE_FILE, {"port": port, "data_dir": str(pgdata)}
+                )
+                _log("postgres ready")
+                return
 
     if not (pgdata / "PG_VERSION").is_file():
         if pgdata.exists() and any(pgdata.iterdir()):
@@ -348,7 +538,7 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
             initdb_cmd.append("--locale=C")
         result = subprocess.run(
             initdb_cmd,
-            env=_postgres_env(install_dir, pgdata),
+            env=_postgres_env(install_dir, pgdata, PG_PORT_DEFAULT),
             creationflags=_subprocess_flags(),
             **_subprocess_capture_kwargs(),
         )
@@ -360,62 +550,35 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
                 _log(f"initdb stderr: {result.stderr.strip()}")
             raise RuntimeError(f"postgres initdb failed (code {result.returncode})")
 
-        conf = pgdata / "postgresql.conf"
-        hba = pgdata / "pg_hba.conf"
-        if conf.is_file():
-            conf.write_text(
-                conf.read_text(encoding="utf-8")
-                + f"\nport = {PG_PORT}\nlisten_addresses = '127.0.0.1'\n",
-                encoding="utf-8",
+        _update_postgresql_conf_port(pgdata, PG_PORT_DEFAULT)
+        _append_hba_rules(pgdata)
+
+    last_error: Exception | None = None
+    for pg_port in _postgres_port_candidates(data_dir, pgdata):
+        if not _can_bind_port(pg_port):
+            _log(f"port {pg_port} is not bindable locally, trying next")
+            continue
+        _update_postgresql_conf_port(pgdata, pg_port)
+        try:
+            _start_postgres_via_pg_ctl(data_dir, install_dir, pgdata, pg_port, pg_ctl)
+            _ACTIVE_PG_PORT = pg_port
+            _ensure_postgres_database(install_dir, pgdata, pg_port, psql)
+            _write_json(
+                data_dir, PG_STATE_FILE, {"port": pg_port, "data_dir": str(pgdata)}
             )
-        if hba.is_file():
-            hba.write_text(
-                hba.read_text(encoding="utf-8")
-                + "\nhost all all 127.0.0.1/32 trust\nhost all all ::1/128 trust\n",
-                encoding="utf-8",
-            )
+            _log(f"postgres ready on port {pg_port}")
+            return
+        except RuntimeError as exc:
+            last_error = exc
+            _log(f"postgres start failed on port {pg_port}: {exc}")
+            _stop_postgres(data_dir, install_dir, pg_port)
+            if _postgres_log_has_bind_error(data_dir):
+                continue
+            raise
 
-    log_path = data_dir / "postgres.log"
-    if _is_windows_admin():
-        _log("running as Windows administrator; starting postgres via pg_ctl to drop privileges")
-    _log("starting postgres via pg_ctl")
-    result = subprocess.run(
-        [
-            str(pg_ctl),
-            "-D",
-            str(pgdata),
-            "-l",
-            str(log_path),
-            "-o",
-            f"-p {PG_PORT}",
-            "-w",
-            "start",
-        ],
-        env=_postgres_env(install_dir, pgdata),
-        creationflags=_subprocess_flags(),
-        timeout=60,
-        **_subprocess_capture_kwargs(),
-    )
-    if result.returncode != 0:
-        _log(f"pg_ctl start failed code={result.returncode}")
-        if result.stdout.strip():
-            _log(f"pg_ctl stdout: {result.stdout.strip()}")
-        if result.stderr.strip():
-            _log(f"pg_ctl stderr: {result.stderr.strip()}")
-        _append_log_tail(data_dir, "postgres.log")
-        if _postgres_log_has_admin_error(data_dir):
-            raise RuntimeError(_postgres_admin_error_message())
-        raise RuntimeError(f"postgres start failed (code {result.returncode})")
-
-    if not _wait_for_port("127.0.0.1", PG_PORT, 30):
-        _append_log_tail(data_dir, "postgres.log")
-        if _postgres_log_has_admin_error(data_dir):
-            raise RuntimeError(_postgres_admin_error_message())
-        raise RuntimeError("postgres did not become ready")
-
-    _ensure_postgres_database(install_dir, pgdata, psql)
-    _write_json(data_dir, PG_STATE_FILE, {"port": PG_PORT, "data_dir": str(pgdata)})
-    _log("postgres ready")
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("postgres could not find a bindable local port")
 
 
 def _ensure_postgres_with_retry(data_dir: Path, install_dir: Path) -> None:
@@ -581,6 +744,8 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
     env = _runtime_env(install_dir, data_dir)
     env["TENDER_DESKTOP"] = "1"
     env["ASPOSE_LICENSE_PATH"] = str(install_dir / "aspose" / "Aspose.License.txt")
+    if _ACTIVE_PG_PORT is not None:
+        env["TENDER_PG_PORT"] = str(_ACTIVE_PG_PORT)
 
     log_path = _backend_log_path(data_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -611,7 +776,9 @@ def _wait_for_health(port: int, proc: subprocess.Popen, timeout: float = 120.0) 
     return False
 
 
-def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
+def _stop_postgres(
+    data_dir: Path, install_dir: Path, port: int | None = None
+) -> None:
     global _PG_PROC
     if _PG_PROC is not None and _PG_PROC.poll() is None:
         _log(f"stopping postgres pid={_PG_PROC.pid}")
@@ -625,12 +792,14 @@ def _stop_postgres(data_dir: Path, install_dir: Path) -> None:
 
     pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
     pgdata = data_dir / "pgdata"
+    if port is None:
+        port = _read_pg_port_from_state(data_dir) or _ACTIVE_PG_PORT
     if pg_ctl.is_file() and pgdata.is_dir():
         subprocess.run(
             [str(pg_ctl), "-D", str(pgdata), "-w", "stop", "fast"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=_postgres_env(install_dir, pgdata),
+            env=_postgres_env(install_dir, pgdata, port),
             creationflags=_subprocess_flags(),
             timeout=30,
             check=False,
