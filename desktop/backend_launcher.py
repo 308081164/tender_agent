@@ -21,6 +21,19 @@ PG_PORT_DEFAULT = 25432
 PG_PORT_LEGACY = 55432
 PG_TCP_HOST = "127.0.0.1"
 PG_PIPE_HOST = "."
+# Small curated list — avoid scanning 100+ ports (each probe can block ~1.5s on Windows).
+PG_TCP_PORT_CANDIDATES = (
+    PG_PORT_DEFAULT,
+    25433,
+    25434,
+    25435,
+    25436,
+    PG_PORT_LEGACY,
+    5433,
+    15432,
+)
+PORT_PROBE_TIMEOUT = 0.25
+PG_ISREADY_PROBE_TIMEOUT = 2.0
 MINIO_PORT = 59000
 CREATE_NO_WINDOW = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -143,11 +156,11 @@ def _health_ok(port: int) -> bool:
         return False
 
 
-def _port_open(host: str, port: int) -> bool:
+def _port_open(host: str, port: int, timeout: float = PORT_PROBE_TIMEOUT) -> bool:
     import socket
 
     try:
-        with socket.create_connection((host, port), timeout=1.5):
+        with socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
         return False
@@ -327,17 +340,8 @@ def _postgres_port_candidates(data_dir: Path, pgdata: Path) -> list[int]:
 
     add(_read_pg_port_from_state(data_dir))
     add(_read_pg_port_from_conf(pgdata))
-    add(PG_PORT_DEFAULT)
-    for base in (7432, 8432, 9432, 10432, 12432, 15432):
-        for offset in range(10):
-            add(base + offset)
-    for port in range(DEFAULT_PORT + 100, DEFAULT_PORT + 120):
+    for port in PG_TCP_PORT_CANDIDATES:
         add(port)
-    for port in range(MINIO_PORT - 250, MINIO_PORT - 200):
-        add(port)
-    for offset in range(6):
-        add(PG_PORT_DEFAULT + offset)
-    add(PG_PORT_LEGACY)
     return ordered
 
 
@@ -378,12 +382,23 @@ def _log_windows_port_diagnostics() -> None:
 
 
 def _kill_stale_postgres_for_pgdata(data_dir: Path) -> None:
+    pgdata = data_dir / "pgdata"
+    if not pgdata.is_dir():
+        return
+    pid = _read_postmaster_pid(pgdata)
+    if pid and _pid_alive(pid):
+        _log(f"killing stale postgres pid={pid} from postmaster.pid")
+        _kill_process_tree(pid)
+        pid_file = pgdata / "postmaster.pid"
+        if pid_file.is_file():
+            try:
+                pid_file.unlink()
+            except OSError:
+                pass
+        return
     if sys.platform != "win32":
         return
-    pgdata = str(data_dir / "pgdata")
-    if not pgdata:
-        return
-    escaped = pgdata.replace("'", "''")
+    escaped = str(pgdata).replace("'", "''")
     script = (
         "Get-CimInstance Win32_Process -Filter \"Name='postgres.exe'\" | "
         f"Where-Object {{ $_.CommandLine -like '*{escaped}*' }} | "
@@ -397,18 +412,42 @@ def _kill_stale_postgres_for_pgdata(data_dir: Path) -> None:
             encoding="utf-8",
             errors="replace",
             creationflags=_subprocess_flags(),
-            timeout=20,
+            timeout=8,
         )
         for line in result.stdout.splitlines():
             line = line.strip()
             if not line.isdigit():
                 continue
-            pid = int(line)
-            if _pid_alive(pid):
-                _log(f"killing stale postgres.exe pid={pid} for pgdata")
-                _kill_process_tree(pid)
+            stale_pid = int(line)
+            if _pid_alive(stale_pid):
+                _log(f"killing stale postgres.exe pid={stale_pid} for pgdata")
+                _kill_process_tree(stale_pid)
     except OSError as exc:
         _log(f"could not scan stale postgres processes: {exc}")
+
+
+def _pg_isready_once(
+    install_dir: Path,
+    pgdata: Path,
+    port: int,
+    host: str,
+    timeout: float = PG_ISREADY_PROBE_TIMEOUT,
+) -> bool:
+    pg_isready = _postgres_bin(install_dir, "pg_isready.exe")
+    if not pg_isready.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(pg_isready), "-h", host, "-p", str(port), "-q"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=_postgres_env(install_dir, pgdata, port),
+            creationflags=_subprocess_flags(),
+            timeout=timeout,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def _postgres_accepts_connections(
@@ -418,25 +457,18 @@ def _postgres_accepts_connections(
     host: str,
     timeout: float = 30.0,
 ) -> bool:
-    pg_isready = _postgres_bin(install_dir, "pg_isready.exe")
-    if pg_isready.is_file():
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            result = subprocess.run(
-                [str(pg_isready), "-h", host, "-p", str(port), "-q"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=_postgres_env(install_dir, pgdata, port),
-                creationflags=_subprocess_flags(),
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return True
-            time.sleep(0.5)
-        return False
+    if _pg_isready_once(install_dir, pgdata, port, host):
+        return True
     if host == PG_PIPE_HOST:
         return False
-    return _wait_for_port(host, port, timeout)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _pg_isready_once(install_dir, pgdata, port, host):
+            return True
+        if _port_open(host, port):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _update_postgresql_conf_port(pgdata: Path, port: int) -> None:
@@ -655,7 +687,7 @@ def _postgres_running(
 ) -> bool:
     if host == PG_TCP_HOST and not _port_open(host, port):
         return False
-    return _postgres_accepts_connections(install_dir, pgdata, port, host, timeout=3)
+    return _pg_isready_once(install_dir, pgdata, port, host)
 
 
 def _reuse_running_postgres(
@@ -791,6 +823,7 @@ def _try_start_postgres_pipe(
 
 def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     pgdata = data_dir / "pgdata"
+    _log("postgres setup begin")
     _kill_stale_postgres_for_pgdata(data_dir)
 
     initdb = _postgres_bin(install_dir, "initdb.exe")
@@ -799,22 +832,30 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     if not initdb.is_file() or not pg_ctl.is_file():
         raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
 
+    candidates = _postgres_port_candidates(data_dir, pgdata)
+    _log(f"postgres port candidates: {candidates}")
+
     saved = _read_pg_state(data_dir)
     if saved and _reuse_running_postgres(
         data_dir, install_dir, pgdata, saved[0], saved[1], psql
     ):
         return
 
-    for port in _postgres_port_candidates(data_dir, pgdata):
-        if _port_open(PG_TCP_HOST, port) and _reuse_running_postgres(
-            data_dir, install_dir, pgdata, PG_TCP_HOST, port, psql
+    for port in candidates:
+        host = PG_TCP_HOST
+        if _port_open(host, port) and _reuse_running_postgres(
+            data_dir, install_dir, pgdata, host, port, psql
+        ):
+            return
+        if _reuse_running_postgres(
+            data_dir, install_dir, pgdata, PG_PIPE_HOST, port, psql
         ):
             return
 
     existing_pid = _read_postmaster_pid(pgdata)
     if existing_pid is not None and _pid_alive(existing_pid):
-        for port in _postgres_port_candidates(data_dir, pgdata):
-            _log(f"existing postgres pid={existing_pid}; waiting for port {port}")
+        for port in candidates:
+            _log(f"existing postgres pid={existing_pid}; probing port {port}")
             if _reuse_running_postgres(
                 data_dir,
                 install_dir,
@@ -825,37 +866,55 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
                 pid=existing_pid,
             ):
                 return
-        _log(f"postgres pid={existing_pid} alive but no known port open; stopping stale process")
+            if _reuse_running_postgres(
+                data_dir,
+                install_dir,
+                pgdata,
+                PG_PIPE_HOST,
+                port,
+                psql,
+                pid=existing_pid,
+            ):
+                return
+        _log(f"postgres pid={existing_pid} alive but not accepting connections; stopping")
         _kill_process_tree(existing_pid)
 
     if _cleanup_stale_postmaster_pid(pgdata):
-        for port in _postgres_port_candidates(data_dir, pgdata):
+        for port in candidates:
             if _reuse_running_postgres(
                 data_dir, install_dir, pgdata, PG_TCP_HOST, port, psql
+            ):
+                return
+            if _reuse_running_postgres(
+                data_dir, install_dir, pgdata, PG_PIPE_HOST, port, psql
             ):
                 return
 
     _init_postgres_data_dir(data_dir, install_dir, pgdata, initdb)
 
-    for pg_port in _postgres_port_candidates(data_dir, pgdata):
+    # Windows: prefer named pipes first — immune to Hyper-V excluded TCP port ranges.
+    if sys.platform == "win32":
+        _log("windows: trying named-pipe mode before TCP")
+        for pg_port in candidates:
+            if _try_start_postgres_pipe(
+                data_dir, install_dir, pgdata, pg_port, pg_ctl, psql
+            ):
+                return
+
+    for pg_port in candidates:
         if _try_start_postgres_tcp(
             data_dir, install_dir, pgdata, pg_port, pg_ctl, psql
         ):
             return
 
-    _log_windows_port_diagnostics()
-    pipe_ports: list[int] = []
-    seen_pipe: set[int] = set()
-    for pg_port in (PG_PORT_DEFAULT, PG_PORT_LEGACY, *_postgres_port_candidates(data_dir, pgdata)):
-        if pg_port not in seen_pipe:
-            seen_pipe.add(pg_port)
-            pipe_ports.append(pg_port)
-    for pg_port in pipe_ports:
-        if _try_start_postgres_pipe(
-            data_dir, install_dir, pgdata, pg_port, pg_ctl, psql
-        ):
-            return
+    if sys.platform != "win32":
+        for pg_port in candidates:
+            if _try_start_postgres_pipe(
+                data_dir, install_dir, pgdata, pg_port, pg_ctl, psql
+            ):
+                return
 
+    _log_windows_port_diagnostics()
     raise RuntimeError(_postgres_start_failed_message())
 
 
