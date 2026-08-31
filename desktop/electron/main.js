@@ -32,8 +32,8 @@ function resolveAppIcon() {
 }
 
 const APP_ICON = resolveAppIcon();
-const HEALTH_TIMEOUT_MS = 120000;
-const LOADING_ERROR_TIMEOUT_MS = 120000;
+const HEALTH_TIMEOUT_MS = 180000;
+const LOADING_ERROR_TIMEOUT_MS = 180000;
 const ELECTRON_LOG_FILE = "electron.log";
 
 let mainWindow = null;
