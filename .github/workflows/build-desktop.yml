@@ -109,6 +109,22 @@ jobs:
           Copy-Item $src $dest
           Get-Item $src, $dest | Format-Table Name, Length, LastWriteTime
 
+      - name: Install and launch packaged application (Windows smoke test)
+        shell: pwsh
+        run: |
+          ./scripts/ci/verify-installed-desktop.ps1 `
+            -InstallerPath "dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe" `
+            -ExpectedVersion "${{ steps.meta.outputs.version }}"
+
+      - name: Upload installed application diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-smoke-diagnostics-${{ steps.meta.outputs.artifact_suffix }}
+          path: ${{ runner.temp }}/TenderAgentSmoke/artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
