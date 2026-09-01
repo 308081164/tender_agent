@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import CompanyProfile, FieldDef, Qualification, Template, TenderProject
-from app.services import ai
+from app.services import agent_flows, ai
 
 
 FEATURE_CARDS = [
@@ -25,7 +25,7 @@ FEATURE_CARDS = [
         "title": "标书转模板",
         "description": "上传完整标书，AI 自动识别并替换为占位符",
         "icon": "🧩",
-        "url": "/admin/templates/new",
+        "url": "/chat",
         "intent": "create_template",
     },
     {
@@ -47,10 +47,10 @@ FEATURE_CARDS = [
 ]
 
 SUGGESTED_PROMPTS = [
-    "帮我新建一份标书",
+    "帮我写一份标书",
+    "把上传的标书创建为模板",
     "按模板生成一份新标书",
     "公司有哪些铁路相关资质？",
-    "如何从已有标书创建模板？",
     "修改选中段落，使语气更正式",
 ]
 
@@ -64,9 +64,11 @@ INTENT_PATTERNS: list[tuple[str, list[str], float]] = [
     ], 0.95),
     ("create_project", [
         "新建标书", "创建标书", "开始做标书", "写一份标书", "新建项目", "创建项目",
+        "一份标书", "新标书", "做标书", "帮我写标书", "写标书",
     ], 0.9),
     ("create_template", [
         "创建模板", "做模板", "标书转模板", "转成模板", "占位符", "模板化", "工程化",
+        "创建为模板", "建为模板", "做成模板", "作为模板", "变为模板", "生成模板",
     ], 0.9),
     ("edit_project", [
         "微调", "修改章节", "编辑标书", "完善标书", "六步向导", "向导编辑",
@@ -152,7 +154,9 @@ def _latest_project(db: Session) -> TenderProject | None:
     return db.query(TenderProject).order_by(TenderProject.updated_at.desc()).first()
 
 
-async def _handle_create_project(db: Session, text: str) -> dict[str, Any]:
+async def _handle_create_project(db: Session, text: str, session=None) -> dict[str, Any]:
+    if session is not None:
+        return await agent_flows.start_project_create(db, session)
     tpl = (
         db.query(Template)
         .filter(Template.enabled.is_(True), Template.kind.in_(["template", "skeleton"]))
@@ -195,7 +199,9 @@ async def _handle_create_project(db: Session, text: str) -> dict[str, Any]:
     }
 
 
-async def _handle_create_template(db: Session) -> dict[str, Any]:
+async def _handle_create_template(db: Session, session=None) -> dict[str, Any]:
+    if session is not None:
+        return await agent_flows.start_template_create(db, session)
     return {
         "answer": (
             "您可以将一份完整标书工程化为可复用模板。\n\n"
@@ -209,8 +215,7 @@ async def _handle_create_template(db: Session) -> dict[str, Any]:
         "metadata": {
             "intent": "create_template",
             "actions": [
-                {"type": "link", "label": "上传标书 DOCX", "url": "/admin/templates/new", "primary": True},
-                {"type": "link", "label": "管理已有模板", "url": "/admin/templates"},
+                {"type": "link", "label": "管理已有模板", "url": "/admin/templates", "primary": True},
             ],
         },
     }
@@ -397,6 +402,9 @@ async def _handle_search_info(db: Session, text: str, history: list[dict], faq_i
     }
 
 
+_CANCEL_WORDS = ("取消", "算了", "不用了", "先不", "退出")
+
+
 async def process_chat_message(
     text: str,
     db: Session,
@@ -405,7 +413,18 @@ async def process_chat_message(
     *,
     workspace: dict | None = None,
     context: dict | None = None,
+    session=None,
 ) -> dict[str, Any]:
+    # 流程状态机优先：进行中的多轮任务由卡片驱动，文本仅支持取消
+    if session is not None:
+        pa = (workspace or {}).get("pending_action")
+        if isinstance(pa, dict) and pa.get("flow"):
+            if any(w in text for w in _CANCEL_WORDS):
+                return agent_flows.cancel_flow(db, session)
+            hint = agent_flows.pending_hint(session)
+            if hint:
+                return hint
+
     intent = await _classify_intent(text, db=db)
     hist = history or []
     faqs = faq_items or []
@@ -417,9 +436,9 @@ async def process_chat_message(
     if intent == "open_workspace":
         return await _handle_open_workspace()
     if intent == "create_project":
-        return await _handle_create_project(db, text)
+        return await _handle_create_project(db, text, session=session)
     if intent == "create_template":
-        return await _handle_create_template(db)
+        return await _handle_create_template(db, session=session)
     if intent == "edit_project":
         return await _handle_edit_project(db)
     if intent == "draft_create":

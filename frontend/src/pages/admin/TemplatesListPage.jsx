@@ -1,23 +1,24 @@
-import React, { useCallback, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import React, { useCallback, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import { useAdminList } from '../../hooks/useAdminList'
 import AdminPageHeader from '../../components/admin/AdminPageHeader'
 import AdminToolbar from '../../components/admin/AdminToolbar'
 import AdminEmptyState from '../../components/admin/AdminEmptyState'
 import Pagination from '../../components/Pagination'
-import { TEMPLATE_CODES, TEMPLATE_KINDS } from '../../constants/admin'
 
 export default function TemplatesListPage() {
-  const navigate = useNavigate()
   const [tab, setTab] = useState('template')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const fileRef = useRef(null)
 
   const fetchFn = useCallback(({ page, pageSize, q, kind, enabled }) =>
     api.adminTemplates({ page, pageSize, q, kind, enabled }), [])
 
   const {
     items, total, page, setPage, pageSize, search, setSearch,
-    filters, setFilters, loading, totalPages,
+    filters, setFilters, loading, totalPages, reload,
   } = useAdminList(fetchFn, { initialFilters: { kind: 'template', enabled: '' } })
 
   const tabs = useMemo(() => ([
@@ -33,13 +34,42 @@ export default function TemplatesListPage() {
     else setFilters({ kind: t.kind, enabled: '' })
   }
 
+  const onUpload = async (file) => {
+    if (!file || uploading) return
+    setUploading(true)
+    setUploadError('')
+    try {
+      await api.uploadTemplate(file, { kind: tab === 'template' ? 'template' : (tab === 'disabled' ? 'template' : tab) })
+      await reload()
+    } catch (e) {
+      setUploadError(e.message || '上传失败')
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const uploadButton = (
+    <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}>
+      {uploading ? '上传中…' : '上传模板'}
+    </button>
+  )
+
   return (
     <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".docx"
+        className="hidden"
+        onChange={(e) => onUpload(e.target.files?.[0])}
+      />
       <AdminPageHeader
         title="模板管理"
         lead="工程化模板、历史标书与骨架模板。支持系统内预览、占位符查看与 DOCX 下载。"
-        actions={<button type="button" onClick={() => navigate('/admin/templates/new')}>上传模板</button>}
+        actions={uploadButton}
       />
+      {uploadError ? <div className="banner err">{uploadError}</div> : null}
       <div className="filter-tabs">
         {tabs.map((t) => (
           <button
@@ -55,7 +85,11 @@ export default function TemplatesListPage() {
       <AdminToolbar search={search} onSearchChange={setSearch} searchPlaceholder="搜索模板名称…" />
       {loading ? <div className="admin-loading">加载中…</div> : null}
       {!loading && items.length === 0 ? (
-        <AdminEmptyState title="暂无模板" action={<button type="button" onClick={() => navigate('/admin/templates/new')}>上传 DOCX</button>} />
+        <AdminEmptyState title="暂无模板" action={(
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}>
+            {uploading ? '上传中…' : '上传 DOCX'}
+          </button>
+        )} />
       ) : (
         <>
           <table className="data-table admin-table">

@@ -658,6 +658,74 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 .preview-truncated { margin-top: 12px; font-size: 12px; }
 .admin-template-preview .preview-doc.preview-pdf { margin: 0 16px 16px; border-radius: 12px; }
 
+/* ============ Agent 卡片协议 ============ */
+.chat-cards { display: grid; gap: 10px; margin-top: 10px; }
+.chat-card {
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); overflow: hidden;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+}
+.chat-card.resolved { opacity: 0.88; }
+.chat-card-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--surface-2);
+  font-size: 14px;
+}
+.chat-card-state {
+  font-size: 11px; font-weight: 750; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--muted);
+}
+.chat-card-state.confirmed { color: var(--success); border-color: #a7f3d0; background: #ecfdf5; }
+.chat-card-state.cancelled { color: var(--muted); }
+.chat-card-result {
+  padding: 8px 14px 0; font-size: 12px; color: var(--success); font-weight: 650;
+}
+.chat-card-body { padding: 12px 14px; }
+.chat-card-foot {
+  display: flex; gap: 8px; justify-content: flex-end; align-items: center;
+  padding: 10px 14px; border-top: 1px solid var(--line);
+}
+.chat-card-hint { color: var(--muted); font-size: 12px; }
+.chat-card-text { margin: 0; font-size: 14px; }
+.chat-card-tools { display: flex; gap: 6px; margin-bottom: 8px; }
+
+.tpl-picker-list { display: grid; gap: 8px; }
+.tpl-picker-item {
+  display: grid; gap: 2px; text-align: left; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+  color: var(--ink); font-weight: 400;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.tpl-picker-item:hover:not(:disabled) { border-color: #c7d7fe; background: var(--surface); }
+.tpl-picker-item.selected { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.tpl-picker-name { font-weight: 700; font-size: 14px; }
+.tpl-picker-meta { color: var(--muted); font-size: 12px; }
+
+.mapping-list { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.mapping-item {
+  display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  cursor: pointer; background: var(--surface);
+}
+.mapping-item.approved { border-color: #c7d7fe; background: var(--primary-soft); }
+.mapping-texts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; min-width: 0; }
+.mapping-original { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.mapping-arrow { color: var(--muted); }
+.mapping-key { color: var(--primary); font-weight: 750; }
+.mapping-field { color: var(--muted); font-size: 12px; }
+
+.field-collect-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.chat-workspace-panel .field-collect-grid { grid-template-columns: 1fr; }
+
+.info-grid { display: grid; gap: 6px; }
+.info-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.info-row span { color: var(--muted); }
+.info-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
+.info-tags code {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 2px 6px; font-size: 12px; color: var(--primary);
+}
+
 /* ============ 响应式 ============ */
 @media (max-width: 1100px) {
   .chat-workspace-split { grid-template-columns: 1fr; }

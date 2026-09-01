@@ -1,5 +1,6 @@
 from datetime import datetime
 from urllib.parse import quote
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -1063,6 +1064,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         faq_items=items,
         workspace=getattr(s, "workspace", None) or {},
         context=body.context or {},
+        session=s,
     )
 
     meta = dict(result.get("metadata") or {})
@@ -1151,6 +1153,84 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         "source": result.get("source"),
         "matched_question": result.get("matched_question"),
         "mode": result.get("mode"),
+        "metadata": meta,
+    }
+
+
+class ChatActionRequest(BaseModel):
+    message_id: int | None = None
+    card_id: str = ""
+    action: str
+    payload: dict = {}
+
+
+def _resolve_card_state(message: ChatMessage | None, card_id: str, action: str, label: str) -> None:
+    """将卡片状态固化为 confirmed/cancelled，防止重复操作。"""
+    if not message or not card_id:
+        return
+    meta = dict(getattr(message, "metadata_json", None) or {})
+    cards = meta.get("cards") or []
+    changed = False
+    for card in cards:
+        if card.get("id") == card_id and card.get("state") == "active":
+            card["state"] = "cancelled" if action == "cancel_flow" else "confirmed"
+            card["result_label"] = label
+            changed = True
+    if changed:
+        meta["cards"] = cards
+        message.metadata_json = meta
+        flag_modified(message, "metadata_json")
+
+
+@router.post("/chat/sessions/{session_id}/actions")
+async def post_chat_action(session_id: int, body: ChatActionRequest, db: Session = Depends(get_db)):
+    """卡片动作回调：驱动多轮流程状态机，返回用户操作消息与新的助手消息。"""
+    from app.services import agent_flows
+
+    s = get_session_or_404(db, session_id)
+    acted_message = None
+    if body.message_id:
+        acted_message = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.id == body.message_id, ChatMessage.session_id == s.id)
+            .first()
+        )
+
+    user_label, result, _ws_updated = await agent_flows.handle_action(
+        db, s, body.action, body.payload or {}
+    )
+    meta = dict(result.get("metadata") or {})
+
+    if acted_message is not None:
+        _resolve_card_state(acted_message, body.card_id, body.action, user_label)
+
+    user_msg = None
+    if user_label:
+        user_msg = ChatMessage(session_id=s.id, role="user", content=user_label)
+        db.add(user_msg)
+        db.flush()
+
+    bot_msg = ChatMessage(
+        session_id=s.id,
+        role="assistant",
+        content=result.get("answer") or "",
+        source=result.get("source") or "",
+        matched_question=result.get("matched_question") or "",
+        metadata_json=meta,
+    )
+    db.add(bot_msg)
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(bot_msg)
+    db.refresh(s)
+    if user_msg is not None:
+        db.refresh(user_msg)
+
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg) if user_msg is not None else None,
+        "assistant_message": message_to_dict(bot_msg),
+        "acted_message": message_to_dict(acted_message) if acted_message is not None else None,
         "metadata": meta,
     }
 
@@ -1261,17 +1341,31 @@ async def upload_chat_file(
         ws["last_action"] = "upload"
         s.workspace = ws
         answer = (
-            f"已加载模板「{fname}」到左侧工作区（{len(data) // 1024} KB）。\n\n"
+            f"已加载文档「{fname}」到左侧工作区（{len(data) // 1024} KB）。\n\n"
             f"检测到 {len(placeholders)} 个占位符。\n"
-            "请说明编写要求，例如：「按模板生成标书，项目名称…，招标人…」。"
-            "也可选中左侧段落发送修改指令。"
+            "您可以：直接说明编写要求生成标书（如「按模板生成，项目名称…」），"
+            "或将此文档工程化为可复用模板。"
         )
         actions = [
             {"type": "link", "label": "下载当前文档", "url": f"/api/chat/sessions/{session_id}/workspace/download"},
         ]
+        cards = [{
+            "id": f"upload-{uuid.uuid4().hex[:8]}",
+            "type": "confirm",
+            "title": "将此文档创建为模板？",
+            "state": "active",
+            "payload": {
+                "message": "我将识别其中的项目名称、招标人、金额等字段并替换为占位符，生成可复用模板。",
+                "confirm_label": "创建模板",
+                "cancel_label": "仅作为文档使用",
+                "confirm_action": "start_template_create",
+                "cancel_action": "dismiss_card",
+            },
+        }]
     else:
         answer = f"已收到文件「{fname}」。当前支持 DOCX 标书文件的模板化分析，其他格式可作为参考资料。"
         actions = [{"type": "link", "label": "前往数据管理", "url": "/admin"}]
+        cards = []
 
     user_msg = ChatMessage(
         session_id=s.id,
@@ -1284,7 +1378,7 @@ async def upload_chat_file(
         session_id=s.id,
         role="assistant",
         content=answer,
-        metadata_json={"intent": "file_upload", "actions": actions, "attachment_key": key},
+        metadata_json={"intent": "file_upload", "actions": actions, "attachment_key": key, "cards": cards},
     )
     db.add(bot_msg)
     s.updated_at = datetime.utcnow()

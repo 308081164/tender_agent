@@ -20,6 +20,7 @@ export default function ChatPage() {
   const [renameValue, setRenameValue] = useState('')
   const [selectedText, setSelectedText] = useState('')
   const [showSessions, setShowSessions] = useState(false)
+  const [actingCardId, setActingCardId] = useState(null)
   const fileRef = useRef(null)
   const bottomRef = useRef(null)
 
@@ -146,6 +147,39 @@ export default function ChatPage() {
     showToast('段落已保存')
   }
 
+  const handleCardAction = async (message, card, action, payload) => {
+    if (actingCardId || loading) return
+    setActingCardId(card.id)
+    try {
+      const id = await ensureSession()
+      const res = await api.sendChatAction(id, {
+        message_id: message.id,
+        card_id: card.id,
+        action,
+        payload: payload || {},
+      })
+      setMessages((list) => {
+        const next = list.map((m) => (
+          m.id && res.acted_message && m.id === res.acted_message.id ? res.acted_message : m
+        ))
+        if (res.user_message) next.push(res.user_message)
+        if (res.assistant_message) next.push(res.assistant_message)
+        return next
+      })
+      if (res.session) {
+        setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
+        setWorkspace(res.session.workspace || {})
+      }
+      if (res.metadata?.workspace_updated || res.session?.workspace) {
+        await refreshWorkspace(id)
+      }
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setActingCardId(null)
+    }
+  }
+
   return (
     <div className="chat-workspace-page">
       <header className="chat-workspace-topbar">
@@ -203,7 +237,14 @@ export default function ChatPage() {
                 </div>
               </div>
             ) : (
-              messages.map((m, i) => <ChatMessageBubble key={m.id || i} message={m} />)
+              messages.map((m, i) => (
+                <ChatMessageBubble
+                  key={m.id || i}
+                  message={m}
+                  onCardAction={handleCardAction}
+                  actingCardId={actingCardId}
+                />
+              ))
             )}
             {loading ? <div className="chat-msg bot">处理中…</div> : null}
             <div ref={bottomRef} />
