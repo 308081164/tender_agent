@@ -1,0 +1,102 @@
+name: Publish Desktop Base Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Base release version"
+        required: true
+        type: string
+      source_tag:
+        description: "Verified source tag containing the installer asset"
+        required: true
+        type: string
+      source_asset:
+        description: "Verified installer asset filename"
+        required: true
+        type: string
+      delete_old_releases:
+        description: "Delete all other desktop-v* releases and tags"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-desktop-base
+  cancel-in-progress: false
+
+jobs:
+  publish-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_tag }}
+
+      - name: Download verified installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          curl -fL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            -o "dist/${{ inputs.source_asset }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/download/${{ inputs.source_tag }}/${{ inputs.source_asset }}"
+
+      - name: Publish base release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ inputs.version }}
+          name: 标书智能体 Desktop ${{ inputs.version }}（基座版本）
+          body: |
+            ## 标书智能体 Desktop ${{ inputs.version }}（基座版本）
+
+            这是当前项目的**唯一正式基座版本**。该安装包已在干净 Windows 虚拟机完成真实安装、启动和服务健康验证。
+
+            ### 验证结果
+            - 静默安装成功
+            - `TenderAgent.exe` 成功启动
+            - PostgreSQL 初始化并监听 `127.0.0.1:25432`
+            - MinIO 成功启动
+            - 后端 `/api/health` 返回 HTTP 200
+            - 前端首页返回有效 HTML
+
+            ### 下载
+            直接下载 Assets 中的 `${{ inputs.source_asset }}`。
+
+            ### 说明
+            - 后续桌面版本应以本基座版本为基础演进。
+            - 首次安装前建议删除旧数据：`%LOCALAPPDATA%\TenderAgent\data`。
+            - 请勿以管理员身份运行。
+
+            ### 验证来源
+            - Source release: `${{ inputs.source_tag }}`
+            - Commit: `${{ github.sha }}`
+            - Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: dist/${{ inputs.source_asset }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          overwrite_files: true
+
+      - name: Delete old desktop releases and tags
+        if: inputs.delete_old_releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_TAG: desktop-v${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.tagName | startswith("desktop-v")) | select(.tagName != env.KEEP_TAG) | .tagName' |
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Deleting old release/tag: $tag"
+            gh release delete "$tag" --yes --cleanup-tag || true
+          done
