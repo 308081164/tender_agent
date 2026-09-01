@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
-import HistoryCard from '../components/HistoryCard'
 import PreviewModal from '../components/PreviewModal'
+import { formatTime } from '../utils/format'
+import { STEPS } from '../constants'
 
 export default function HomePage() {
   const navigate = useNavigate()
@@ -27,35 +28,40 @@ export default function HomePage() {
 
   const startNew = () => navigate('/projects/new')
 
+  const stats = {
+    all: projects.length,
+    draft: projects.filter((p) => p.status !== 'exported').length,
+    exported: projects.filter((p) => p.status === 'exported').length,
+  }
+
   return (
     <>
       <div className="panel home-hero">
         <div className="home-head">
           <div>
-            <h2>历史标书</h2>
-            <p className="lead">查看并继续未完成的标书，或打开已导出项目进行复用完善。</p>
+            <h2>工作台</h2>
+            <p className="lead">继续处理进行中的标书，或从模板快速开始一份新标书。</p>
           </div>
           <div className="actions" style={{ marginTop: 0 }}>
-            <button onClick={startNew} disabled={bootLoading}>新建标书</button>
-            <button className="secondary" onClick={() => navigate('/chat')} disabled={bootLoading}>智能助手</button>
-            <button className="secondary" onClick={() => navigate('/settings')} disabled={bootLoading}>
-              系统设置
+            <button className="secondary" onClick={() => navigate('/chat')} disabled={bootLoading}>
+              文档 Agent
             </button>
+            <button onClick={startNew} disabled={bootLoading}>新建标书</button>
           </div>
         </div>
 
         <div className="home-stats">
           <div className="stat-chip">
-            <span className="stat-num">{projects.length}</span>
-            <span className="stat-label">全部</span>
+            <div><span className="stat-num">{stats.all}</span><br /><span className="stat-label">全部项目</span></div>
+            <span className="stat-icon">▦</span>
           </div>
           <div className="stat-chip">
-            <span className="stat-num">{projects.filter((p) => p.status !== 'exported').length}</span>
-            <span className="stat-label">进行中</span>
+            <div><span className="stat-num">{stats.draft}</span><br /><span className="stat-label">进行中</span></div>
+            <span className="stat-icon">→</span>
           </div>
           <div className="stat-chip">
-            <span className="stat-num">{projects.filter((p) => p.status === 'exported').length}</span>
-            <span className="stat-label">已导出</span>
+            <div><span className="stat-num">{stats.exported}</span><br /><span className="stat-label">已导出</span></div>
+            <span className="stat-icon">✓</span>
           </div>
         </div>
 
@@ -75,23 +81,63 @@ export default function HomePage() {
           ))}
         </div>
 
-        <div className="history-grid">
-          {filteredProjects.length === 0 && (
-            <div className="empty-history">
-              <h3>暂无历史标书</h3>
-              <p>创建第一份标书后，将在此展示项目名称、招标人、进度与摘要。</p>
-              <button onClick={startNew} disabled={bootLoading}>开始新建</button>
-            </div>
-          )}
-          {filteredProjects.map((p) => (
-            <HistoryCard
-              key={p.id}
-              project={p}
-              onOpen={openProject}
-              onPreview={(proj) => setPreviewTarget(proj)}
-            />
-          ))}
-        </div>
+        {filteredProjects.length === 0 ? (
+          <div className="empty-history">
+            <h3>暂无标书项目</h3>
+            <p>创建第一份标书后，将在此展示项目名称、招标人、进度与状态。</p>
+            <button onClick={startNew} disabled={bootLoading}>开始新建</button>
+          </div>
+        ) : (
+          <div className="panel project-table-card">
+            <table className="project-table">
+              <thead>
+                <tr>
+                  <th>项目</th>
+                  <th>当前步骤</th>
+                  <th>状态</th>
+                  <th>更新时间</th>
+                  <th style={{ width: 140 }}></th>
+                  </tr>
+              </thead>
+              <tbody>
+                {filteredProjects.map((p) => {
+                  const s = p.summary || {}
+                  const exported = p.status === 'exported'
+                  const stepName = s.step_name
+                    || STEPS.find((x) => x.step === Math.min(p.current_step || 1, 6))?.name
+                    || `步骤 ${p.current_step}/6`
+                  return (
+                    <tr key={p.id} onClick={() => openProject(p)}>
+                      <td className="project-title-cell">
+                        <strong>{s.project_name || p.title || `标书 #${p.id}`}</strong>
+                        <small>{s.brief || '尚未填写关键信息'}</small>
+                      </td>
+                      <td>{stepName}</td>
+                      <td>
+                        <span className={`status-pill ${exported ? 'exported' : 'draft'}`}>
+                          {s.status_label || (exported ? '已导出' : '进行中')}
+                        </span>
+                      </td>
+                      <td className="muted">{formatTime(p.updated_at || p.created_at)}</td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div className="history-card-actions">
+                          {exported && (
+                            <button type="button" className="ghost tiny" onClick={() => setPreviewTarget(p)}>
+                              预览
+                            </button>
+                          )}
+                          <button type="button" className="ghost tiny" onClick={() => openProject(p)}>
+                            继续
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {previewTarget && (

@@ -26,15 +26,6 @@ export default function App() {
   const [projects, setProjects] = useState([])
   const [bootLoading, setBootLoading] = useState(true)
 
-  const [wizardLayout, setWizardLayout] = useState({
-    project: null,
-    activeStep: 1,
-    onGoStep: null,
-    snapshots: [],
-    onRollback: null,
-    loading: false,
-  })
-
   const refreshProjects = async () => {
     const list = await api.projects()
     setProjects(list)
@@ -95,13 +86,11 @@ export default function App() {
     refreshBaseData,
     settingsInfo: settings.settingsInfo,
     settings,
-    setWizardLayout,
-    wizardLayout,
     startNew,
     bootLoading,
   }), [
     showToast, templates, fieldDefs, quals, categories, projects,
-    settings, bootLoading, wizardLayout, startNew,
+    settings, bootLoading, startNew,
   ])
 
   return (
