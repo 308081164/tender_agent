@@ -12,9 +12,11 @@ $ProgressPreference = "SilentlyContinue"
 
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
 $InstallDir = Join-Path $env:RUNNER_TEMP "TenderAgentInstalled"
-$DataRoot = Join-Path $env:RUNNER_TEMP "TenderAgentSmoke"
-$DataDir = Join-Path $DataRoot "data"
-$ArtifactDir = Join-Path $DataRoot "artifacts"
+# PostgreSQL initdb must be tested on the same user-owned NTFS location used in
+# production. GitHub Runner's D:\a\_temp has inherited ACLs that deny initdb's
+# permission normalization and is not representative of a normal installation.
+$DataDir = Join-Path $env:LOCALAPPDATA "TenderAgent\data"
+$ArtifactDir = Join-Path $env:RUNNER_TEMP "TenderAgentSmoke\artifacts"
 $AppExe = Join-Path $InstallDir "TenderAgent.exe"
 $HealthUrl = "http://127.0.0.1:$Port/api/health"
 $RootUrl = "http://127.0.0.1:$Port/"
@@ -84,7 +86,9 @@ function Stop-StateProcess([string]$StateFile) {
 }
 
 try {
-  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $InstallDir, $DataRoot
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $InstallDir
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Split-Path -Parent $DataDir)
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Split-Path -Parent $ArtifactDir)
   New-Item -ItemType Directory -Force -Path $DataDir, $ArtifactDir | Out-Null
 
   Write-SmokeLog "Installing $InstallerPath into $InstallDir"
@@ -129,6 +133,14 @@ try {
     $AppProcess.Refresh()
     if ($AppProcess.HasExited) {
       throw "TenderAgent.exe exited before becoming healthy (code $($AppProcess.ExitCode))"
+    }
+
+    $electronLog = Join-Path $DataDir "electron.log"
+    if (Test-Path -LiteralPath $electronLog) {
+      $electronText = Get-Content -Raw -LiteralPath $electronLog -Encoding UTF8
+      if ($electronText -match "backend exited code=") {
+        throw "Backend process exited before becoming healthy"
+      }
     }
 
     try {
