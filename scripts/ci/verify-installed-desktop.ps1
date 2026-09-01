@@ -88,18 +88,23 @@ try {
   New-Item -ItemType Directory -Force -Path $DataDir, $ArtifactDir | Out-Null
 
   Write-SmokeLog "Installing $InstallerPath into $InstallDir"
+  $installerLog = Join-Path $ArtifactDir "installer.log"
   $installArgs = @(
     "/VERYSILENT",
     "/SUPPRESSMSGBOXES",
     "/NORESTART",
     "/SP-",
-    "/DIR=$InstallDir"
+    "/DIR=$InstallDir",
+    "/LOG=$installerLog"
   )
   $installer = Start-Process -FilePath $InstallerPath -ArgumentList $installArgs -Wait -PassThru
   if ($installer.ExitCode -ne 0) {
     throw "Installer exited with code $($installer.ExitCode)"
   }
   if (-not (Test-Path -LiteralPath $AppExe)) {
+    Write-SmokeLog "Installed files found under requested directory:"
+    Get-ChildItem -LiteralPath $InstallDir -Recurse -ErrorAction SilentlyContinue |
+      Select-Object -First 50 -ExpandProperty FullName
     throw "Installed application not found: $AppExe"
   }
 

@@ -129,7 +129,3 @@ begin
     KillTenderAgentProcesses(ExpandConstant('{app}'));
 end;
 
-procedure InitializeWizard();
-begin
-  WizardForm.DirEdit.Text := GetExistingInstallDir();
-end;
