@@ -9,10 +9,10 @@ export default function FloatingChat({ chat }) {
           type="button"
           className="floating-chat-btn"
           onClick={chat.openDrawer}
-          aria-label="打开企业问答"
+          aria-label="打开 AI 助手"
         >
-          <span className="floating-chat-icon">问</span>
-          <span className="floating-chat-label">企业问答</span>
+          <span className="floating-chat-icon">AI</span>
+          <span className="floating-chat-label">AI 助手</span>
         </button>
       )}
       <ChatDrawer

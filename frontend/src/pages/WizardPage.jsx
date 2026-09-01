@@ -9,13 +9,14 @@ import { formatTime } from '../utils/format'
 import SnapshotPanel from '../components/SnapshotPanel'
 import PreviewModal from '../components/PreviewModal'
 import Step1TemplatePicker from '../components/Step1TemplatePicker'
+import StepNav from '../components/StepNav'
 
 export default function WizardPage() {
   const { id, step: stepParam } = useParams()
   const navigate = useNavigate()
   const {
     showToast, templates, fieldDefs, quals, categories,
-    refreshProjects, setWizardLayout,
+    refreshProjects,
   } = useApp()
 
   const projectState = useProject(showToast)
@@ -61,21 +62,6 @@ export default function WizardPage() {
     }
     navigate(`/projects/${id}/step/${step}`)
   }
-
-  useEffect(() => {
-    setWizardLayout({
-      project,
-      activeStep,
-      onGoStep: goStep,
-      snapshots,
-      onRollback: handleRollback,
-      loading,
-    })
-    return () => setWizardLayout({
-      project: null, activeStep: 1, onGoStep: null,
-      snapshots: [], onRollback: null, loading: false,
-    })
-  }, [project, activeStep, snapshots, loading])
 
   useEffect(() => {
     if (project?.status === 'exported' || activeStep === 6) {
@@ -240,6 +226,7 @@ export default function WizardPage() {
   return (
     <>
       <div className="panel">
+        <StepNav project={project} activeStep={activeStep} onGoStep={goStep} />
         <div className="wizard-topbar">
           <div>
             <div className="wizard-kicker">当前步骤 {step}/6 · {STEPS.find((s) => s.step === step)?.name}</div>
