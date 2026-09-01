@@ -173,6 +173,12 @@ try {
   }
 
   $serverState = Join-Path $DataDir "server.json"
+  # The launcher writes server.json right after its own health loop succeeds;
+  # allow a grace period so the smoke test does not race the launcher.
+  $stateDeadline = (Get-Date).AddSeconds(30)
+  while (-not (Test-Path -LiteralPath $serverState) -and (Get-Date) -lt $stateDeadline) {
+    Start-Sleep -Seconds 1
+  }
   if (-not (Test-Path -LiteralPath $serverState)) {
     throw "Backend state file was not created: $serverState"
   }
