@@ -710,7 +710,10 @@ def _start_postgres_via_pg_ctl(
             env=_postgres_env(install_dir, pgdata, pg_port),
             creationflags=_subprocess_flags(),
             timeout=45,
-            **_subprocess_capture_kwargs(),
+            # postgres.exe can inherit pg_ctl's captured pipe handles on Windows.
+            # Avoid waiting forever for pipe EOF; server output is already in -l.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         _log(f"pg_ctl start timed out after 45s on port {pg_port}")
@@ -725,10 +728,6 @@ def _start_postgres_via_pg_ctl(
         return
 
     _log(f"pg_ctl start failed code={result.returncode} mode={mode} port={pg_port}")
-    if result.stdout.strip():
-        _log(f"pg_ctl stdout: {result.stdout.strip()}")
-    if result.stderr.strip():
-        _log(f"pg_ctl stderr: {result.stderr.strip()}")
     _append_log_tail(data_dir, "postgres.log")
 
     if _postgres_is_ready(install_dir, pgdata, pg_port, pg_host, data_dir):
