@@ -104,6 +104,8 @@ export const api = {
       body: JSON.stringify({ content, context }),
     }),
   getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),
+  sendChatAction: (sessionId, body) =>
+    request(`/chat/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(body) }),
   getOnlyOfficeConfig: (sessionId) => request(`/chat/sessions/${sessionId}/onlyoffice/config`),
   getOnlyOfficeStatus: () => request('/onlyoffice/status'),
   updateWorkspaceParagraph: (sessionId, paragraphIndex, text) =>
