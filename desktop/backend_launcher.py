@@ -36,7 +36,6 @@ PORT_PROBE_TIMEOUT = 0.25
 PG_ISREADY_PROBE_TIMEOUT = 2.0
 MINIO_PORT = 59000
 CREATE_NO_WINDOW = 0x08000000
-CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 STATE_FILE = "server.json"
 LAUNCHER_PID_FILE = "launcher.pid"
 LAUNCHER_LOG_FILE = "launcher.log"
@@ -205,13 +204,14 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
-def _subprocess_flags(*, detach: bool = False) -> int:
+def _subprocess_flags() -> int:
     if sys.platform != "win32":
         return 0
-    flags = CREATE_NO_WINDOW
-    if detach:
-        flags |= CREATE_BREAKAWAY_FROM_JOB
-    return flags
+    # CREATE_BREAKAWAY_FROM_JOB fails with ERROR_ACCESS_DENIED when TenderAgent
+    # itself is already inside a non-breakaway Windows Job Object (for example
+    # CI runners and some enterprise launchers). Children remain manageable as
+    # part of the launcher process tree without that flag.
+    return CREATE_NO_WINDOW
 
 
 def _subprocess_capture_kwargs() -> dict[str, object]:
@@ -961,7 +961,7 @@ def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
-        creationflags=_subprocess_flags(detach=True),
+        creationflags=_subprocess_flags(),
     )
     _MINIO_PROC = proc
     _write_json(data_dir, MINIO_STATE_FILE, {"port": MINIO_PORT, "pid": proc.pid})
@@ -1094,7 +1094,7 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
         cmd,
         cwd=str(data_dir),
         env=env,
-        creationflags=_subprocess_flags(detach=True),
+        creationflags=_subprocess_flags(),
         stdout=log_file,
         stderr=subprocess.STDOUT,
     )
