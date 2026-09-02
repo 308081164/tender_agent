@@ -245,7 +245,7 @@ def _postgres_bind_error_message(port: int) -> str:
 
 def _postgres_start_failed_message() -> str:
     return (
-        "PostgreSQL 无法启动（TCP 端口与命名管道均失败）。"
+        "PostgreSQL 无法启动（已尝试多个本地端口）。"
         "请删除 %LOCALAPPDATA%\\TenderAgent\\data 后重试，"
         "并确保未勾选快捷方式的「以管理员身份运行」。"
     )
@@ -789,9 +789,10 @@ def _init_postgres_data_dir(
         "UTF8",
         "--auth-local=trust",
         "--auth-host=trust",
+        # Windows 中文系统 locale（Chinese_China.936）与 UTF8 编码不匹配会导致
+        # initdb 直接失败；显式指定 C locale 在所有系统语言下均可初始化。
+        "--locale=C",
     ]
-    if sys.platform != "win32":
-        initdb_cmd.append("--locale=C")
     result = subprocess.run(
         initdb_cmd,
         env=_postgres_env(install_dir, pgdata, PG_PORT_DEFAULT),
@@ -804,7 +805,9 @@ def _init_postgres_data_dir(
             _log(f"initdb stdout: {result.stdout.strip()}")
         if result.stderr.strip():
             _log(f"initdb stderr: {result.stderr.strip()}")
-        raise RuntimeError(f"postgres initdb failed (code {result.returncode})")
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        tail = detail[-1] if detail else ""
+        raise RuntimeError(f"postgres initdb failed (code {result.returncode}): {tail}")
 
     _update_postgresql_conf_port(pgdata, PG_PORT_DEFAULT)
     _update_postgresql_conf_listen(pgdata, tcp=True)
@@ -853,6 +856,29 @@ def _try_start_postgres_tcp(
         return False
 
 
+def _verify_postgres_binaries(install_dir: Path, initdb: Path) -> None:
+    """预检 PostgreSQL 二进制可执行（捕获缺失 VCRUNTIME140.dll 等依赖问题）。"""
+    try:
+        result = subprocess.run(
+            [str(initdb), "--version"],
+            env=_postgres_env(install_dir),
+            creationflags=_subprocess_flags(),
+            timeout=15,
+            **_subprocess_capture_kwargs(),
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"PostgreSQL 组件无法运行：{exc}。"
+            "请重新安装标书智能体；若问题依旧，请联系技术支持。"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        _log(f"initdb --version failed code={result.returncode}: {detail}")
+        raise RuntimeError(
+            f"PostgreSQL 组件自检失败（代码 {result.returncode}）：{detail[:200]}"
+        )
+
+
 def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     pgdata = data_dir / "pgdata"
     _log("postgres setup begin")
@@ -863,6 +889,7 @@ def _ensure_postgres(data_dir: Path, install_dir: Path) -> None:
     psql = _postgres_bin(install_dir, "psql.exe")
     if not initdb.is_file() or not pg_ctl.is_file():
         raise FileNotFoundError(f"未找到 PostgreSQL 工具：{_postgres_root(install_dir) / 'bin'}")
+    _verify_postgres_binaries(install_dir, initdb)
 
     candidates = _postgres_port_candidates(data_dir, pgdata)
     _log(f"postgres port candidates: {candidates}")
