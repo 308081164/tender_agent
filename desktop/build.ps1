@@ -277,6 +277,33 @@ foreach ($required in @("bin\initdb.exe", "bin\pg_ctl.exe", "bin\psql.exe", "bin
   }
 }
 
+# 捆绑 VC++ 2015-2022 运行时 DLL，保证全新 Windows（无开发环境、未装运行库）可运行。
+# EDB 官方二进制依赖 VCRUNTIME140.dll / MSVCP140.dll，但不随包提供；
+# 这些 DLL 属于 Microsoft 官方允许再分发的运行时组件。
+Write-Host "==> Bundling Visual C++ runtime DLLs for PostgreSQL"
+$VcDlls = @("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll")
+$VcSources = @(
+  (Join-Path $env:SystemRoot "System32"),
+  (Join-Path $env:SystemRoot "SysWOW64")
+)
+foreach ($dll in $VcDlls) {
+  $copied = $false
+  foreach ($dir in $VcSources) {
+    $src = Join-Path $dir $dll
+    if (Test-Path -LiteralPath $src) {
+      # 仅接受 64 位 DLL（System32）；SysWOW64 为 32 位，跳过
+      if ($dir -like "*SysWOW64*") { continue }
+      Copy-Item -LiteralPath $src -Destination (Join-Path $PgDest "bin\$dll") -Force
+      Write-Host "  bundled $dll"
+      $copied = $true
+      break
+    }
+  }
+  if (-not $copied) {
+    throw "VC++ runtime DLL not found on build machine: $dll (install vc_redist.x64 on the runner)"
+  }
+}
+
 Write-Host "==> Downloading MinIO"
 $MinioDest = Join-Path $ToolsDir "minio.exe"
 Download-File -Url $MinioUrl -Destination $MinioDest
