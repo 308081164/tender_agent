@@ -258,6 +258,21 @@ def test_intent_routing_to_flows():
     asyncio.run(run())
 
 
+def test_required_fields_options_are_lists():
+    """回归：FieldDef.options 为分号分隔字符串时，字段收集卡必须返回列表。"""
+    from app.services import agent_tools
+    db = _make_db()
+    db.add(FieldDef(
+        key="project_type", name="项目类型", field_type="下拉选项",
+        required=True, sort_order=1, options="铁路工程;轨道交通；线路维护",
+    ))
+    db.commit()
+    fields = agent_tools.required_fields_for_template(db)
+    pt = next(f for f in fields if f["key"] == "project_type")
+    assert isinstance(pt["options"], list)
+    assert pt["options"] == ["铁路工程", "轨道交通", "线路维护"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:
