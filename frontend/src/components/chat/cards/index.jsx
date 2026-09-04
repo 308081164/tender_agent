@@ -5,6 +5,7 @@ import FieldCollectCard from './FieldCollectCard'
 import TemplateInfoCard from './TemplateInfoCard'
 import ProjectInfoCard from './ProjectInfoCard'
 import ConfirmCard from './ConfirmCard'
+import CardErrorBoundary from './CardErrorBoundary'
 
 const RENDERERS = {
   template_picker: TemplatePickerCard,
@@ -23,13 +24,14 @@ export default function ChatCards({ cards = [], message, onAction, actingCardId 
         const Renderer = RENDERERS[card.type]
         if (!Renderer) return null
         return (
-          <Renderer
-            key={card.id}
-            card={card}
-            message={message}
-            acting={actingCardId === card.id}
-            onAction={onAction}
-          />
+          <CardErrorBoundary key={card.id}>
+            <Renderer
+              card={card}
+              message={message}
+              acting={actingCardId === card.id}
+              onAction={onAction}
+            />
+          </CardErrorBoundary>
         )
       })}
     </div>

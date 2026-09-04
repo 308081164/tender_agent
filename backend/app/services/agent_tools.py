@@ -148,6 +148,15 @@ def create_project_with_template(
     return project
 
 
+def _parse_options(raw: Any) -> list[str]:
+    """FieldDef.options 在数据库中是分号分隔字符串，统一解析为列表。"""
+    if isinstance(raw, list):
+        return [str(o) for o in raw if str(o).strip()]
+    if isinstance(raw, str):
+        return [o.strip() for o in raw.replace("；", ";").split(";") if o.strip()]
+    return []
+
+
 def required_fields_for_template(db: Session) -> list[dict[str, Any]]:
     """对话内收集的关键字段：必填优先，补充常用项。"""
     defs = db.query(FieldDef).order_by(FieldDef.sort_order.asc()).all()
@@ -159,7 +168,7 @@ def required_fields_for_template(db: Session) -> list[dict[str, Any]]:
                 "name": f.name,
                 "field_type": f.field_type,
                 "default": f.default_value or "",
-                "options": f.options or [],
+                "options": _parse_options(f.options),
                 "required": True,
             })
     for key in ("project_name", "tender_no", "tenderer", "duration"):
