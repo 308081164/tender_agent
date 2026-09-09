@@ -5,13 +5,14 @@ import { useApp } from '../App'
 
 export default function NewProjectPage() {
   const navigate = useNavigate()
-  const { showToast, refreshProjects } = useApp()
+  const { showToast, refreshProjects, refreshBaseData } = useApp()
   const [error, setError] = useState('')
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
+        await refreshBaseData?.()
         const p = await api.createProject({ title: '新建标书' })
         if (cancelled) return
         await refreshProjects()

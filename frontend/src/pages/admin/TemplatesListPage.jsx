@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
+import { useApp } from '../../App'
 import { useAdminList } from '../../hooks/useAdminList'
 import AdminPageHeader from '../../components/admin/AdminPageHeader'
 import AdminToolbar from '../../components/admin/AdminToolbar'
@@ -8,6 +9,7 @@ import AdminEmptyState from '../../components/admin/AdminEmptyState'
 import Pagination from '../../components/Pagination'
 
 export default function TemplatesListPage() {
+  const { refreshBaseData } = useApp()
   const [tab, setTab] = useState('template')
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
@@ -41,6 +43,7 @@ export default function TemplatesListPage() {
     try {
       await api.uploadTemplate(file, { kind: tab === 'template' ? 'template' : (tab === 'disabled' ? 'template' : tab) })
       await reload()
+      await refreshBaseData?.()
     } catch (e) {
       setUploadError(e.message || '上传失败')
     } finally {

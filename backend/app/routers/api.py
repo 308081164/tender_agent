@@ -315,7 +315,8 @@ def list_templates(include_disabled: bool = False, db: Session = Depends(get_db)
         q = q.filter(Template.enabled.is_(True))
     # 招标文件不作为导出起点
     q = q.filter(Template.kind != "tender_doc")
-    items = q.order_by(Template.kind, Template.id).all()
+    # 新建模板应优先展示，避免用户上传后在向导第 1 页看不到
+    items = q.order_by(Template.id.desc()).all()
     return [
         {
             "id": t.id,
