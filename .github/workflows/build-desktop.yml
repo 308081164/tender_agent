@@ -42,6 +42,19 @@ jobs:
       - name: Verify desktop backend startup (Linux)
         run: ./scripts/verify_desktop_startup.sh
 
+      - name: Build test materials pack
+        run: |
+          pip install python-docx openpyxl
+          python scripts/build_test_materials_pack.py
+
+      - name: Upload test materials artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-materials-pack
+          path: release/tender-agent-test-materials-v*.zip
+          retention-days: 30
+          if-no-files-found: error
+
   build:
     needs: verify-linux
     runs-on: windows-latest
@@ -133,6 +146,19 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Download test materials pack
+        uses: actions/download-artifact@v4
+        with:
+          name: test-materials-pack
+          path: release
+
+      - name: Read product version
+        id: product
+        shell: pwsh
+        run: |
+          $v = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Publish GitHub Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
@@ -145,7 +171,8 @@ jobs:
             Windows 离线安装包，内含 Electron 壳、便携 Python 运行时、PostgreSQL、MinIO 与预编译前端。
 
             ### 下载
-            直接下载下方 **Assets** 中的 `TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe` 即可，无需到 Actions 查找。
+            - **安装包**：`TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe`
+            - **测试材料包**：`tender-agent-test-materials-v${{ steps.product.outputs.version }}.zip`（验收与功能测试用，含一键导入包与手动上传样例）
 
             ### 版本识别
             - 安装包文件名：`TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe`
@@ -162,7 +189,9 @@ jobs:
             - Build: ${{ github.run_number }}
             - Commit: ${{ github.sha }}
             - Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          files: dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe
+          files: |
+            dist/TenderAgentSetup-${{ steps.meta.outputs.artifact_suffix }}.exe
+            release/tender-agent-test-materials-v${{ steps.product.outputs.version }}.zip
           draft: false
           prerelease: ${{ github.event_name != 'push' || contains(steps.meta.outputs.version, '-pr') || contains(steps.meta.outputs.version, '-manual') }}
           make_latest: true

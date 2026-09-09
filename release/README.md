@@ -9,6 +9,7 @@
 | `TenderAgentSetup-v1.1.0.exe` | Windows 离线安装包（在 Windows 上运行 `package-desktop.ps1` 生成后复制至此） |
 | `tender-agent-manual-v1.1.0.md` | 用户手册 |
 | `tender-agent-release-v1.1.0.zip` | 手册 + 验收脚本 + 版本信息压缩包 |
+| `tender-agent-test-materials-v1.1.0.zip` | 系统验收与功能测试用完整材料包 |
 | `VERSION.json` | 版本元数据 |
 
 ## Windows 打包命令

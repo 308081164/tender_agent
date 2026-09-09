@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,7 @@ def main() -> None:
             "windows_installer": f"TenderAgentSetup-v{version}.exe",
             "user_manual": f"tender-agent-manual-v{version}.md",
             "docs_zip": f"tender-agent-release-v{version}.zip",
+            "test_materials_zip": f"tender-agent-test-materials-v{version}.zip",
         },
     }
     (RELEASE / "VERSION.json").write_text(
@@ -53,6 +56,7 @@ def main() -> None:
 | `TenderAgentSetup-v{version}.exe` | Windows 离线安装包（在 Windows 上运行 `package-desktop.ps1` 生成后复制至此） |
 | `tender-agent-manual-v{version}.md` | 用户手册 |
 | `tender-agent-release-v{version}.zip` | 手册 + 验收脚本 + 版本信息压缩包 |
+| `tender-agent-test-materials-v{version}.zip` | 系统验收与功能测试用完整材料包 |
 | `VERSION.json` | 版本元数据 |
 
 ## Windows 打包命令
@@ -78,6 +82,13 @@ def main() -> None:
     if verify_ps1.exists():
         shutil.copy2(verify_ps1, RELEASE / "verify_windows_features.ps1")
 
+    # 测试材料包
+    test_zip = RELEASE / f"tender-agent-test-materials-v{version}.zip"
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "build_test_materials_pack.py")],
+        check=True,
+    )
+
     zip_path = RELEASE / f"tender-agent-release-v{version}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name in ("VERSION.json", "VERSION", "README.md", "用户手册.md", f"tender-agent-manual-v{version}.md"):
@@ -98,6 +109,8 @@ def main() -> None:
     print(f"Release pack ready: {RELEASE}")
     print(f"  version={version}")
     print(f"  zip={zip_path.name}")
+    if test_zip.exists():
+        print(f"  test_materials={test_zip.name}")
 
 
 if __name__ == "__main__":
