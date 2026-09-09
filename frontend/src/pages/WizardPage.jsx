@@ -16,7 +16,7 @@ export default function WizardPage() {
   const navigate = useNavigate()
   const {
     showToast, templates, fieldDefs, quals, categories,
-    refreshProjects,
+    refreshProjects, refreshBaseData,
   } = useApp()
 
   const projectState = useProject(showToast)
@@ -35,6 +35,10 @@ export default function WizardPage() {
   const viewStep = Math.min(Math.max(parseInt(stepParam, 10) || 1, 1), 6)
   const currentStep = project?.current_step || 1
   const activeStep = Math.min(viewStep, 6)
+
+  useEffect(() => {
+    refreshBaseData?.().catch(() => {})
+  }, [id])
 
   useEffect(() => {
     let cancelled = false
