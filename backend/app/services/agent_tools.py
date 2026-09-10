@@ -101,7 +101,15 @@ def apply_template_placeholder_mappings(
     )
     old_key = t.object_key
     t.object_key = new_key
-    t.placeholders = {"list": placeholders, "detected": True}
+    ph_meta = {"list": placeholders, "detected": True}
+    try:
+        from app.services.doc_engine.engine import attach_manifest_to_template
+        from app.services.doc_engine.parser import parse_template_manifest
+        manifest = parse_template_manifest(new_bytes)
+        ph_meta = attach_manifest_to_template(ph_meta, manifest)
+    except Exception:
+        pass
+    t.placeholders = ph_meta
     t.source_snapshot = {**(t.source_snapshot or {}), **snapshot}
     t.enabled = True
     db.flush()

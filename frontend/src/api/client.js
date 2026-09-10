@@ -52,6 +52,14 @@ export const api = {
   insertQuals: (id, qualification_ids) =>
     request(`/projects/${id}/insert-quals`, { method: 'POST', body: JSON.stringify({ qualification_ids }) }),
   validate: (id) => request(`/projects/${id}/validate`, { method: 'POST' }),
+  docReview: (id) => request(`/projects/${id}/doc-review`, { method: 'POST' }),
+  compose: (id, requirements) =>
+    request(`/projects/${id}/compose`, {
+      method: 'POST',
+      body: JSON.stringify({ requirements }),
+    }),
+  analyzeTemplateManifest: (id) =>
+    request(`/admin/templates/${id}/analyze-manifest`, { method: 'POST' }),
   exportDoc: async (id) => {
     const res = await request(`/projects/${id}/export`)
     return res.blob()

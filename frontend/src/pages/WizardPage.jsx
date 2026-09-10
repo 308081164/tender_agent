@@ -31,6 +31,8 @@ export default function WizardPage() {
   const [showSnapshots, setShowSnapshots] = useState(false)
   const [exports, setExports] = useState([])
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [writingRequirements, setWritingRequirements] = useState('')
+  const [docReview, setDocReview] = useState(null)
 
   const viewStep = Math.min(Math.max(parseInt(stepParam, 10) || 1, 1), 6)
   const currentStep = project?.current_step || 1
@@ -116,6 +118,37 @@ export default function WizardPage() {
       const p = await api.generate(project.id)
       await applyProject(p)
       showToast('AI 内容已生成并已自动保存')
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const doCompose = async () => {
+    if (!writingRequirements.trim()) return showToast('请先填写编写要求（招标条款、评分点等）')
+    setLoading(true)
+    try {
+      const nextFields = { ...fields, _writing_requirements: writingRequirements }
+      await api.saveProgress(project.id, { fields: nextFields, current_step: 3, create_snapshot: true })
+      const res = await api.compose(project.id, writingRequirements)
+      await applyProject(res.project)
+      showToast(`创作模式已生成 ${(res.generated_keys || []).length} 个块`)
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const doDocReview = async () => {
+    setLoading(true)
+    try {
+      const result = await api.docReview(project.id)
+      setDocReview(result)
+      const p = await api.getProject(project.id)
+      await applyProject(p)
+      showToast(result.can_export ? '文档审阅通过' : '文档审阅发现问题，请查看详情')
     } catch (e) {
       showToast(e.message)
     } finally {
@@ -310,9 +343,19 @@ export default function WizardPage() {
         {step === 3 && (
           <>
             <h2>AI 内容生成与审核</h2>
-            <p className="lead">逐章节生成标书文本，关键信息高亮便于复核。生成后会自动保存，也可手动保存本步。</p>
+            <p className="lead">空白/结构模板请使用「智能创作」；已有章节模板可一键生成。引擎 v2 将按模板语义分块撰写。</p>
+            <div className="field full" style={{ marginBottom: 12 }}>
+              <label>编写要求（创作模式）</label>
+              <textarea
+                rows={4}
+                value={writingRequirements}
+                onChange={(e) => setWritingRequirements(e.target.value)}
+                placeholder="粘贴招标条款、评分点、工期/供货要求等，系统将结合企业库与项目信息分块创作…"
+              />
+            </div>
             <div className="actions" style={{ marginTop: 0, marginBottom: 16 }}>
-              <button onClick={doGenerate} disabled={loading}>一键生成全部章节</button>
+              <button onClick={doCompose} disabled={loading}>智能创作（空白模板）</button>
+              <button className="secondary" onClick={doGenerate} disabled={loading}>一键生成全部章节</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
             </div>
             {Object.keys(project.chapters || {}).length === 0 ? (
@@ -413,9 +456,25 @@ export default function WizardPage() {
             <h2>条目完整性校验</h2>
             <p className="lead">红灯阻断导出，黄灯警告，绿灯通过。校验结果会自动保存。</p>
             <div className="actions" style={{ marginTop: 0, marginBottom: 16 }}>
-              <button onClick={doValidate} disabled={loading}>执行校验并保存</button>
+              <button onClick={doValidate} disabled={loading}>执行清单校验</button>
+              <button className="secondary" onClick={doDocReview} disabled={loading}>LLM 文档审阅</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
             </div>
+            {docReview && (
+              <div className="card-block" style={{ marginBottom: 16 }}>
+                <p>
+                  文档审阅：
+                  <span className={`level-${docReview.status}`}> {docReview.status}</span>
+                  {docReview.can_export ? ' · 可导出' : ' · 请先处理问题'}
+                </p>
+                {(docReview.issues || []).map((item, i) => (
+                  <div key={`iss-${i}`} className="level-red" style={{ fontSize: 13 }}>{item.message}</div>
+                ))}
+                {(docReview.warnings || []).map((item, i) => (
+                  <div key={`warn-${i}`} className="level-yellow" style={{ fontSize: 13 }}>{item.message}</div>
+                ))}
+              </div>
+            )}
             {!checklist ? (
               <div className="empty">尚未执行校验。</div>
             ) : (
