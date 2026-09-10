@@ -284,6 +284,13 @@ def health():
     return {"status": "ok", "app": "tender-agent"}
 
 
+@router.get("/system/check")
+def system_environment_check(db: Session = Depends(get_db)):
+    """运行环境自检（设置页 / 部署验收）。"""
+    from app.services.system_check import run_system_check
+    return run_system_check(db)
+
+
 @router.get("/settings")
 def get_settings_api(db: Session = Depends(get_db)):
     row = settings_svc.get_or_create_setting(db)

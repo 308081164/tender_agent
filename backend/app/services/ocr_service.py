@@ -1,10 +1,94 @@
 """资质文件 OCR / 文本提取（上传时自动入库）。"""
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import zipfile
 from io import BytesIO
+from pathlib import Path
 from xml.etree import ElementTree
+
+
+def _bundled_tesseract_paths() -> tuple[str | None, str | None]:
+    """桌面安装包内置 Tesseract 路径。"""
+    install = os.environ.get("TENDER_INSTALL_DIR", "").strip()
+    if not install:
+        return None, None
+    root = Path(install) / "tools" / "tesseract"
+    exe = root / "tesseract.exe"
+    tessdata = root / "tessdata"
+    if exe.is_file():
+        return str(exe), str(tessdata) if tessdata.is_dir() else None
+    return None, None
+
+
+def resolve_tesseract_cmd() -> str | None:
+    env_cmd = os.environ.get("TESSERACT_CMD", "").strip()
+    if env_cmd and os.path.isfile(env_cmd):
+        return env_cmd
+    bundled, _ = _bundled_tesseract_paths()
+    if bundled:
+        return bundled
+    for candidate in (
+        shutil.which("tesseract"),
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        "/usr/bin/tesseract",
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def ocr_runtime_status() -> dict[str, object]:
+    cmd = resolve_tesseract_cmd()
+    tessdata = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if not tessdata:
+        _, bundled_data = _bundled_tesseract_paths()
+        tessdata = bundled_data or ""
+    langs = []
+    if tessdata and os.path.isdir(tessdata):
+        langs = [p.stem for p in Path(tessdata).glob("*.traineddata")]
+    return {
+        "tesseract_available": bool(cmd),
+        "tesseract_cmd": cmd or "",
+        "tessdata_prefix": tessdata,
+        "languages": sorted(langs)[:20],
+        "chi_sim": "chi_sim" in langs,
+        "pillow_available": _pillow_available(),
+        "pytesseract_available": _pytesseract_available(),
+    }
+
+
+def _pillow_available() -> bool:
+    try:
+        import PIL  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _pytesseract_available() -> bool:
+    try:
+        import pytesseract  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _configure_tesseract() -> bool:
+    cmd = resolve_tesseract_cmd()
+    if not cmd:
+        return False
+    try:
+        import pytesseract  # type: ignore
+        pytesseract.pytesseract.tesseract_cmd = cmd
+    except Exception:
+        pass
+    _, bundled_data = _bundled_tesseract_paths()
+    if bundled_data and not os.environ.get("TESSDATA_PREFIX"):
+        os.environ["TESSDATA_PREFIX"] = bundled_data
+    return True
 
 
 def _docx_text(data: bytes) -> str:
@@ -12,7 +96,6 @@ def _docx_text(data: bytes) -> str:
         with zipfile.ZipFile(BytesIO(data)) as zf:
             xml = zf.read("word/document.xml")
         root = ElementTree.fromstring(xml)
-        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
         texts = []
         for t in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
             if t.text:
@@ -23,6 +106,8 @@ def _docx_text(data: bytes) -> str:
 
 
 def _image_ocr(data: bytes) -> str:
+    if not _configure_tesseract():
+        return ""
     try:
         from PIL import Image  # type: ignore
         import pytesseract  # type: ignore
@@ -55,7 +140,6 @@ def extract_text_from_file(
     elif ftype == "docx":
         body = _docx_text(data)
     elif ftype == "pdf":
-        # 轻量兜底：不引入 PDF 解析库时保留元数据
         body = ""
 
     if body:

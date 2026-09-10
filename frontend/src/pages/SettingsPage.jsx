@@ -1,6 +1,9 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
+import { api } from '../api/client'
+
+const STATUS_LABEL = { ok: '正常', warn: '警告', error: '异常', info: '可选' }
 
 export default function SettingsPage() {
   const navigate = useNavigate()
@@ -9,10 +12,25 @@ export default function SettingsPage() {
     settingsInfo, settingsForm, setSettingsForm,
     loading, loadSettings, saveSettings, clearKey, testKey,
   } = settings
+  const [envCheck, setEnvCheck] = useState(null)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     loadSettings().catch((e) => showToast(e.message))
   }, [])
+
+  const runEnvCheck = async () => {
+    setChecking(true)
+    try {
+      const res = await api.systemCheck()
+      setEnvCheck(res)
+      showToast(`环境自检完成：${res.status}`)
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setChecking(false)
+    }
+  }
 
   return (
     <div className="panel">
@@ -130,6 +148,40 @@ export default function SettingsPage() {
             清除 Key
           </button>
         </div>
+      </div>
+
+      <div className="chapter">
+        <div className="chapter-head">
+          <h4>运行环境自检</h4>
+          <button type="button" className="ghost" onClick={runEnvCheck} disabled={checking}>
+            {checking ? '检测中…' : '立即检测'}
+          </button>
+        </div>
+        <p className="lead" style={{ marginBottom: 10 }}>
+          检测 Aspose 文档引擎、OCR、文档引擎 v2、AI API、OnlyOffice 等组件是否就绪。
+        </p>
+        {envCheck ? (
+          <div className="card-block" style={{ fontSize: 13 }}>
+            <p>总体状态：<strong>{envCheck.status}</strong>
+              {' · '}正常 {envCheck.summary?.ok || 0}
+              {' · '}警告 {envCheck.summary?.warn || 0}
+              {' · '}异常 {envCheck.summary?.error || 0}
+            </p>
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+              {(envCheck.checks || []).map((c) => (
+                <li key={c.id} style={{ marginBottom: 6 }}>
+                  <strong>{c.name}</strong> — {STATUS_LABEL[c.status] || c.status}
+                  {c.detail && typeof c.detail === 'string' ? `: ${c.detail}` : null}
+                  {c.id === 'ocr' && c.detail?.tesseract_available === false ? (
+                    <span className="muted">（将使用文件名/分类兜底匹配）</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <div className="muted">尚未执行检测，点击「立即检测」。</div>
+        )}
       </div>
 
       <div className="actions">

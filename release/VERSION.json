@@ -1,0 +1,12 @@
+{
+  "version": "1.1.0",
+  "display_version": "v1.1.0",
+  "built_at": "2026-09-10T02:55:27Z",
+  "deepseek_default_model": "deepseek-v4-pro",
+  "doc_engine": "v2",
+  "artifacts": {
+    "windows_installer": "TenderAgentSetup-v1.1.0.exe",
+    "user_manual": "tender-agent-manual-v1.1.0.md",
+    "docs_zip": "tender-agent-release-v1.1.0.zip"
+  }
+}
