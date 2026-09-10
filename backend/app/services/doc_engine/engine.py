@@ -62,15 +62,28 @@ async def render_project_document(
         plan = await build_composition_plan(
             manifest, fields, requirements, company_context, db=db
         )
-        block_contents = await generate_block_contents(
+        block_contents, table_updates = await generate_block_contents(
             plan, fields, requirements, company_context, db=db
         )
+        if table_updates:
+            fields = dict(fields)
+            for bind, rows in table_updates.items():
+                fields[bind] = rows
         meta["composition_plan"] = plan
+        if table_updates:
+            meta["table_rows"] = list(table_updates.keys())
 
     image_bindings = build_image_bindings_from_quals(
         manifest, qual_files or [], source_snapshot
     )
     meta["image_bindings"] = len(image_bindings)
+    meta["image_binding_details"] = [
+        {"location": b.get("location"), "qual_name": b.get("qual_name")}
+        for b in (image_bindings or [])
+    ]
+
+    from app.services.doc_engine.indexer import build_document_index
+    doc_index = build_document_index(docx_bytes)
 
     data = assemble_document(
         docx_bytes,
@@ -81,12 +94,23 @@ async def render_project_document(
         highlight=highlight,
         image_bindings=image_bindings,
         block_contents=block_contents,
+        qual_files=qual_files,
+        doc_index=doc_index,
     )
 
     # 资质：图片槽未覆盖的按章节插入，其余兜底文末
     if qual_files:
         bound_names = {b.get("qual_name") for b in (image_bindings or []) if b.get("qual_name")}
-        unbound = [q for q in qual_files if (q.get("name") or "") not in bound_names]
+        bundle_cats = {
+            ((b.get("bind") or {}).get("category") or "").lower()
+            for b in (manifest.get("blocks") or [])
+            if b.get("type") == "qual_bundle"
+        }
+        unbound = [
+            q for q in qual_files
+            if (q.get("name") or "") not in bound_names
+            and ((q.get("category") or "").lower() not in bundle_cats or not bundle_cats)
+        ]
         if unbound:
             try:
                 data = insert_qualifications_by_section(data, unbound)

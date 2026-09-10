@@ -58,6 +58,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ requirements }),
     }),
+  getTableSlots: (id) => request(`/projects/${id}/table-slots`),
+  updateTableSlots: (id, bind, rows) =>
+    request(`/projects/${id}/table-slots`, {
+      method: 'PUT',
+      body: JSON.stringify({ bind, rows }),
+    }),
+  generateTables: (id, requirements = '') =>
+    request(`/projects/${id}/generate-tables`, {
+      method: 'POST',
+      body: JSON.stringify({ requirements }),
+    }),
+  getTemplateManifest: (id) => request(`/admin/templates/${id}/manifest`),
+  updateTemplateImageBinding: (id, blockId, bind) =>
+    request(`/admin/templates/${id}/manifest/image-bindings`, {
+      method: 'PUT',
+      body: JSON.stringify({ block_id: blockId, bind }),
+    }),
   analyzeTemplateManifest: (id) =>
     request(`/admin/templates/${id}/analyze-manifest`, { method: 'POST' }),
   exportDoc: async (id) => {

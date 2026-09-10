@@ -73,6 +73,29 @@ async def review_document(
                         "code": "ai_not_generated",
                         "message": f"AI 章节未生成：{title}",
                     })
+            elif btype == "table_slot":
+                bind = block.get("bind") or ""
+                cols = block.get("columns") or []
+                raw = fields.get(bind)
+                if bind and not raw:
+                    warnings.append({
+                        "level": "yellow",
+                        "code": "table_empty",
+                        "message": f"表格槽未填写数据：{bind}",
+                        "field": bind,
+                    })
+                elif cols and isinstance(raw, list) and raw:
+                    for i, row in enumerate(raw):
+                        if not isinstance(row, dict):
+                            continue
+                        missing = [c for c in cols if not str(row.get(c) or "").strip()]
+                        if missing:
+                            warnings.append({
+                                "level": "yellow",
+                                "code": "table_row_incomplete",
+                                "message": f"表格 {bind} 第{i + 1} 行缺少：{', '.join(missing)}",
+                            })
+                            break
 
     # LLM 审阅层（有 key 时）
     llm_findings = await _llm_review(full_text, fields, snapshot, db=db)

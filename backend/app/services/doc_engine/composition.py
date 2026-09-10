@@ -21,6 +21,7 @@ async def build_composition_plan(
     blocks = manifest.get("blocks") or []
     ai_blocks = [b for b in blocks if b.get("type") == "ai_section"]
     field_blocks = [b for b in blocks if b.get("type") == "field_slot"]
+    table_blocks = [b for b in blocks if b.get("type") == "table_slot"]
 
     plan_items = []
     for b in field_blocks:
@@ -72,6 +73,15 @@ async def build_composition_plan(
                 "constraints": [],
             })
 
+    for b in table_blocks:
+        plan_items.append({
+            "block_id": b.get("id"),
+            "type": "table_slot",
+            "bind": b.get("bind"),
+            "columns": b.get("columns") or [],
+            "title": b.get("title") or b.get("bind"),
+        })
+
     return {"items": plan_items, "mode": manifest.get("mode") or "create"}
 
 
@@ -81,10 +91,22 @@ async def generate_block_contents(
     requirements: str,
     company_context: str = "",
     db: Session | None = None,
-) -> dict[str, str]:
-    """按计划分块生成内容。"""
+) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+    """按计划分块生成文本内容与表格行数据。"""
+    from app.services.doc_engine.table_compose import generate_table_rows_for_slot
+
     contents: dict[str, str] = {}
+    table_updates: dict[str, list[dict[str, Any]]] = {}
     for item in plan.get("items") or []:
+        if item.get("type") == "table_slot":
+            bind = item.get("bind") or ""
+            if bind:
+                rows = await generate_table_rows_for_slot(
+                    item, fields, requirements, company_context, db=db,
+                )
+                if rows:
+                    table_updates[bind] = rows
+            continue
         if item.get("type") == "field_slot":
             key = item.get("bind") or ""
             if key:
@@ -113,7 +135,7 @@ async def generate_block_contents(
             text = local_chapter_text(title, fields)
         contents[title] = text.strip()
         contents[item.get("block_id", "")] = text.strip()
-    return contents
+    return contents, table_updates
 
 
 def _parse_json_array(raw: str | None) -> list[dict]:

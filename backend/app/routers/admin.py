@@ -508,6 +508,44 @@ async def admin_upload_template(
     return tpl_dict(t)
 
 
+@router.get("/templates/{template_id}/manifest")
+def get_template_manifest(template_id: int, db: Session = Depends(get_db)):
+    t = _get_template_or_404(db, template_id)
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+
+    data = storage.download_bytes(t.object_key)
+    manifest = get_manifest(t.placeholders) or parse_template_manifest(
+        data, is_history=getattr(t, "kind", "") == "history",
+    )
+    return {"template_id": t.id, "manifest": manifest}
+
+
+class ManifestBlockBindIn(BaseModel):
+    block_id: str
+    bind: dict
+
+
+@router.put("/templates/{template_id}/manifest/image-bindings")
+def update_template_image_bindings(
+    template_id: int, body: ManifestBlockBindIn, db: Session = Depends(get_db),
+):
+    t = _get_template_or_404(db, template_id)
+    from app.services.doc_engine.image_bindings import update_manifest_block_bind
+    from app.services.doc_engine.manifest import get_manifest, set_manifest
+
+    ph = dict(t.placeholders or {})
+    manifest = get_manifest(ph)
+    if not manifest:
+        raise HTTPException(400, "模板尚无 manifest，请先分析模板")
+    manifest = update_manifest_block_bind(manifest, body.block_id, body.bind)
+    t.placeholders = set_manifest(ph, manifest)
+    flag_modified(t, "placeholders")
+    db.commit()
+    db.refresh(t)
+    return {"template": tpl_dict(t), "manifest": manifest}
+
+
 @router.post("/templates/{template_id}/analyze-manifest")
 def analyze_template_manifest(template_id: int, db: Session = Depends(get_db)):
     """重新解析模板并更新 manifest v2。"""
@@ -807,6 +845,12 @@ async def replace_qual_file(qual_id: int, file: UploadFile = File(...), db: Sess
     q.object_key = key
     q.file_name = fname
     q.file_type = (fname.rsplit(".", 1)[-1] if "." in fname else q.file_type)
+    from app.services.ocr_service import extract_text_from_file
+    ocr = extract_text_from_file(
+        data, q.file_type, name=q.name, keywords=q.keywords, category=q.category,
+    )
+    if ocr:
+        q.ocr_text = ocr
     db.commit()
     db.refresh(q)
     return qual_dict(q)

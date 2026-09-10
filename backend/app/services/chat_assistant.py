@@ -421,6 +421,11 @@ async def process_chat_message(
         if isinstance(pa, dict) and pa.get("flow"):
             if any(w in text for w in _CANCEL_WORDS):
                 return agent_flows.cancel_flow(db, session)
+            if pa.get("stage") == "revise_document":
+                if any(w in text for w in ("完成", "结束修订", "好了", "可以了")):
+                    return agent_flows.finish_revision(db, session)
+                if text.strip():
+                    return await agent_flows.handle_revision_text(db, session, text.strip())
             hint = agent_flows.pending_hint(session)
             if hint:
                 return hint

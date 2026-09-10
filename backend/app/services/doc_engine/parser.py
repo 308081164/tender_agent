@@ -7,6 +7,8 @@ from typing import Any
 from app.services.doc_engine.indexer import build_document_index
 from app.services.doc_engine.manifest import empty_manifest, infer_mode
 from app.services.doc_engine.sdt import list_sdt_tags, normalize_tag
+from app.services.doc_engine.bundles import infer_qual_bundles, infer_repeat_blocks
+from app.services.doc_engine.image_bindings import suggest_image_slot_bindings
 from app.services.doc_engine.tables import infer_table_slots
 from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE
 
@@ -105,12 +107,24 @@ def parse_template_manifest(
             })
 
     # 5) 表格槽
-    seen_table_ids: set[str] = set()
+    seen_ids: set[str] = {b.get("id") for b in blocks if b.get("id")}
     for tbl_block in infer_table_slots(index):
         bid = tbl_block.get("id") or ""
-        if bid and bid not in seen_table_ids:
-            seen_table_ids.add(bid)
+        if bid and bid not in seen_ids:
+            seen_ids.add(bid)
             blocks.append(tbl_block)
+
+    # 5b) 资质包 / 重复块
+    for bundle in infer_qual_bundles(index):
+        bid = bundle.get("id") or ""
+        if bid and bid not in seen_ids:
+            seen_ids.add(bid)
+            blocks.append(bundle)
+    for rep in infer_repeat_blocks(index):
+        bid = rep.get("id") or ""
+        if bid and bid not in seen_ids:
+            seen_ids.add(bid)
+            blocks.append(rep)
 
     # 6) SDT 锚点优先（若文档已注入内容控件）
     sdt_tags = list_sdt_tags(docx_bytes)
@@ -140,6 +154,7 @@ def parse_template_manifest(
         "placeholder_keys": index.get("placeholder_keys") or [],
         "ai_markers": index.get("ai_markers") or [],
     }
+    manifest["image_slot_suggestions"] = suggest_image_slot_bindings(manifest, index)
     return manifest
 
 

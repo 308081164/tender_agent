@@ -7,6 +7,7 @@ import ProjectInfoCard from './ProjectInfoCard'
 import ConfirmCard from './ConfirmCard'
 import RequirementsCollectCard from './RequirementsCollectCard'
 import DocReviewCard from './DocReviewCard'
+import RevisionCollectCard from './RevisionCollectCard'
 import CardErrorBoundary from './CardErrorBoundary'
 
 const RENDERERS = {
@@ -15,6 +16,7 @@ const RENDERERS = {
   field_collect: FieldCollectCard,
   requirements_collect: RequirementsCollectCard,
   doc_review: DocReviewCard,
+  revision_collect: RevisionCollectCard,
   template_info: TemplateInfoCard,
   project_info: ProjectInfoCard,
   confirm: ConfirmCard,

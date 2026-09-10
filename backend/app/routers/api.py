@@ -788,9 +788,15 @@ async def compose_project(
     plan = await build_composition_plan(
         manifest, fields, body.requirements, _company_context(db), db=db
     )
-    contents = await generate_block_contents(
+    contents, table_rows = await generate_block_contents(
         plan, fields, body.requirements, _company_context(db), db=db
     )
+    if table_rows:
+        fields = dict(fields)
+        for bind, rows in table_rows.items():
+            fields[bind] = rows
+        p.fields = fields
+        flag_modified(p, "fields")
     chapters = dict(p.chapters or {})
     for k, v in contents.items():
         if k and v and not k.startswith("field.") and not k.startswith("ai."):
@@ -801,7 +807,89 @@ async def compose_project(
     p.updated_at = datetime.utcnow()
     db.commit()
     save_snapshot(db, p, 3)
-    return {"plan": plan, "generated_keys": list(contents.keys()), "project": project_to_dict(p)}
+    return {
+        "plan": plan,
+        "generated_keys": list(contents.keys()),
+        "table_binds": list(table_rows.keys()) if table_rows else [],
+        "project": project_to_dict(p),
+    }
+
+
+@router.get("/projects/{project_id}/table-slots")
+def list_project_table_slots(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        return {"slots": [], "rows": {}}
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    from app.services.doc_engine.table_compose import get_table_slot_rows, table_slots_from_template
+
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    slots = table_slots_from_template(tpl.placeholders, tpl_bytes)
+    fields = _fill_field_defaults(db, p.fields)
+    rows = {s["bind"]: get_table_slot_rows(fields, s["bind"]) for s in slots if s.get("bind")}
+    return {"slots": slots, "rows": rows}
+
+
+class TableRowsUpdate(BaseModel):
+    bind: str
+    rows: list[dict]
+
+
+class GenerateTablesIn(BaseModel):
+    requirements: str = ""
+
+
+@router.put("/projects/{project_id}/table-slots")
+def update_project_table_slots(
+    project_id: int, body: TableRowsUpdate, db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    fields = dict(_fill_field_defaults(db, p.fields))
+    fields[body.bind] = body.rows
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"bind": body.bind, "row_count": len(body.rows), "project": project_to_dict(p)}
+
+
+@router.post("/projects/{project_id}/generate-tables")
+async def generate_project_tables(
+    project_id: int, body: GenerateTablesIn, db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    fields = _fill_field_defaults(db, p.fields)
+    req = body.requirements or str(fields.get("_writing_requirements") or "")
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+    from app.services.doc_engine.table_compose import generate_all_table_rows, table_slots_from_template
+
+    manifest = get_manifest(tpl.placeholders) or parse_template_manifest(tpl_bytes)
+    table_rows = await generate_all_table_rows(
+        manifest, fields, req, _company_context(db), db=db,
+    )
+    for bind, rows in table_rows.items():
+        fields[bind] = rows
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {
+        "table_binds": list(table_rows.keys()),
+        "rows": table_rows,
+        "slots": table_slots_from_template(tpl.placeholders, tpl_bytes),
+        "project": project_to_dict(p),
+    }
 
 
 @router.get("/projects/{project_id}/export")

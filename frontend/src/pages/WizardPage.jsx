@@ -10,6 +10,7 @@ import SnapshotPanel from '../components/SnapshotPanel'
 import PreviewModal from '../components/PreviewModal'
 import Step1TemplatePicker from '../components/Step1TemplatePicker'
 import StepNav from '../components/StepNav'
+import TableSlotsEditor from '../components/TableSlotsEditor'
 
 export default function WizardPage() {
   const { id, step: stepParam } = useParams()
@@ -332,6 +333,24 @@ export default function WizardPage() {
                 </div>
               ))}
             </div>
+            <TableSlotsEditor
+              projectId={project.id}
+              fields={fields}
+              loading={loading}
+              onChange={setFields}
+              onGenerate={async () => {
+                setLoading(true)
+                try {
+                  const res = await api.generateTables(project.id, writingRequirements)
+                  if (res.project?.fields) setFields(res.project.fields)
+                  showToast(`已生成 ${(res.table_binds || []).length} 个表格`)
+                } catch (e) {
+                  showToast(e.message)
+                } finally {
+                  setLoading(false)
+                }
+              }}
+            />
             <div className="actions">
               <button className="secondary" onClick={() => goStep(1)}>返回上一步</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
@@ -353,6 +372,25 @@ export default function WizardPage() {
                 placeholder="粘贴招标条款、评分点、工期/供货要求等，系统将结合企业库与项目信息分块创作…"
               />
             </div>
+            <TableSlotsEditor
+              projectId={project.id}
+              fields={fields}
+              loading={loading}
+              onChange={setFields}
+              onGenerate={async () => {
+                if (!writingRequirements.trim()) return showToast('请先填写编写要求')
+                setLoading(true)
+                try {
+                  const res = await api.generateTables(project.id, writingRequirements)
+                  if (res.project?.fields) setFields(res.project.fields)
+                  showToast(`已生成 ${(res.table_binds || []).length} 个表格`)
+                } catch (e) {
+                  showToast(e.message)
+                } finally {
+                  setLoading(false)
+                }
+              }}
+            />
             <div className="actions" style={{ marginTop: 0, marginBottom: 16 }}>
               <button onClick={doCompose} disabled={loading}>智能创作（空白模板）</button>
               <button className="secondary" onClick={doGenerate} disabled={loading}>一键生成全部章节</button>

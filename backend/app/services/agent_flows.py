@@ -192,6 +192,7 @@ def pending_hint(session: ChatSession) -> dict[str, Any] | None:
         (FLOW_PROJECT_CREATE, "select_template"): "编写标书进行中：请在上方卡片选择模板，或发送「取消」退出。",
         (FLOW_PROJECT_CREATE, "collect_fields"): "编写标书进行中：请在上方卡片填写关键信息并确认，或发送「取消」退出。",
         (FLOW_PROJECT_CREATE, "collect_requirements"): "编写标书进行中：请补充编写要求后确认生成，或发送「取消」退出。",
+        (FLOW_PROJECT_CREATE, "revise_document"): "标书已生成：可在上方卡片提交修订指令，或发送「完成」结束。",
     }
     text = hints.get((pa.get("flow"), pa.get("stage")), "当前有进行中的任务，请使用上方卡片继续，或发送「取消」退出。")
     return _result(text, intent="flow_pending")
@@ -243,6 +244,12 @@ async def handle_action(
 
     if action == "confirm_requirements":
         return await _on_confirm_requirements(db, session, pa, payload)
+
+    if action == "submit_revision":
+        return await _on_submit_revision(db, session, pa, payload)
+
+    if action == "finish_revision":
+        return await _on_finish_revision(db, session, pa)
 
     if action == "confirm_mapping":
         return await _on_confirm_mapping(db, session, pa, payload)
@@ -391,7 +398,7 @@ async def _generate_project_draft(
             plan = await build_composition_plan(
                 manifest, fields, requirements, _company_context(db), db=db,
             )
-            contents = await generate_block_contents(
+            contents, table_rows = await generate_block_contents(
                 plan, fields, requirements, _company_context(db), db=db,
             )
             chapters = dict(p.chapters or {})
@@ -401,6 +408,8 @@ async def _generate_project_draft(
             p.chapters = chapters
             fields = dict(fields)
             fields["_writing_requirements"] = requirements
+            for bind, rows in (table_rows or {}).items():
+                fields[bind] = rows
             p.fields = fields
             db.commit()
             new_bytes, gen_meta = await render_project_document(
@@ -421,6 +430,9 @@ async def _generate_project_draft(
                 "status": review.get("status"),
                 "can_export": review.get("can_export"),
                 "issue_count": len(review.get("issues") or []),
+                "warning_count": len(review.get("warnings") or []),
+                "issues": (review.get("issues") or [])[:12],
+                "warnings": (review.get("warnings") or [])[:8],
             }
             gen_meta = {**gen_meta, "composition": True, "review": review_summary}
         else:
@@ -470,12 +482,18 @@ async def _on_confirm_requirements(
     if not project:
         return "", _result("项目不存在，请重新开始。", intent="error"), False
 
-    _set_pending(session, None)
     ws_note, workspace_updated, review_summary = await _generate_project_draft(
         db, session, project, template_id, fields, requirements,
     )
+    _set_pending(session, {
+        "flow": FLOW_PROJECT_CREATE,
+        "stage": "revise_document",
+        "project_id": project.id,
+        "template_id": template_id,
+        "template_name": pa.get("template_name") or "",
+    })
     return "确认编写要求并生成", _result(
-        f"标书「{project.title}」智能创作完成。{ws_note}".strip(),
+        f"标书「{project.title}」智能创作完成。{ws_note}\n\n可继续提交修订指令，或点击「完成修订」。".strip(),
         cards=[
             {
                 "id": _card_id(),
@@ -483,6 +501,18 @@ async def _on_confirm_requirements(
                 "title": "文档审阅摘要",
                 "state": "done",
                 "payload": review_summary or {"status": "unknown", "can_export": False, "issue_count": 0},
+            },
+            {
+                "id": _card_id(),
+                "type": "revision_collect",
+                "title": "多轮修订",
+                "state": "active",
+                "payload": {
+                    "project_id": project.id,
+                    "submit_action": "submit_revision",
+                    "finish_action": "finish_revision",
+                    "placeholder": "例如：将技术方案压缩到 300 字；补充夜间作业安全措施…",
+                },
             },
             {
                 "id": _card_id(),
@@ -506,6 +536,89 @@ async def _on_confirm_requirements(
         project_id=project.id,
         workspace_updated=workspace_updated,
     ), workspace_updated
+
+
+async def handle_revision_text(
+    db: Session, session: ChatSession, instruction: str,
+) -> dict[str, Any]:
+    """对话文本直接触发修订（revise_document 阶段）。"""
+    pa = _pending(session)
+    if not pa or pa.get("stage") != "revise_document":
+        return _result("当前不在修订阶段。", intent="error")
+    _label, result, _ = await _on_submit_revision(
+        db, session, pa, {"instruction": instruction},
+    )
+    return result
+
+
+async def finish_revision(db: Session, session: ChatSession) -> dict[str, Any]:
+    _label, result, _ = await _on_finish_revision(db, session, _pending(session))
+    return result
+
+
+async def _on_submit_revision(
+    db: Session, session: ChatSession, pa: dict | None, payload: dict,
+) -> tuple[str, dict, bool]:
+    if not pa or pa.get("flow") != FLOW_PROJECT_CREATE or pa.get("stage") != "revise_document":
+        return "", _result("修订会话已失效。", intent="error"), False
+    instruction = str(payload.get("instruction") or "").strip()
+    if not instruction:
+        return "", _result("请输入修订指令。", intent="error"), False
+    ws = dict(getattr(session, "workspace", None) or {})
+    key = ws.get("draft_object_key")
+    if not key:
+        return "", _result("工作区没有可修订的文档。", intent="error"), False
+    try:
+        doc_bytes = storage.download_bytes(key)
+        new_bytes, revised, meta = await document_agent.edit_document_fragment(
+            doc_bytes, instruction, db=db, company_context=_company_context(db),
+        )
+        import datetime as _dt
+        new_key = f"chat/{session.id}/{_dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_revised.docx"
+        storage.upload_bytes(
+            new_key, new_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        ws.update({
+            "draft_object_key": new_key,
+            "version": int(ws.get("version") or 0) + 1,
+            "last_action": "revise",
+            "last_revision": {"instruction": instruction, **meta},
+        })
+        session.workspace = ws
+        return f"修订：{instruction[:40]}", _result(
+            f"已根据指令完成修订。\n\n预览片段：\n{revised[:400]}{'…' if len(revised) > 400 else ''}",
+            cards=[{
+                "id": _card_id(),
+                "type": "revision_collect",
+                "title": "继续修订",
+                "state": "active",
+                "payload": {
+                    "project_id": pa.get("project_id"),
+                    "submit_action": "submit_revision",
+                    "finish_action": "finish_revision",
+                    "placeholder": "继续输入下一条修订指令…",
+                },
+            }],
+            intent="revise_document",
+            workspace_updated=True,
+        ), True
+    except Exception as exc:
+        return "", _result(f"修订失败：{exc}", intent="error"), False
+
+
+async def _on_finish_revision(
+    db: Session, session: ChatSession, pa: dict | None,
+) -> tuple[str, dict, bool]:
+    _set_pending(session, None)
+    project_id = int((pa or {}).get("project_id") or 0)
+    return "完成修订", _result(
+        "修订流程已结束。您可以继续导出，或进入向导精细完善。",
+        actions=[
+            {"type": "link", "label": "进入向导", "url": f"/projects/{project_id}/step/3", "primary": True},
+        ] if project_id else [],
+        intent="revise_done",
+    ), False
 
 
 async def _on_confirm_mapping(

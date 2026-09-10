@@ -8,7 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
+from app.services.doc_engine.bundles import infer_qual_bundles, infer_repeat_blocks
+from app.services.doc_engine.image_bindings import suggest_image_slot_bindings, update_manifest_block_bind
 from app.services.doc_engine.ocr_match import rank_quals_for_slot, score_qual_match
+from app.services.ocr_service import extract_text_from_file
 from app.services.doc_engine.qual_insert import match_heading_for_qual
 from app.services.doc_engine.sdt import normalize_tag, tag_to_block_id
 from app.services.doc_engine.tables import infer_table_slots, parse_rows_data, resolve_table_rows
@@ -57,6 +60,37 @@ def test_ocr_match_prefers_name():
     assert ranked[0]["name"] == "营业执照"
     score = score_qual_match(quals[0], qual_name="营业执照", context="企业资质包")
     assert score >= 0.4
+
+
+def test_infer_qual_bundles_and_repeat():
+    index = {
+        "paragraphs": [
+            {"text": "二、企业资质", "is_heading": True, "location": "p:1"},
+            {"text": "人员：{{staff_1_name}}", "location": "p:2", "placeholders": ["staff_1_name"]},
+            {"text": "人员：{{staff_2_name}}", "location": "p:3", "placeholders": ["staff_2_name"]},
+        ],
+        "images": [{"location": "img:0", "alt": "营业执照"}],
+    }
+    bundles = infer_qual_bundles(index)
+    assert any(b["type"] == "qual_bundle" for b in bundles)
+    repeats = infer_repeat_blocks(index)
+    assert any(b["type"] == "repeat_block" for b in repeats)
+
+
+def test_image_binding_update():
+    manifest = {
+        "blocks": [{"id": "image.0", "type": "image_slot", "bind": {}, "anchor": {"location": "img:0"}}],
+    }
+    updated = update_manifest_block_bind(manifest, "image.0", {"qual_name": "营业执照"})
+    block = updated["blocks"][0]
+    assert block["bind"]["qual_name"] == "营业执照"
+    suggestions = suggest_image_slot_bindings(manifest, {"images": [{"alt": "执照"}], "paragraphs": []})
+    assert suggestions
+
+
+def test_ocr_fallback_metadata():
+    text = extract_text_from_file(b"", "jpg", name="营业执照", keywords="统一社会信用代码", category="企业资质")
+    assert "营业执照" in text
 
 
 def test_match_heading_for_qual():
