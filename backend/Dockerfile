@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-microhei \
     fonts-liberation \
     fontconfig \
+    tesseract-ocr \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-eng \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 

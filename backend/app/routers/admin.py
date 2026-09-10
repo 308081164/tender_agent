@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
 from app.models import (
@@ -482,12 +483,21 @@ async def admin_upload_template(
     storage.upload_bytes(
         key, data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    ph = word.extract_placeholders(data)
+    ph_list = word.extract_placeholders(data)
+    ph_meta: dict = {"list": ph_list}
+    try:
+        from app.services.doc_engine.engine import attach_manifest_to_template
+        from app.services.doc_engine.parser import parse_template_manifest
+        is_history = kind == "history"
+        manifest = parse_template_manifest(data, is_history=is_history)
+        ph_meta = attach_manifest_to_template(ph_meta, manifest)
+    except Exception as e:
+        print(f"[upload] manifest analyze warn: {e}")
     t = Template(
         name=name or fname,
         description="管理端上传",
         object_key=key,
-        placeholders={"list": ph},
+        placeholders=ph_meta,
         template_code=template_code,
         kind=kind,
         enabled=True,
@@ -496,6 +506,67 @@ async def admin_upload_template(
     db.commit()
     db.refresh(t)
     return tpl_dict(t)
+
+
+@router.get("/templates/{template_id}/manifest")
+def get_template_manifest(template_id: int, db: Session = Depends(get_db)):
+    t = _get_template_or_404(db, template_id)
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+
+    data = storage.download_bytes(t.object_key)
+    manifest = get_manifest(t.placeholders) or parse_template_manifest(
+        data, is_history=getattr(t, "kind", "") == "history",
+    )
+    return {"template_id": t.id, "manifest": manifest}
+
+
+class ManifestBlockBindIn(BaseModel):
+    block_id: str
+    bind: dict
+
+
+@router.put("/templates/{template_id}/manifest/image-bindings")
+def update_template_image_bindings(
+    template_id: int, body: ManifestBlockBindIn, db: Session = Depends(get_db),
+):
+    t = _get_template_or_404(db, template_id)
+    from app.services.doc_engine.image_bindings import update_manifest_block_bind
+    from app.services.doc_engine.manifest import get_manifest, set_manifest
+
+    ph = dict(t.placeholders or {})
+    manifest = get_manifest(ph)
+    if not manifest:
+        raise HTTPException(400, "模板尚无 manifest，请先分析模板")
+    manifest = update_manifest_block_bind(manifest, body.block_id, body.bind)
+    t.placeholders = set_manifest(ph, manifest)
+    flag_modified(t, "placeholders")
+    db.commit()
+    db.refresh(t)
+    return {"template": tpl_dict(t), "manifest": manifest}
+
+
+@router.post("/templates/{template_id}/analyze-manifest")
+def analyze_template_manifest(template_id: int, db: Session = Depends(get_db)):
+    """重新解析模板并更新 manifest v2。"""
+    t = _get_template_or_404(db, template_id)
+    data = storage.download_bytes(t.object_key)
+    from app.services.doc_engine.engine import attach_manifest_to_template
+    from app.services.doc_engine.parser import parse_template_manifest
+    is_history = getattr(t, "kind", "") == "history"
+    manifest = parse_template_manifest(data, is_history=is_history)
+    ph = dict(t.placeholders or {})
+    t.placeholders = attach_manifest_to_template(ph, manifest)
+    if is_history and not t.source_snapshot:
+        from app.services.doc_engine.parser import enrich_snapshot_with_locations
+        vals = {k: v for k, v in (t.source_snapshot or {}).items() if isinstance(v, str)}
+        if not vals and t.name:
+            vals = {"project_name": t.name}
+        t.source_snapshot = enrich_snapshot_with_locations(data, vals)
+    flag_modified(t, "placeholders")
+    db.commit()
+    db.refresh(t)
+    return {"template": tpl_dict(t), "manifest": manifest}
 
 
 class PlaceholderMappingIn(BaseModel):
@@ -581,7 +652,24 @@ async def apply_template_placeholders(
     )
     old_key = t.object_key
     t.object_key = new_key
-    t.placeholders = {"list": placeholders, "detected": True}
+    ph_meta = {"list": placeholders, "detected": True}
+    try:
+        from app.services.doc_engine.engine import (
+            attach_manifest_to_template,
+            engineer_template_with_sdt,
+        )
+        from app.services.doc_engine.parser import parse_template_manifest
+        manifest = parse_template_manifest(new_bytes)
+        new_bytes, manifest = engineer_template_with_sdt(new_bytes, manifest)
+        storage.upload_bytes(
+            new_key,
+            new_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        ph_meta = attach_manifest_to_template(ph_meta, manifest)
+    except Exception:
+        pass
+    t.placeholders = ph_meta
     t.source_snapshot = {**(t.source_snapshot or {}), **snapshot}
     if body.kind:
         t.kind = body.kind
@@ -757,6 +845,12 @@ async def replace_qual_file(qual_id: int, file: UploadFile = File(...), db: Sess
     q.object_key = key
     q.file_name = fname
     q.file_type = (fname.rsplit(".", 1)[-1] if "." in fname else q.file_type)
+    from app.services.ocr_service import extract_text_from_file
+    ocr = extract_text_from_file(
+        data, q.file_type, name=q.name, keywords=q.keywords, category=q.category,
+    )
+    if ocr:
+        q.ocr_text = ocr
     db.commit()
     db.refresh(q)
     return qual_dict(q)

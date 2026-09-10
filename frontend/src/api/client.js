@@ -32,6 +32,7 @@ async function request(path, options = {}) {
 
 export const api = {
   health: () => request('/health'),
+  systemCheck: () => request('/system/check'),
   steps: () => request('/meta/steps'),
   templates: () => request('/templates'),
   fields: () => request('/fields'),
@@ -52,6 +53,31 @@ export const api = {
   insertQuals: (id, qualification_ids) =>
     request(`/projects/${id}/insert-quals`, { method: 'POST', body: JSON.stringify({ qualification_ids }) }),
   validate: (id) => request(`/projects/${id}/validate`, { method: 'POST' }),
+  docReview: (id) => request(`/projects/${id}/doc-review`, { method: 'POST' }),
+  compose: (id, requirements) =>
+    request(`/projects/${id}/compose`, {
+      method: 'POST',
+      body: JSON.stringify({ requirements }),
+    }),
+  getTableSlots: (id) => request(`/projects/${id}/table-slots`),
+  updateTableSlots: (id, bind, rows) =>
+    request(`/projects/${id}/table-slots`, {
+      method: 'PUT',
+      body: JSON.stringify({ bind, rows }),
+    }),
+  generateTables: (id, requirements = '') =>
+    request(`/projects/${id}/generate-tables`, {
+      method: 'POST',
+      body: JSON.stringify({ requirements }),
+    }),
+  getTemplateManifest: (id) => request(`/admin/templates/${id}/manifest`),
+  updateTemplateImageBinding: (id, blockId, bind) =>
+    request(`/admin/templates/${id}/manifest/image-bindings`, {
+      method: 'PUT',
+      body: JSON.stringify({ block_id: blockId, bind }),
+    }),
+  analyzeTemplateManifest: (id) =>
+    request(`/admin/templates/${id}/analyze-manifest`, { method: 'POST' }),
   exportDoc: async (id) => {
     const res = await request(`/projects/${id}/export`)
     return res.blob()

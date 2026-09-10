@@ -62,7 +62,7 @@ async def chat_completion(
                 return await _openai_compat(
                     cfg["deepseek_base_url"],
                     cfg["deepseek_api_key"],
-                    cfg.get("deepseek_model") or "deepseek-chat",
+                    cfg.get("deepseek_model") or "deepseek-v4-pro",
                     messages,
                 )
             except Exception:
@@ -245,7 +245,7 @@ async def test_provider(provider: str, db: Session | None = None) -> dict:
             text = await _openai_compat(
                 cfg["deepseek_base_url"],
                 cfg["deepseek_api_key"],
-                cfg.get("deepseek_model") or "deepseek-chat",
+                cfg.get("deepseek_model") or "deepseek-v4-pro",
                 [{"role": "user", "content": "请只回复：ok"}],
             )
             return {"ok": True, "message": "DeepSeek 连接成功", "sample": (text or "")[:80]}

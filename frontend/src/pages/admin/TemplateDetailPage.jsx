@@ -7,6 +7,7 @@ import AdminConfirmDialog from '../../components/admin/AdminConfirmDialog'
 import AdminFormSection, { AdminField } from '../../components/admin/AdminFormSection'
 import TemplatePreviewPanel from '../../components/admin/TemplatePreviewPanel'
 import PlaceholderDetectPanel from '../../components/admin/PlaceholderDetectPanel'
+import ManifestBlocksPanel from '../../components/admin/ManifestBlocksPanel'
 import { TEMPLATE_CODES, TEMPLATE_KINDS } from '../../constants/admin'
 
 export default function TemplateDetailPage() {
@@ -109,6 +110,7 @@ export default function TemplateDetailPage() {
             onCandidatesChange={onDetectPreview}
             onOpenEngineer={() => navigate(`/admin/templates/${id}/engineer`)}
           />
+          <ManifestBlocksPanel templateId={id} showToast={showToast} />
           <div className="card-block admin-template-preview-page" style={{ marginBottom: 16 }}>
             <div className="placeholder-preview-legend">
               <h3 style={{ margin: 0 }}>文档预览</h3>

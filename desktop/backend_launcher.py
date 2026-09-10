@@ -1023,6 +1023,12 @@ def _runtime_env(install_dir: Path, data_dir: Path | None = None) -> dict[str, s
         runtime_bin = str(scripts) + os.pathsep + runtime_bin
     env["PATH"] = runtime_bin + os.pathsep + env.get("PATH", "")
     env["TENDER_INSTALL_DIR"] = str(install_dir)
+    tess_exe = install_dir / "tools" / "tesseract" / "tesseract.exe"
+    tessdata = install_dir / "tools" / "tesseract" / "tessdata"
+    if tess_exe.is_file():
+        env["TESSERACT_CMD"] = str(tess_exe)
+        if tessdata.is_dir():
+            env["TESSDATA_PREFIX"] = str(tessdata)
     if data_dir is not None:
         env["TENDER_DATA_DIR"] = str(data_dir)
     env.setdefault("PYTHONUTF8", "1")

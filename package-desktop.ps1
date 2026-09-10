@@ -160,3 +160,23 @@ Write-Host ""
 Write-Host "Pack complete!" -ForegroundColor Green
 Write-Host "Installer: $($setupInfo.FullName)" -ForegroundColor Gray
 Write-Host "Size: $(Format-FileSize $setupInfo.Length)"
+
+Write-Step "Publishing to release/"
+$versionForRelease = $AppVersion
+if (-not $versionForRelease -and (Test-Path (Join-Path $Root "VERSION"))) {
+  $versionForRelease = (Get-Content (Join-Path $Root "VERSION") -Raw).Trim()
+}
+$ReleaseDir = Join-Path $Root "release"
+New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+$releaseName = if ($versionForRelease) { "TenderAgentSetup-v$versionForRelease.exe" } else { "TenderAgentSetup.exe" }
+Copy-Item -LiteralPath $SetupExe -Destination (Join-Path $ReleaseDir $releaseName) -Force
+Copy-Item -LiteralPath $SetupExe -Destination (Join-Path $ReleaseDir "TenderAgentSetup.exe") -Force
+Write-Host "Copied installer to release\$releaseName"
+
+$buildRelease = Join-Path $Root "scripts\build_release_pack.py"
+if (Test-Path $buildRelease) {
+  $py = Get-Command python -ErrorAction SilentlyContinue
+  if ($py) {
+    & python $buildRelease
+  }
+}

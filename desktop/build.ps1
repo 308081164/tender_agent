@@ -308,6 +308,14 @@ Write-Host "==> Downloading MinIO"
 $MinioDest = Join-Path $ToolsDir "minio.exe"
 Download-File -Url $MinioUrl -Destination $MinioDest
 
+Write-Host "==> Bundling Tesseract OCR (optional, skip on failure)"
+$TessDest = Join-Path $ToolsDir "tesseract"
+try {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\ci\download-tesseract-windows.ps1") -DestinationDir $TessDest
+} catch {
+  Write-Host "  WARN: Tesseract bundle skipped: $_"
+}
+
 Write-Host "==> Copying Aspose license"
 $AsposeDest = Join-Path $Stage "aspose"
 New-Item -ItemType Directory -Path $AsposeDest -Force | Out-Null

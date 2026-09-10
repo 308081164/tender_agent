@@ -137,6 +137,13 @@ def apply_placeholder_mappings(
 
     new_bytes = word.apply_literal_replacements(docx_bytes, pairs, highlight=highlight)
     placeholders = word.extract_placeholders(new_bytes)
+    # v2：带位置信息的快照，供替换模式精确定位
+    try:
+        from app.services.doc_engine.parser import enrich_snapshot_with_locations
+        located = enrich_snapshot_with_locations(new_bytes, snapshot)
+        snapshot = {**snapshot, **located}
+    except Exception:
+        pass
     return new_bytes, snapshot, placeholders
 
 

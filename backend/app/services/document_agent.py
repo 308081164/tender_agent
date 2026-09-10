@@ -78,17 +78,25 @@ async def generate_document_from_template(
             "tender_no": "",
         }
 
+    from app.services.doc_engine.engine import render_project_document
+
     chapters = {k: {"content": v, "source": "ai"} for k, v in generated.items() if k}
-    result_bytes = word.render_document(
+    result_bytes, engine_meta = await render_project_document(
         docx_bytes,
-        fields=generated,
-        chapters=chapters,
+        None,
+        generated,
+        chapters,
         highlight=False,
+        requirements=requirements,
+        company_context=company_context,
+        db=db,
+        mode="create",
     )
     meta = {
         "generated_keys": list(generated.keys()),
         "target_count": len(targets),
-        "engine": "aspose+llm",
+        "engine": engine_meta.get("engine", "doc_engine_v2"),
+        **engine_meta,
     }
     return result_bytes, meta
 

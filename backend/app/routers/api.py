@@ -284,6 +284,13 @@ def health():
     return {"status": "ok", "app": "tender-agent"}
 
 
+@router.get("/system/check")
+def system_environment_check(db: Session = Depends(get_db)):
+    """运行环境自检（设置页 / 部署验收）。"""
+    from app.services.system_check import run_system_check
+    return run_system_check(db)
+
+
 @router.get("/settings")
 def get_settings_api(db: Session = Depends(get_db)):
     row = settings_svc.get_or_create_setting(db)
@@ -315,7 +322,7 @@ def list_templates(include_disabled: bool = False, db: Session = Depends(get_db)
         q = q.filter(Template.enabled.is_(True))
     # 招标文件不作为导出起点
     q = q.filter(Template.kind != "tender_doc")
-    items = q.order_by(Template.kind, Template.id).all()
+    items = q.order_by(Template.id.desc()).all()
     return [
         {
             "id": t.id,
@@ -715,8 +722,185 @@ def validate_project(project_id: int, db: Session = Depends(get_db)):
     return result
 
 
+class WritingRequirementsIn(BaseModel):
+    requirements: str = ""
+
+
+@router.post("/projects/{project_id}/doc-review")
+async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
+    """文档引擎 v2：LLM+规则全篇审阅（导出前预检）。"""
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    export_fields = _fill_field_defaults(db, p.fields)
+    from app.services.doc_engine.engine import render_project_document, review_project_document
+
+    snap = getattr(tpl, "source_snapshot", None) or {}
+    writing_req = str(export_fields.get("_writing_requirements") or "")
+    doc_bytes, _ = await render_project_document(
+        tpl_bytes,
+        tpl.placeholders,
+        export_fields,
+        p.chapters,
+        source_snapshot=snap if getattr(tpl, "kind", "") == "history" else None,
+        highlight=False,
+        requirements=writing_req,
+        company_context=_company_context(db),
+        db=db,
+        mode="replace" if getattr(tpl, "kind", "") == "history" else None,
+    )
+    required = ["project_name", "tender_no", "tenderer", "project_manager"]
+    review = await review_project_document(
+        doc_bytes, tpl.placeholders, export_fields, snap, required, db=db
+    )
+    merged = dict(p.checklist_result or {})
+    merged["doc_review"] = review
+    merged["can_export"] = review.get("can_export", False) and merged.get("can_export", True)
+    p.checklist_result = merged
+    flag_modified(p, "checklist_result")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return review
+
+
+@router.post("/projects/{project_id}/compose")
+async def compose_project(
+    project_id: int,
+    body: WritingRequirementsIn,
+    db: Session = Depends(get_db),
+):
+    """创作模式：根据编写要求分块生成章节并写入项目。"""
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    fields = _fill_field_defaults(db, p.fields)
+    if body.requirements:
+        fields["_writing_requirements"] = body.requirements
+        p.fields = fields
+        flag_modified(p, "fields")
+
+    from app.services.doc_engine.composition import build_composition_plan, generate_block_contents
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+
+    manifest = get_manifest(tpl.placeholders) or parse_template_manifest(tpl_bytes)
+    plan = await build_composition_plan(
+        manifest, fields, body.requirements, _company_context(db), db=db
+    )
+    contents, table_rows = await generate_block_contents(
+        plan, fields, body.requirements, _company_context(db), db=db
+    )
+    if table_rows:
+        fields = dict(fields)
+        for bind, rows in table_rows.items():
+            fields[bind] = rows
+        p.fields = fields
+        flag_modified(p, "fields")
+    chapters = dict(p.chapters or {})
+    for k, v in contents.items():
+        if k and v and not k.startswith("field.") and not k.startswith("ai."):
+            chapters[k] = {"content": v, "source": "ai", "engine": "doc_engine_v2"}
+    p.chapters = chapters
+    flag_modified(p, "chapters")
+    p.current_step = max(p.current_step, 3)
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    save_snapshot(db, p, 3)
+    return {
+        "plan": plan,
+        "generated_keys": list(contents.keys()),
+        "table_binds": list(table_rows.keys()) if table_rows else [],
+        "project": project_to_dict(p),
+    }
+
+
+@router.get("/projects/{project_id}/table-slots")
+def list_project_table_slots(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        return {"slots": [], "rows": {}}
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    from app.services.doc_engine.table_compose import get_table_slot_rows, table_slots_from_template
+
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    slots = table_slots_from_template(tpl.placeholders, tpl_bytes)
+    fields = _fill_field_defaults(db, p.fields)
+    rows = {s["bind"]: get_table_slot_rows(fields, s["bind"]) for s in slots if s.get("bind")}
+    return {"slots": slots, "rows": rows}
+
+
+class TableRowsUpdate(BaseModel):
+    bind: str
+    rows: list[dict]
+
+
+class GenerateTablesIn(BaseModel):
+    requirements: str = ""
+
+
+@router.put("/projects/{project_id}/table-slots")
+def update_project_table_slots(
+    project_id: int, body: TableRowsUpdate, db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    fields = dict(_fill_field_defaults(db, p.fields))
+    fields[body.bind] = body.rows
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"bind": body.bind, "row_count": len(body.rows), "project": project_to_dict(p)}
+
+
+@router.post("/projects/{project_id}/generate-tables")
+async def generate_project_tables(
+    project_id: int, body: GenerateTablesIn, db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    fields = _fill_field_defaults(db, p.fields)
+    req = body.requirements or str(fields.get("_writing_requirements") or "")
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+    from app.services.doc_engine.table_compose import generate_all_table_rows, table_slots_from_template
+
+    manifest = get_manifest(tpl.placeholders) or parse_template_manifest(tpl_bytes)
+    table_rows = await generate_all_table_rows(
+        manifest, fields, req, _company_context(db), db=db,
+    )
+    for bind, rows in table_rows.items():
+        fields[bind] = rows
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {
+        "table_binds": list(table_rows.keys()),
+        "rows": table_rows,
+        "slots": table_slots_from_template(tpl.placeholders, tpl_bytes),
+        "project": project_to_dict(p),
+    }
+
+
 @router.get("/projects/{project_id}/export")
-def export_project(project_id: int, db: Session = Depends(get_db)):
+async def export_project(project_id: int, db: Session = Depends(get_db)):
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
@@ -747,44 +931,57 @@ def export_project(project_id: int, db: Session = Depends(get_db)):
         p.fields = export_fields
         flag_modified(p, "fields")
         db.commit()
-    doc_bytes = word.render_document(
+    qual_files = []
+    for q in quals:
+        data = b""
+        if q.object_key:
+            try:
+                data = storage.download_bytes(q.object_key)
+            except Exception:
+                data = b""
+        qual_files.append({
+            "name": q.name,
+            "category": q.category,
+            "section_hint": getattr(q, "section_hint", "") or "",
+            "file_type": q.file_type,
+            "ocr_text": getattr(q, "ocr_text", "") or "",
+            "data": data,
+        })
+
+    writing_req = (export_fields.get("_writing_requirements") or "") or (
+        (p.chapters or {}).get("_writing_requirements") or ""
+    )
+    from app.services.doc_engine.engine import render_project_document, review_project_document
+
+    doc_bytes, _render_meta = await render_project_document(
         tpl_bytes,
+        tpl.placeholders,
         export_fields,
         chapters,
-        highlight=True,
         source_snapshot=snap if getattr(tpl, "kind", "") == "history" else None,
+        qual_files=qual_files,
+        highlight=True,
+        requirements=str(writing_req),
+        company_context=_company_context(db),
+        db=db,
+        mode="replace" if getattr(tpl, "kind", "") == "history" else None,
     )
-    # 嵌入资质附件（图片/docx/pdf）
-    if quals:
-        qual_files = []
-        for q in quals:
-            data = b""
-            if q.object_key:
-                try:
-                    data = storage.download_bytes(q.object_key)
-                except Exception:
-                    data = b""
-            qual_files.append({
-                "name": q.name,
-                "category": q.category,
-                "section_hint": getattr(q, "section_hint", "") or "",
-                "file_type": q.file_type,
-                "data": data,
-            })
-        try:
-            doc_bytes = word.embed_qualifications(doc_bytes, qual_files)
-        except Exception as e:
-            print(f"[export] embed quals warn: {e}")
 
     fields = export_fields
     required = ["project_name", "tender_no", "tenderer", "project_manager"]
-    if fields.get("bid_amount_upper") or fields.get("bid_amount"):
-        pass
-    else:
+    if not (fields.get("bid_amount_upper") or fields.get("bid_amount")):
         required.append("bid_amount_upper")
-    validation = word.validate_export(doc_bytes, required, fields)
-    if validation["status"] == "red":
-        raise HTTPException(400, detail={"message": "导出格式校验未通过", "validation": validation})
+
+    validation = await review_project_document(
+        doc_bytes,
+        tpl.placeholders,
+        fields,
+        snap if getattr(tpl, "kind", "") == "history" else None,
+        required,
+        db=db,
+    )
+    if not validation.get("can_export", validation.get("status") != "red"):
+        raise HTTPException(400, detail={"message": "文档审阅未通过，无法导出", "validation": validation})
 
     filename = f"{(p.fields or {}).get('project_name') or p.title or 'bid'}.docx"
     stamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')

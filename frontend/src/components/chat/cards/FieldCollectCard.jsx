@@ -22,7 +22,7 @@ export default function FieldCollectCard({ card, message, acting, onAction }) {
           </button>
           <button type="button" disabled={acting || missingRequired.length > 0}
             onClick={() => onAction(message, card, confirm_action, { fields: values })}>
-            {acting ? '生成中…' : '确认并生成标书'}
+            {acting ? '处理中…' : '下一步'}
           </button>
         </>
       ) : null}
