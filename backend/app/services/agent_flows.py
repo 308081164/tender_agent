@@ -24,6 +24,20 @@ FLOW_TEMPLATE_CREATE = "template_create"
 FLOW_PROJECT_CREATE = "project_create"
 
 
+def _template_supports_compose(db: Session, template_id: int) -> bool:
+    from app.models import Template
+    from app.services.doc_engine.manifest import get_manifest
+
+    tpl = db.query(Template).filter(Template.id == template_id).first()
+    if not tpl:
+        return False
+    manifest = get_manifest(tpl.placeholders or {})
+    if not manifest:
+        return False
+    blocks = manifest.get("blocks") or []
+    return any(b.get("type") in ("ai_section", "table_slot") for b in blocks)
+
+
 def _card_id() -> str:
     return uuid.uuid4().hex[:12]
 
@@ -177,6 +191,7 @@ def pending_hint(session: ChatSession) -> dict[str, Any] | None:
         (FLOW_TEMPLATE_CREATE, "confirm_mapping"): "模板创建进行中：请在上方卡片确认占位符映射，或发送「取消」退出。",
         (FLOW_PROJECT_CREATE, "select_template"): "编写标书进行中：请在上方卡片选择模板，或发送「取消」退出。",
         (FLOW_PROJECT_CREATE, "collect_fields"): "编写标书进行中：请在上方卡片填写关键信息并确认，或发送「取消」退出。",
+        (FLOW_PROJECT_CREATE, "collect_requirements"): "编写标书进行中：请补充编写要求后确认生成，或发送「取消」退出。",
     }
     text = hints.get((pa.get("flow"), pa.get("stage")), "当前有进行中的任务，请使用上方卡片继续，或发送「取消」退出。")
     return _result(text, intent="flow_pending")
@@ -225,6 +240,9 @@ async def handle_action(
 
     if action == "confirm_fields":
         return await _on_confirm_fields(db, session, pa, payload)
+
+    if action == "confirm_requirements":
+        return await _on_confirm_requirements(db, session, pa, payload)
 
     if action == "confirm_mapping":
         return await _on_confirm_mapping(db, session, pa, payload)
@@ -284,40 +302,39 @@ async def _on_confirm_fields(
     project = agent_tools.create_project_with_template(
         db, template_id, fields.get("project_name", ""), fields
     )
+
+    if _template_supports_compose(db, template_id):
+        _set_pending(session, {
+            "flow": FLOW_PROJECT_CREATE,
+            "stage": "collect_requirements",
+            "template_id": template_id,
+            "template_name": pa.get("template_name") or "",
+            "project_id": project.id,
+            "fields": fields,
+        })
+        return "确认关键信息", _result(
+            f"标书「{project.title}」已创建。该模板支持智能创作，请补充编写要求（章节重点、风格、约束等），我将分块生成并审阅。",
+            cards=[{
+                "id": _card_id(),
+                "type": "requirements_collect",
+                "title": "编写要求",
+                "state": "active",
+                "payload": {
+                    "project_id": project.id,
+                    "template_name": pa.get("template_name") or "",
+                    "confirm_action": "confirm_requirements",
+                    "cancel_action": "cancel_flow",
+                    "placeholder": "例如：突出铁路信号系统维保经验；技术方案强调夜间作业安全；报价说明需与清单一致…",
+                },
+            }],
+            intent="create_project",
+            project_id=project.id,
+        ), False
+
     _set_pending(session, None)
-
-    # 生成初稿到左侧工作区
-    ws_note = ""
-    workspace_updated = False
-    from app.models import Template
-    tpl = db.query(Template).filter(Template.id == template_id).first()
-    if tpl and tpl.object_key:
-        try:
-            doc_bytes = storage.download_bytes(tpl.object_key)
-            requirements = "；".join(f"{k}={v}" for k, v in fields.items())
-            new_bytes, gen_meta = await document_agent.generate_document_from_template(
-                doc_bytes, requirements, db=db, company_context=_company_context(db),
-            )
-            import datetime as _dt
-            new_key = f"chat/{session.id}/{_dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_generated.docx"
-            storage.upload_bytes(
-                new_key, new_bytes,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-            ws = dict(getattr(session, "workspace", None) or {})
-            ws.update({
-                "draft_object_key": new_key,
-                "filename": f"{project.title}.docx",
-                "version": int(ws.get("version") or 0) + 1,
-                "last_action": "generate",
-                "generation_meta": gen_meta,
-            })
-            session.workspace = ws
-            workspace_updated = True
-            ws_note = f"\n\n已生成初稿（填充 {len(gen_meta.get('generated_keys') or [])} 个字段/章节），请在左侧预览查看。"
-        except Exception as exc:  # 生成失败不阻断项目创建
-            ws_note = f"\n\n初稿生成未完成（{exc}），可进入向导第 3 步重新生成。"
-
+    ws_note, workspace_updated, review_summary = await _generate_project_draft(
+        db, session, project, template_id, fields, requirements="；".join(f"{k}={v}" for k, v in fields.items()),
+    )
     return "确认并生成标书", _result(
         f"标书「{project.title}」已创建。{ws_note}".strip(),
         cards=[{
@@ -330,8 +347,157 @@ async def _on_confirm_fields(
                 "title": project.title,
                 "template_name": pa.get("template_name") or "",
                 "field_count": len(fields),
+                "review_summary": review_summary,
             },
         }],
+        actions=[
+            {"type": "link", "label": "进入向导精细完善", "url": f"/projects/{project.id}/step/3", "primary": True},
+            {"type": "link", "label": "预览与导出", "url": f"/projects/{project.id}/step/6"},
+        ],
+        intent="create_project",
+        project_id=project.id,
+        workspace_updated=workspace_updated,
+    ), workspace_updated
+
+
+async def _generate_project_draft(
+    db: Session,
+    session: ChatSession,
+    project,
+    template_id: int,
+    fields: dict[str, str],
+    requirements: str,
+) -> tuple[str, bool, dict | None]:
+    """生成初稿并可选执行 compose + 审阅摘要。"""
+    from app.models import Template
+
+    ws_note = ""
+    workspace_updated = False
+    review_summary = None
+    tpl = db.query(Template).filter(Template.id == template_id).first()
+    if not tpl or not tpl.object_key:
+        return ws_note, workspace_updated, review_summary
+    try:
+        doc_bytes = storage.download_bytes(tpl.object_key)
+        if _template_supports_compose(db, template_id) and requirements.strip():
+            from app.models import TenderProject
+            from app.services.doc_engine.composition import build_composition_plan, generate_block_contents
+            from app.services.doc_engine.engine import render_project_document, review_project_document
+            from app.services.doc_engine.manifest import get_manifest
+            from app.services.doc_engine.parser import parse_template_manifest
+
+            p = db.query(TenderProject).filter(TenderProject.id == project.id).first()
+            manifest = get_manifest(tpl.placeholders) or parse_template_manifest(doc_bytes)
+            plan = await build_composition_plan(
+                manifest, fields, requirements, _company_context(db), db=db,
+            )
+            contents = await generate_block_contents(
+                plan, fields, requirements, _company_context(db), db=db,
+            )
+            chapters = dict(p.chapters or {})
+            for k, v in contents.items():
+                if k and v and not k.startswith("field.") and not k.startswith("ai."):
+                    chapters[k] = {"content": v, "source": "ai", "engine": "doc_engine_v2"}
+            p.chapters = chapters
+            fields = dict(fields)
+            fields["_writing_requirements"] = requirements
+            p.fields = fields
+            db.commit()
+            new_bytes, gen_meta = await render_project_document(
+                doc_bytes,
+                tpl.placeholders,
+                fields,
+                chapters,
+                requirements=requirements,
+                company_context=_company_context(db),
+                db=db,
+                mode=manifest.get("mode") or "create",
+            )
+            review = await review_project_document(
+                new_bytes, tpl.placeholders, fields, None,
+                ["project_name", "tenderer"], db=db,
+            )
+            review_summary = {
+                "status": review.get("status"),
+                "can_export": review.get("can_export"),
+                "issue_count": len(review.get("issues") or []),
+            }
+            gen_meta = {**gen_meta, "composition": True, "review": review_summary}
+        else:
+            new_bytes, gen_meta = await document_agent.generate_document_from_template(
+                doc_bytes, requirements, db=db, company_context=_company_context(db),
+            )
+        import datetime as _dt
+        new_key = f"chat/{session.id}/{_dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_generated.docx"
+        storage.upload_bytes(
+            new_key, new_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        ws = dict(getattr(session, "workspace", None) or {})
+        ws.update({
+            "draft_object_key": new_key,
+            "filename": f"{project.title}.docx",
+            "version": int(ws.get("version") or 0) + 1,
+            "last_action": "generate",
+            "generation_meta": gen_meta,
+        })
+        session.workspace = ws
+        workspace_updated = True
+        keys = gen_meta.get("generated_keys") or gen_meta.get("composition_plan", {}).get("items") or []
+        ws_note = f"\n\n已生成初稿（处理 {len(keys)} 个块/字段），请在左侧预览查看。"
+        if review_summary:
+            ws_note += f"\n文档审阅：{review_summary.get('status', 'unknown')}，"
+            ws_note += "可导出" if review_summary.get("can_export") else "建议进入向导第 5 步完善"
+    except Exception as exc:
+        ws_note = f"\n\n初稿生成未完成（{exc}），可进入向导第 3 步重新生成。"
+    return ws_note, workspace_updated, review_summary
+
+
+async def _on_confirm_requirements(
+    db: Session, session: ChatSession, pa: dict | None, payload: dict
+) -> tuple[str, dict, bool]:
+    if not pa or pa.get("flow") != FLOW_PROJECT_CREATE or pa.get("stage") != "collect_requirements":
+        return "", _result("该步骤已失效，请重新告诉我「帮我写标书」。", intent="error"), False
+    project_id = int(pa.get("project_id") or 0)
+    template_id = int(pa.get("template_id") or 0)
+    fields = dict(pa.get("fields") or {})
+    requirements = str(payload.get("requirements") or "").strip()
+    if not requirements:
+        return "", _result("请填写编写要求后再确认生成。", intent="error"), False
+
+    from app.models import TenderProject
+    project = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not project:
+        return "", _result("项目不存在，请重新开始。", intent="error"), False
+
+    _set_pending(session, None)
+    ws_note, workspace_updated, review_summary = await _generate_project_draft(
+        db, session, project, template_id, fields, requirements,
+    )
+    return "确认编写要求并生成", _result(
+        f"标书「{project.title}」智能创作完成。{ws_note}".strip(),
+        cards=[
+            {
+                "id": _card_id(),
+                "type": "doc_review",
+                "title": "文档审阅摘要",
+                "state": "done",
+                "payload": review_summary or {"status": "unknown", "can_export": False, "issue_count": 0},
+            },
+            {
+                "id": _card_id(),
+                "type": "project_info",
+                "title": "标书已创建",
+                "state": "done",
+                "payload": {
+                    "project_id": project.id,
+                    "title": project.title,
+                    "template_name": pa.get("template_name") or "",
+                    "field_count": len(fields),
+                    "review_summary": review_summary,
+                },
+            },
+        ],
         actions=[
             {"type": "link", "label": "进入向导精细完善", "url": f"/projects/{project.id}/step/3", "primary": True},
             {"type": "link", "label": "预览与导出", "url": f"/projects/{project.id}/step/6"},

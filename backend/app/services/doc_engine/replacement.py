@@ -9,6 +9,8 @@ from app.services.doc_engine.indexer import (
     replace_image_at_location,
     replace_text_in_paragraph_index,
 )
+from app.services.doc_engine.ocr_match import rank_quals_for_slot
+from app.services.doc_engine.sdt import normalize_tag, write_sdt_image, write_sdt_text
 
 
 def apply_field_replacements(
@@ -88,9 +90,15 @@ def apply_image_replacements(
 ) -> bytes:
     data = docx_bytes
     for bind in image_bindings or []:
-        loc = bind.get("location") or (bind.get("anchor") or {}).get("location")
         img_bytes = bind.get("data") or b""
-        if loc and img_bytes:
+        if not img_bytes:
+            continue
+        sdt_tag = bind.get("sdt_tag") or ""
+        if sdt_tag:
+            data = write_sdt_image(data, sdt_tag, img_bytes, width_pt=bind.get("width_pt") or 420)
+            continue
+        loc = bind.get("location") or (bind.get("anchor") or {}).get("location")
+        if loc:
             data = replace_image_at_location(
                 data, loc, img_bytes, width_pt=bind.get("width_pt")
             )
@@ -102,35 +110,32 @@ def build_image_bindings_from_quals(
     qual_files: list[dict[str, Any]],
     snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """根据 manifest 图片槽与资质文件生成绑定。"""
+    """根据 manifest 图片槽与资质文件生成绑定（含 OCR/文本匹配）。"""
     bindings: list[dict[str, Any]] = []
     blocks = [b for b in (manifest.get("blocks") or []) if b.get("type") == "image_slot"]
     snap_images = (snapshot or {}).get("images") or []
-
-    qual_by_name = {(q.get("name") or "").lower(): q for q in qual_files}
-    qual_by_cat: dict[str, list] = {}
-    for q in qual_files:
-        qual_by_cat.setdefault((q.get("category") or "").lower(), []).append(q)
+    used_qual_ids: set[str] = set()
 
     for i, block in enumerate(blocks):
         anchor = block.get("anchor") or {}
         loc = anchor.get("location") or (
             snap_images[i].get("location") if i < len(snap_images) else ""
         )
+        sdt_tag = anchor.get("tag") if anchor.get("kind") == "sdt" else normalize_tag(block.get("id") or "")
         bind = block.get("bind") or {}
-        qname = (bind.get("qual_name") or "").lower()
-        qcat = (bind.get("qual_category") or "").lower()
-        qual = qual_by_name.get(qname) if qname else None
-        if not qual and qcat:
-            cands = qual_by_cat.get(qcat) or []
-            qual = cands[0] if cands else None
-        if not qual and qual_files:
-            qual = qual_files[min(i, len(qual_files) - 1)]
+        context = str(bind.get("qual_name") or snap_images[i].get("alt") if i < len(snap_images) else "")
+        available = [q for q in qual_files if (q.get("name") or q.get("category")) not in used_qual_ids]
+        ranked = rank_quals_for_slot(available or qual_files, bind, context=context)
+        qual = ranked[0] if ranked else None
+        if qual:
+            used_qual_ids.add(qual.get("name") or qual.get("category") or str(i))
         ftype = str(qual.get("file_type", "")).lower().lstrip(".") if qual else ""
         if qual and qual.get("data") and ftype in ("jpg", "jpeg", "png", "bmp", "gif", ""):
             bindings.append({
                 "location": loc,
+                "sdt_tag": sdt_tag,
                 "data": qual.get("data"),
+                "qual_name": qual.get("name"),
                 "width_pt": bind.get("width_pt") or 420,
             })
     return bindings

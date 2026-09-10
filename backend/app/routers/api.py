@@ -849,6 +849,7 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
             "category": q.category,
             "section_hint": getattr(q, "section_hint", "") or "",
             "file_type": q.file_type,
+            "ocr_text": getattr(q, "ocr_text", "") or "",
             "data": data,
         })
 

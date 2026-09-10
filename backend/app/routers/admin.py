@@ -616,9 +616,18 @@ async def apply_template_placeholders(
     t.object_key = new_key
     ph_meta = {"list": placeholders, "detected": True}
     try:
-        from app.services.doc_engine.engine import attach_manifest_to_template
+        from app.services.doc_engine.engine import (
+            attach_manifest_to_template,
+            engineer_template_with_sdt,
+        )
         from app.services.doc_engine.parser import parse_template_manifest
         manifest = parse_template_manifest(new_bytes)
+        new_bytes, manifest = engineer_template_with_sdt(new_bytes, manifest)
+        storage.upload_bytes(
+            new_key,
+            new_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
         ph_meta = attach_manifest_to_template(ph_meta, manifest)
     except Exception:
         pass

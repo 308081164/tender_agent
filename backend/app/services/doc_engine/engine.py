@@ -9,8 +9,10 @@ from app.services.doc_engine.assembler import assemble_document
 from app.services.doc_engine.composition import build_composition_plan, generate_block_contents
 from app.services.doc_engine.manifest import get_manifest, set_manifest
 from app.services.doc_engine.parser import enrich_snapshot_with_locations, parse_template_manifest
+from app.services.doc_engine.qual_insert import insert_qualifications_by_section
 from app.services.doc_engine.replacement import build_image_bindings_from_quals
 from app.services.doc_engine.review import review_document
+from app.services.doc_engine.sdt import enrich_manifest_with_sdt, inject_sdt_anchors
 
 
 async def analyze_template(
@@ -50,6 +52,7 @@ async def render_project_document(
     if not manifest:
         manifest = parse_template_manifest(docx_bytes, is_history=bool(source_snapshot))
         meta["manifest_auto"] = True
+    manifest = enrich_manifest_with_sdt(manifest, docx_bytes)
 
     doc_mode = mode or manifest.get("mode") or "hybrid"
     block_contents: dict[str, str] = {}
@@ -80,13 +83,28 @@ async def render_project_document(
         block_contents=block_contents,
     )
 
-    # 未绑定到槽位的资质仍追加到文末（兼容 v1）
-    if qual_files and not image_bindings:
-        from app.services import word
-        data = word.embed_qualifications(data, qual_files)
+    # 资质：图片槽未覆盖的按章节插入，其余兜底文末
+    if qual_files:
+        bound_names = {b.get("qual_name") for b in (image_bindings or []) if b.get("qual_name")}
+        unbound = [q for q in qual_files if (q.get("name") or "") not in bound_names]
+        if unbound:
+            try:
+                data = insert_qualifications_by_section(data, unbound)
+                meta["qual_insert"] = "by_section"
+            except Exception:
+                from app.services import word
+                data = word.embed_qualifications(data, unbound)
+                meta["qual_insert"] = "append_end"
 
     meta["mode"] = doc_mode
     return data, meta
+
+
+def engineer_template_with_sdt(docx_bytes: bytes, manifest: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    """工程化后注入 SDT 并刷新 manifest 锚点。"""
+    engineered = inject_sdt_anchors(docx_bytes, manifest)
+    enriched = enrich_manifest_with_sdt(manifest, engineered)
+    return engineered, enriched
 
 
 async def review_project_document(

@@ -6,6 +6,8 @@ from typing import Any
 
 from app.services.doc_engine.indexer import build_document_index
 from app.services.doc_engine.manifest import empty_manifest, infer_mode
+from app.services.doc_engine.sdt import list_sdt_tags, normalize_tag
+from app.services.doc_engine.tables import infer_table_slots
 from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE
 
 
@@ -102,6 +104,26 @@ def parse_template_manifest(
                 "inferred": True,
             })
 
+    # 5) 表格槽
+    seen_table_ids: set[str] = set()
+    for tbl_block in infer_table_slots(index):
+        bid = tbl_block.get("id") or ""
+        if bid and bid not in seen_table_ids:
+            seen_table_ids.add(bid)
+            blocks.append(tbl_block)
+
+    # 6) SDT 锚点优先（若文档已注入内容控件）
+    sdt_tags = list_sdt_tags(docx_bytes)
+    if sdt_tags:
+        for block in blocks:
+            tag = normalize_tag(block.get("id") or "")
+            if tag in sdt_tags:
+                block["anchor"] = {
+                    "kind": "sdt",
+                    "tag": tag,
+                    "location": (block.get("anchor") or {}).get("location"),
+                }
+
     mode = infer_mode(
         blocks,
         len(index.get("placeholder_keys") or []),
@@ -109,6 +131,8 @@ def parse_template_manifest(
     )
     manifest = empty_manifest(mode)
     manifest["blocks"] = blocks
+    if sdt_tags:
+        manifest["sdt_tags"] = sorted(sdt_tags.keys())
     manifest["index_stats"] = {
         "paragraphs": len(index.get("paragraphs") or []),
         "tables": len(index.get("tables") or []),

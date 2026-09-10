@@ -5,12 +5,16 @@ import FieldCollectCard from './FieldCollectCard'
 import TemplateInfoCard from './TemplateInfoCard'
 import ProjectInfoCard from './ProjectInfoCard'
 import ConfirmCard from './ConfirmCard'
+import RequirementsCollectCard from './RequirementsCollectCard'
+import DocReviewCard from './DocReviewCard'
 import CardErrorBoundary from './CardErrorBoundary'
 
 const RENDERERS = {
   template_picker: TemplatePickerCard,
   mapping_confirm: MappingConfirmCard,
   field_collect: FieldCollectCard,
+  requirements_collect: RequirementsCollectCard,
+  doc_review: DocReviewCard,
   template_info: TemplateInfoCard,
   project_info: ProjectInfoCard,
   confirm: ConfirmCard,

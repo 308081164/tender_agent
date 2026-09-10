@@ -167,6 +167,47 @@ def test_template_create_requires_document():
     asyncio.run(run())
 
 
+def test_project_create_compose_flow():
+    async def run():
+        db = _make_db()
+        _seed_fields(db)
+        tpl = _seed_template(db)
+        tpl.placeholders = {
+            "list": ["project_name"],
+            "manifest_v2": {
+                "version": 2,
+                "mode": "create",
+                "blocks": [{"id": "ai.tech", "type": "ai_section", "title": "技术方案"}],
+            },
+        }
+        db.commit()
+        session = _new_session(db)
+
+        await agent_flows.start_project_create(db, session)
+        _l, r2, _ = await agent_flows.handle_action(
+            db, session, "select_template", {"template_id": tpl.id}
+        )
+        assert r2["metadata"]["cards"][0]["type"] == "field_collect"
+
+        _l2, r3, _ = await agent_flows.handle_action(
+            db, session, "confirm_fields",
+            {"fields": {"project_name": "智能创作测试项目"}},
+        )
+        assert session.workspace["pending_action"]["stage"] == "collect_requirements"
+        assert r3["metadata"]["cards"][0]["type"] == "requirements_collect"
+
+        with patch("app.services.agent_flows._generate_project_draft",
+                   return_value=("已生成", True, {"status": "green", "can_export": True, "issue_count": 0})):
+            _l3, r4, ws = await agent_flows.handle_action(
+                db, session, "confirm_requirements",
+                {"requirements": "突出铁路维保经验"},
+            )
+        assert ws is True
+        assert r4["metadata"]["cards"][0]["type"] == "doc_review"
+        assert session.workspace.get("pending_action") is None
+    asyncio.run(run())
+
+
 def test_project_create_flow():
     async def run():
         db = _make_db()
