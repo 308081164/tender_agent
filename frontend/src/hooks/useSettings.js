@@ -22,7 +22,7 @@ export function useSettings(showToast) {
     setSettingsForm({
       deepseek_api_key: '',
       deepseek_base_url: s.deepseek_base_url || '',
-      deepseek_model: s.deepseek_model || 'deepseek-chat',
+      deepseek_model: s.deepseek_model || 'deepseek-v4-pro',
       qwen_api_key: '',
       qwen_base_url: s.qwen_base_url || '',
       qwen_model: s.qwen_model || 'qwen-plus',

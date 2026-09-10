@@ -65,8 +65,11 @@ export default function SettingsPage() {
             <input
               value={settingsForm.deepseek_model}
               onChange={(e) => setSettingsForm({ ...settingsForm, deepseek_model: e.target.value })}
-              placeholder="deepseek-chat"
+              placeholder="deepseek-v4-pro"
             />
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              推荐 <code>deepseek-v4-pro</code>（V4 Pro GA）；轻量场景可用 <code>deepseek-v4-flash</code>
+            </div>
           </div>
         </div>
         <div className="actions">

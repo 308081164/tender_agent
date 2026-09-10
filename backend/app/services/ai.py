@@ -62,7 +62,7 @@ async def chat_completion(
                 return await _openai_compat(
                     cfg["deepseek_base_url"],
                     cfg["deepseek_api_key"],
-                    cfg.get("deepseek_model") or "deepseek-chat",
+                    cfg.get("deepseek_model") or "deepseek-v4-pro",
                     messages,
                 )
             except Exception:
