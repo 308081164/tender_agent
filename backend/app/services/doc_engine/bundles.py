@@ -34,8 +34,9 @@ def infer_qual_bundles(index: dict[str, Any]) -> list[dict[str, Any]]:
             category = "人员资质包"
         elif "业绩" in title:
             category = "业绩证明"
+        slug = re.sub(r"[^\w\u4e00-\u9fff]+", "_", title)[:32]
         blocks.append({
-            "id": f"qual.{re.sub(r'[^\w\u4e00-\u9fff]+', '_', title)[:32]}",
+            "id": f"qual.{slug}",
             "type": "qual_bundle",
             "bind": {"category": category, "section_hint": title},
             "anchor": {"kind": "section", "location": loc, "section_hint": title},
