@@ -28,7 +28,6 @@ export function useChatSessions(showToast) {
     if (sessionId) return sessionId
     const s = await api.createChatSession('新对话')
     setSessionId(s.id)
-    setMessages([])
     await refreshSessions()
     return s.id
   }, [sessionId, refreshSessions])
@@ -69,13 +68,14 @@ export function useChatSessions(showToast) {
     if (!q || loading) return
     setChatInput('')
     setLoading(true)
-    const optimistic = { role: 'user', content: q }
+    const optimisticId = `tmp-${Date.now()}`
+    const optimistic = { id: optimisticId, role: 'user', content: q }
     setMessages((m) => [...m, optimistic])
     try {
       const id = await ensureSession()
       const res = await api.sendChatMessage(id, q)
       setMessages((m) => {
-        const withoutOptimistic = m.filter((x) => x !== optimistic)
+        const withoutOptimistic = m.filter((x) => x.id !== optimisticId)
         return [
           ...withoutOptimistic,
           res.user_message,
@@ -90,7 +90,7 @@ export function useChatSessions(showToast) {
       }
     } catch (e) {
       setMessages((m) => [
-        ...m.filter((x) => x !== optimistic),
+        ...m.filter((x) => x.id !== optimisticId),
         optimistic,
         { role: 'assistant', content: `提问失败：${e.message}` },
       ])

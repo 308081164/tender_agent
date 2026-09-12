@@ -142,6 +142,34 @@ async def generate_chapter(
     }
 
 
+def _score_faq_match(question: str, item: dict) -> float:
+    q = question.strip()
+    if not q:
+        return 0.0
+    iq = item.get("question") or ""
+    ia = item.get("answer") or ""
+    ic = item.get("category") or ""
+    corpus = f"{iq}{ia}{ic}"
+
+    # 领域关键词重合优先于单字重叠，避免「你是谁」误命中「审计报告」类 FAQ
+    domain_words = [
+        "资质", "业绩", "项目经理", "建造师", "审计", "行贿", "安全", "地铁", "铁路",
+        "财务", "证书", "社保", "注册资金", "投标", "招标",
+    ]
+    keyword_hits = sum(1 for w in domain_words if w in q and w in corpus)
+    if keyword_hits:
+        return 0.25 + 0.2 * keyword_hits
+
+    q_chars = {c for c in q if not c.isspace() and c not in "，。！？、；：""''（）【】"}
+    i_chars = {c for c in iq if not c.isspace() and c not in "，。！？、；：""''（）【】"}
+    if len(q_chars) < 4:
+        return 0.0
+    overlap = len(q_chars & i_chars) / max(len(q_chars), 1)
+    if overlap < 0.45:
+        return 0.0
+    return overlap
+
+
 async def answer_faq(
     question: str,
     faq_items: list[dict],
@@ -152,14 +180,7 @@ async def answer_faq(
     best = None
     best_score = 0.0
     for item in faq_items:
-        q_chars = set(q)
-        i_chars = set(item["question"])
-        score = len(q_chars & i_chars) / max(len(q_chars), 1)
-        if any(w in item["question"] for w in q if len(w) > 1):
-            score += 0.2
-        for word in ["资质", "业绩", "项目经理", "建造师", "审计", "行贿", "安全", "地铁", "铁路"]:
-            if word in q and word in (item["question"] + item["answer"] + item.get("category", "")):
-                score += 0.3
+        score = _score_faq_match(q, item)
         if score > best_score:
             best_score = score
             best = item
@@ -172,7 +193,7 @@ async def answer_faq(
         if role in ("user", "assistant") and content:
             hist.append({"role": role, "content": content})
 
-    if best and best_score > 0.15:
+    if best and best_score > 0.35:
         answer = best["answer"]
         source = best.get("source", "")
         messages = [
@@ -186,7 +207,15 @@ async def answer_faq(
         return {"answer": answer, "source": source, "matched_question": best["question"], "mode": "kb"}
 
     messages = [
-        {"role": "system", "content": "你是企业问答助手。若无法从企业资料确认，请明确说明需人工核实。"},
+        {
+            "role": "system",
+            "content": (
+                "你是标书智能体助手，兼具基础对话与企业投标问答能力。"
+                "当用户闲聊、询问你的身份或能力时，请自然介绍自己并说明可协助的标书编写、"
+                "模板工程化、资质检索等功能；不要编造企业事实。"
+                "当用户询问具体企业资质/业绩时，若资料不足请说明需人工核实。"
+            ),
+        },
         *hist,
         {"role": "user", "content": q},
     ]

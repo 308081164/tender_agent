@@ -404,6 +404,54 @@ async def _handle_search_info(db: Session, text: str, history: list[dict], faq_i
 
 _CANCEL_WORDS = ("取消", "算了", "不用了", "先不", "退出")
 
+_META_PATTERNS: list[str] = [
+    r"你是谁",
+    r"你是什么",
+    r"你是哪位",
+    r"你能干什么",
+    r"你能做什么",
+    r"你有什么功能",
+    r"你会什么",
+    r"介绍一下你自己",
+    r"自我介绍",
+    r"怎么用",
+    r"如何使用",
+    r"能帮我什么",
+    r"^你好[吗呀!！。?？]*$",
+    r"^hi$",
+    r"^hello$",
+    r"^help$",
+]
+
+
+def _is_meta_question(text: str) -> bool:
+    q = text.strip().lower()
+    if not q:
+        return False
+    return any(re.search(p, q, re.IGNORECASE) for p in _META_PATTERNS)
+
+
+async def _handle_meta_question() -> dict[str, Any]:
+    return {
+        "answer": (
+            "我是**标书智能体助手**，面向铁路、轨道交通等行业的投标文书编写。\n\n"
+            "我可以帮你：\n"
+            "1. **新建标书**：从模板或历史标书开始，走六步向导完成字段、AI 章节、资质与导出\n"
+            "2. **文档 Agent**：上传模板 + 编写要求，按版式生成或修订标书\n"
+            "3. **企业问答**：查询资质、业绩、人员等投标资料（基于企业档案与 FAQ）\n"
+            "4. **模板工程化**：把完整标书转为可复用占位符模板\n\n"
+            "你可以直接说「帮我写一份标书」「公司有哪些铁路资质？」或打开「文档工作区」上传 DOCX。"
+        ),
+        "mode": "meta",
+        "metadata": {
+            "intent": "meta",
+            "actions": [
+                {"type": "link", "label": "文档工作区", "url": "/chat", "primary": True},
+                {"type": "link", "label": "新建标书", "url": "/projects/new"},
+            ],
+        },
+    }
+
 
 async def process_chat_message(
     text: str,
@@ -429,6 +477,9 @@ async def process_chat_message(
             hint = agent_flows.pending_hint(session)
             if hint:
                 return hint
+
+    if _is_meta_question(text):
+        return await _handle_meta_question()
 
     intent = await _classify_intent(text, db=db)
     hist = history or []

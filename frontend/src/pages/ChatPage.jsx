@@ -69,7 +69,6 @@ export default function ChatPage() {
     if (sessionId) return sessionId
     const s = await api.createChatSession('新对话')
     setSessionId(s.id)
-    setMessages([])
     await refreshSessions()
     return s.id
   }
@@ -79,7 +78,8 @@ export default function ChatPage() {
     if (!q || loading) return
     setInput('')
     setLoading(true)
-    const optimistic = { role: 'user', content: q }
+    const optimisticId = `tmp-${Date.now()}`
+    const optimistic = { id: optimisticId, role: 'user', content: q }
     setMessages((m) => [...m, optimistic])
     try {
       const id = await ensureSession()
@@ -87,7 +87,7 @@ export default function ChatPage() {
         selected_text: selectedText,
       })
       setMessages((m) => [
-        ...m.filter((x) => x !== optimistic),
+        ...m.filter((x) => x.id !== optimisticId),
         res.user_message,
         res.assistant_message,
       ])
@@ -100,7 +100,7 @@ export default function ChatPage() {
       }
     } catch (e) {
       setMessages((m) => [
-        ...m.filter((x) => x !== optimistic),
+        ...m.filter((x) => x.id !== optimisticId),
         optimistic,
         { role: 'assistant', content: `发送失败：${e.message}` },
       ])
