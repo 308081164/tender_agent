@@ -1295,6 +1295,26 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
             )
             meta["workspace_updated"] = True
 
+    # 工作区：全文批量替换
+    if meta.get("needs_workspace_bulk_replace"):
+        doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+        old_t = meta.get("old_text") or ""
+        new_t = meta.get("new_text") or ""
+        if doc_key and old_t:
+            doc_bytes = storage.download_bytes(doc_key)
+            new_bytes = word.apply_literal_replacements(doc_bytes, [(old_t, new_t)])
+            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_replaced.docx"
+            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ws["draft_object_key"] = new_key
+            ws["version"] = int(ws.get("version") or 0) + 1
+            ws["last_action"] = "bulk_replace"
+            s.workspace = ws
+            result["answer"] = (
+                f"✅ 已完成全文替换（版本 v{ws['version']}）：\n"
+                f"「{old_t}」→「{new_t}」\n\n请在左侧预览确认效果。"
+            )
+            meta["workspace_updated"] = True
+
     # 工作区：局部修改
     if meta.get("needs_workspace_edit"):
         doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
@@ -1530,35 +1550,63 @@ async def upload_chat_file(
     is_docx = fname.lower().endswith(".docx")
     if is_docx:
         placeholders = word.extract_placeholders(data)
+        preview = word.extract_preview(data, max_paragraphs=30)
+        para_count = len(preview.get("paragraphs") or [])
         ws = dict(getattr(s, "workspace", None) or {})
         ws["template_object_key"] = key
         ws["draft_object_key"] = key
         ws["filename"] = fname
         ws["version"] = 1
         ws["last_action"] = "upload"
+        ws["awaiting_file_intent"] = True
+        ws["upload_meta"] = {
+            "placeholder_count": len(placeholders),
+            "paragraph_count": para_count,
+            "size_kb": len(data) // 1024,
+        }
         s.workspace = ws
         answer = (
-            f"已加载文档「{fname}」到左侧工作区（{len(data) // 1024} KB）。\n\n"
-            f"检测到 {len(placeholders)} 个占位符。\n"
-            "您可以：直接说明编写要求生成标书（如「按模板生成，项目名称…」），"
-            "或将此文档工程化为可复用模板。"
+            f"已收到并阅读文档「{fname}」（{len(data) // 1024} KB，约 {para_count} 段）。\n\n"
+            f"检测到 {len(placeholders)} 个占位符。\n\n"
+            "**在您明确下达指令前，我不会自动修改文档。** 请告诉我您希望进行哪种操作：\n"
+            "1. 工程化为可复用模板\n"
+            "2. 结合企业信息按此格式编写招标标书\n"
+            "3. 在文档中批量替换指定文字\n"
+            "4. 仅作为工作区文档预览/编辑\n\n"
+            "也可直接用自然语言描述您的需求。"
         )
         actions = [
             {"type": "link", "label": "下载当前文档", "url": f"/api/chat/sessions/{session_id}/workspace/download"},
         ]
-        cards = [{
-            "id": f"upload-{uuid.uuid4().hex[:8]}",
-            "type": "confirm",
-            "title": "将此文档创建为模板？",
-            "state": "active",
-            "payload": {
-                "message": "我将识别其中的项目名称、招标人、金额等字段并替换为占位符，生成可复用模板。",
-                "confirm_label": "创建模板",
-                "cancel_label": "仅作为文档使用",
-                "confirm_action": "start_template_create",
-                "cancel_action": "dismiss_card",
+        uid = uuid.uuid4().hex[:8]
+        cards = [
+            {
+                "id": f"upload-tpl-{uid}",
+                "type": "confirm",
+                "title": "生成标书模板",
+                "state": "active",
+                "payload": {
+                    "message": "识别项目名称、招标人等字段并替换为占位符，生成可复用模板。",
+                    "confirm_label": "创建模板",
+                    "cancel_label": "暂不",
+                    "confirm_action": "start_template_create",
+                    "cancel_action": "dismiss_card",
+                },
             },
-        }]
+            {
+                "id": f"upload-gen-{uid}",
+                "type": "confirm",
+                "title": "按此格式编写标书",
+                "state": "active",
+                "payload": {
+                    "message": "将结合系统内企业信息，按当前文档版式生成招标标书（需补充编写要求）。",
+                    "confirm_label": "开始编写",
+                    "cancel_label": "暂不",
+                    "confirm_action": "dismiss_card",
+                    "cancel_action": "dismiss_card",
+                },
+            },
+        ]
     else:
         answer = f"已收到文件「{fname}」。当前支持 DOCX 标书文件的模板化分析，其他格式可作为参考资料。"
         actions = [{"type": "link", "label": "前往数据管理", "url": "/admin"}]

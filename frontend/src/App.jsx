@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api/client'
 import FloatingChat from './components/FloatingChat'
 import Toast from './components/Toast'
@@ -15,6 +15,8 @@ export function useApp() {
 
 export default function App() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const hideFloatingChat = location.pathname.startsWith('/chat')
   const { toast, showToast } = useToast()
   const chat = useChatSessions(showToast)
   const settings = useSettings(showToast)
@@ -96,7 +98,7 @@ export default function App() {
   return (
     <AppContext.Provider value={ctx}>
       <Outlet />
-      <FloatingChat chat={chat} />
+      {!hideFloatingChat ? <FloatingChat chat={chat} /> : null}
       <Toast message={toast} />
     </AppContext.Provider>
   )

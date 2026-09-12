@@ -47,11 +47,12 @@ FEATURE_CARDS = [
 ]
 
 SUGGESTED_PROMPTS = [
+    "告诉我你是谁，你能干什么",
+    "当前一共有多少个标书模板？",
+    "最近一周创建了哪些标书？",
+    "公司的全称是什么",
     "帮我写一份标书",
-    "把上传的标书创建为模板",
-    "按模板生成一份新标书",
-    "公司有哪些铁路相关资质？",
-    "修改选中段落，使语气更正式",
+    "如何使用这个系统？",
 ]
 
 INTENT_PATTERNS: list[tuple[str, list[str], float]] = [
@@ -477,6 +478,20 @@ async def process_chat_message(
             hint = agent_flows.pending_hint(session)
             if hint:
                 return hint
+
+    from app.services import agent_semantic
+
+    semantic_result = await agent_semantic.process_with_semantic_router(
+        text,
+        db,
+        history,
+        faq_items,
+        workspace=workspace,
+        context=context,
+        session=session,
+    )
+    if semantic_result is not None:
+        return semantic_result
 
     if _is_meta_question(text):
         return await _handle_meta_question()
