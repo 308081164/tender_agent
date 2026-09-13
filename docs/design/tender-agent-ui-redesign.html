@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>标书智能体 · 现代化 UI 重新设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-2: #f8fafc;
+      --ink: #172033;
+      --muted: #68758a;
+      --line: #e5eaf1;
+      --primary: #2563eb;
+      --primary-2: #1d4ed8;
+      --primary-soft: #eaf1ff;
+      --success: #059669;
+      --warning: #d97706;
+      --danger: #dc2626;
+      --shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+      --radius: 18px;
+      --font: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.55;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+
+    .prototype-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 28px;
+      background: rgba(255,255,255,0.88);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(16px);
+    }
+    .prototype-brand { display: flex; align-items: center; gap: 12px; font-weight: 800; }
+    .logo {
+      width: 38px; height: 38px; border-radius: 12px;
+      display: grid; place-items: center;
+      color: #fff; background: linear-gradient(135deg, #2563eb, #14b8a6);
+      box-shadow: 0 10px 24px rgba(37,99,235,.24);
+    }
+    .prototype-links { display: flex; gap: 8px; flex-wrap: wrap; }
+    .prototype-links a {
+      color: var(--muted); text-decoration: none; font-size: 14px;
+      padding: 8px 12px; border-radius: 999px;
+    }
+    .prototype-links a:hover { color: var(--primary); background: var(--primary-soft); }
+
+    .section { padding: 42px 28px; max-width: 1440px; margin: 0 auto; }
+    .section-head { max-width: 860px; margin-bottom: 24px; }
+    .eyebrow { color: var(--primary); font-weight: 800; letter-spacing: .08em; font-size: 12px; text-transform: uppercase; }
+    h1, h2, h3 { line-height: 1.18; margin: 0; }
+    h1 { font-size: clamp(34px, 5vw, 64px); letter-spacing: -0.045em; }
+    h2 { font-size: clamp(26px, 3vw, 38px); letter-spacing: -0.03em; }
+    h3 { font-size: 18px; }
+    .lead { color: var(--muted); font-size: 17px; margin: 12px 0 0; }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, .9fr) minmax(520px, 1.1fr);
+      gap: 28px;
+      align-items: center;
+      min-height: calc(100vh - 66px);
+    }
+    .hero-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .hero-actions { display: flex; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+    .btn {
+      border: 0; border-radius: 12px; padding: 11px 16px; font-weight: 750;
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      transition: transform .16s ease, box-shadow .16s ease, background .16s ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary { color: #fff; background: var(--primary); box-shadow: 0 12px 24px rgba(37,99,235,.22); }
+    .btn-primary:hover { background: var(--primary-2); }
+    .btn-secondary { color: var(--ink); background: var(--surface); border: 1px solid var(--line); }
+    .btn-ghost { color: var(--muted); background: transparent; }
+    .btn-ghost:hover { color: var(--primary); background: var(--primary-soft); }
+
+    .app-frame { display: grid; grid-template-columns: 248px 1fr; min-height: 680px; background: var(--bg); }
+    .sidebar {
+      padding: 20px 14px;
+      background: #0f172a;
+      color: #cbd5e1;
+    }
+    .side-brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 22px; color: #fff; font-weight: 800; }
+    .side-section { margin: 20px 0 8px; padding: 0 10px; color: #64748b; font-size: 12px; font-weight: 800; }
+    .side-item {
+      width: 100%; border: 0; background: transparent; color: inherit; text-align: left;
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; margin: 2px 0;
+    }
+    .side-item.active { color: #fff; background: rgba(37,99,235,.9); }
+    .side-item:not(.active):hover { background: rgba(255,255,255,.08); color: #fff; }
+    .side-icon { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; background: rgba(255,255,255,.09); }
+
+    .workspace { min-width: 0; display: flex; flex-direction: column; }
+    .topbar {
+      height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 18px;
+      padding: 0 24px; background: rgba(255,255,255,.86); border-bottom: 1px solid var(--line);
+    }
+    .search {
+      width: min(520px, 100%); display: flex; align-items: center; gap: 10px;
+      background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; color: var(--muted);
+    }
+    .search input { width: 100%; border: 0; outline: 0; background: transparent; }
+    .content { padding: 24px; overflow: auto; }
+
+    .page-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 20px; }
+    .page-title p { margin: 6px 0 0; color: var(--muted); }
+    .grid { display: grid; gap: 16px; }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+      box-shadow: 0 8px 28px rgba(15,23,42,.04);
+    }
+    .card-pad { padding: 18px; }
+    .metric { display: flex; justify-content: space-between; align-items: center; }
+    .metric strong { font-size: 30px; letter-spacing: -.04em; }
+    .metric span { color: var(--muted); font-size: 13px; }
+    .metric-icon { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; background: var(--primary-soft); color: var(--primary); }
+
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; }
+    .table th { color: var(--muted); font-size: 12px; font-weight: 800; background: var(--surface-2); }
+    .table tr:last-child td { border-bottom: 0; }
+    .status { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 750; }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .status-progress { color: #1d4ed8; background: #eaf1ff; }
+    .status-review { color: #b45309; background: #fff7ed; }
+    .status-done { color: #047857; background: #ecfdf5; }
+
+    .steps { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 18px 0 22px; }
+    .step { position: relative; padding: 12px 10px; border-radius: 14px; background: var(--surface-2); color: var(--muted); font-size: 13px; }
+    .step.done { color: var(--success); background: #ecfdf5; }
+    .step.active { color: var(--primary); background: var(--primary-soft); font-weight: 800; }
+    .step strong { display: block; margin-bottom: 3px; }
+    .wizard-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; }
+    .template-card { display: grid; grid-template-columns: 72px 1fr auto; gap: 14px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 16px; margin-bottom: 10px; }
+    .template-card.active { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .doc-thumb { height: 72px; border-radius: 12px; background: linear-gradient(180deg, #eff6ff, #fff); border: 1px solid #dbeafe; display: grid; place-items: center; color: var(--primary); font-weight: 900; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .field label { display: block; color: var(--muted); font-size: 12px; font-weight: 800; margin-bottom: 6px; }
+    .field input, .field select, .field textarea {
+      width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; outline: 0; background: #fff;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+
+    .chat-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 680px; }
+    .doc-pane { padding: 24px; background: #eef2f7; }
+    .doc-page {
+      max-width: 780px; min-height: 860px; margin: 0 auto; background: #fff; border-radius: 8px;
+      box-shadow: 0 18px 45px rgba(15,23,42,.12); padding: 56px 64px;
+    }
+    .doc-page h1 { font-size: 28px; text-align: center; letter-spacing: 0; margin-bottom: 32px; }
+    .doc-page p { color: #334155; margin: 0 0 14px; }
+    .doc-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .chat-pane { display: flex; flex-direction: column; background: #fff; border-left: 1px solid var(--line); }
+    .chat-head { padding: 16px; border-bottom: 1px solid var(--line); }
+    .chat-messages { flex: 1; padding: 16px; overflow: auto; }
+    .msg { max-width: 92%; padding: 11px 13px; border-radius: 15px; margin-bottom: 10px; font-size: 14px; }
+    .msg.user { margin-left: auto; color: #fff; background: var(--primary); border-bottom-right-radius: 5px; }
+    .msg.bot { color: var(--ink); background: var(--surface-2); border-bottom-left-radius: 5px; }
+    .composer { display: flex; gap: 8px; padding: 14px; border-top: 1px solid var(--line); }
+    .composer input { flex: 1; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; outline: 0; }
+
+    .admin-grid { display: grid; grid-template-columns: 230px 1fr; min-height: 680px; }
+    .admin-nav { padding: 18px 12px; background: var(--surface); border-right: 1px solid var(--line); }
+    .admin-item { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 10px 12px; border-radius: 11px; color: var(--muted); }
+    .admin-item.active { color: var(--primary); background: var(--primary-soft); font-weight: 800; }
+    .toolbar { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .toolbar-left { display: flex; gap: 8px; align-items: center; }
+    .pill { padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); }
+
+    .principles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .principle { padding: 18px; }
+    .principle .num { color: var(--primary); font-weight: 900; font-size: 12px; }
+    .principle p { color: var(--muted); margin: 8px 0 0; font-size: 14px; }
+
+    .download-note {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      padding: 16px 18px; border-radius: 18px; background: #0f172a; color: #e2e8f0;
+    }
+    .download-note code { color: #93c5fd; }
+
+    @media (max-width: 1100px) {
+      .hero, .wizard-grid, .chat-layout { grid-template-columns: 1fr; }
+      .app-frame, .admin-grid { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .grid-3, .grid-4, .principles { grid-template-columns: repeat(2, 1fr); }
+      .chat-pane { min-height: 520px; }
+    }
+    @media (max-width: 720px) {
+      .section { padding: 28px 16px; }
+      .prototype-nav { padding: 12px 16px; }
+      .grid-3, .grid-4, .principles, .field-grid, .steps { grid-template-columns: 1fr; }
+      .page-title, .toolbar, .download-note { flex-direction: column; align-items: stretch; }
+      .doc-page { padding: 28px 22px; }
+    }
+
+    @media print {
+      .prototype-nav, .hero-actions, .download-note { display: none; }
+      body { background: #fff; }
+      .section { padding: 24px 0; }
+      .hero-card, .card { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="prototype-nav">
+    <div class="prototype-brand"><span class="logo">T</span><span>标书智能体 · UI 重新设计</span></div>
+    <div class="prototype-links">
+      <a href="#dashboard">工作台</a>
+      <a href="#wizard">六步向导</a>
+      <a href="#agent">文档 Agent</a>
+      <a href="#admin">数据管理</a>
+      <a href="#system">设计系统</a>
+    </div>
+  </nav>
+
+  <section class="section hero" id="overview">
+    <div>
+      <div class="eyebrow">Modern Admin / Document AI</div>
+      <h1>把“找入口”变成<br />“直接开始工作”。</h1>
+      <p class="lead">新设计以任务流为中心：工作台聚焦继续处理，向导只保留当前决策，文档 Agent 将预览、编辑和对话合并到一个工作区，基础数据管理采用标准企业后台模式。</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#dashboard">查看工作台</a>
+        <a class="btn btn-secondary" href="#wizard">查看六步向导</a>
+        <button class="btn btn-ghost" onclick="window.print()">打印 / 另存为 PDF</button>
+      </div>
+      <div class="grid grid-4" style="margin-top: 28px;">
+        <div class="card card-pad"><strong>1</strong><br /><span class="lead" style="font-size:13px;">主导航入口</span></div>
+        <div class="card card-pad"><strong>6</strong><br /><span class="lead" style="font-size:13px;">标书创建步骤</span></div>
+        <div class="card card-pad"><strong>3</strong><br /><span class="lead" style="font-size:13px;">核心工作区</span></div>
+        <div class="card card-pad"><strong>0</strong><br /><span class="lead" style="font-size:13px;">重复操作按钮</span></div>
+      </div>
+    </div>
+
+    <div class="hero-card" id="dashboard">
+      <div class="app-frame">
+        <aside class="sidebar">
+          <div class="side-brand"><span class="logo">T</span><span>标书智能体</span></div>
+          <div class="side-section">工作</div>
+          <button class="side-item active"><span class="side-icon">⌂</span>工作台</button>
+          <button class="side-item"><span class="side-icon">＋</span>新建标书</button>
+          <button class="side-item"><span class="side-icon">✦</span>文档 Agent</button>
+          <div class="side-section">管理</div>
+          <button class="side-item"><span class="side-icon">▦</span>模板库</button>
+          <button class="side-item"><span class="side-icon">✓</span>资质库</button>
+          <button class="side-item"><span class="side-icon">⚙</span>系统设置</button>
+        </aside>
+        <main class="workspace">
+          <div class="topbar">
+            <div class="search">⌕<input value="搜索项目、模板、资质…" aria-label="搜索" /></div>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <button class="btn btn-secondary">导入资料</button>
+              <button class="btn btn-primary">新建标书</button>
+            </div>
+          </div>
+          <div class="content">
+            <div class="page-title">
+              <div><h2>早上好，继续完成当前标书</h2><p>优先展示需要处理的项目，而不是所有功能入口。</p></div>
+            </div>
+            <div class="grid grid-3" style="margin-bottom:16px;">
+              <div class="card card-pad metric"><div><span>进行中</span><br /><strong>8</strong></div><span class="metric-icon">→</span></div>
+              <div class="card card-pad metric"><div><span>待校验</span><br /><strong>3</strong></div><span class="metric-icon">!</span></div>
+              <div class="card card-pad metric"><div><span>本月导出</span><br /><strong>26</strong></div><span class="metric-icon">↓</span></div>
+            </div>
+            <div class="card">
+              <table class="table">
+                <thead><tr><th>项目</th><th>当前步骤</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
+                <tbody>
+                  <tr><td><strong>京沪高铁维保标段</strong><br /><small>上海局集团</small></td><td>AI 审核</td><td><span class="status status-progress">进行中</span></td><td>10 分钟前</td><td><button class="btn btn-ghost">继续</button></td></tr>
+                  <tr><td><strong>站房机电安装工程</strong><br /><small>中铁二十四局</small></td><td>条目校验</td><td><span class="status status-review">待处理</span></td><td>32 分钟前</td><td><button class="btn btn-ghost">处理</button></td></tr>
+                  <tr><td><strong>轨道板供应项目</strong><br /><small>华东指挥部</small></td><td>导出 Word</td><td><span class="status status-done">已完成</span></td><td>昨天</td><td><button class="btn btn-ghost">查看</button></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="wizard">
+    <div class="section-head">
+      <div class="eyebrow">Guided Creation</div>
+      <h2>六步向导：每一步只有一个主目标</h2>
+      <p class="lead">左侧不再同时展示所有入口；顶部步骤条提供全局进度，中间区域只展示当前步骤，底部固定“保存 / 下一步”。</p>
+    </div>
+    <div class="hero-card">
+      <div class="topbar">
+        <div><strong>新建标书</strong><br /><small style="color:var(--muted);">自动保存于 10:24:18</small></div>
+        <div style="display:flex;gap:8px;"><button class="btn btn-ghost">预览</button><button class="btn btn-secondary">保存草稿</button></div>
+      </div>
+      <div class="content">
+        <div class="steps">
+          <div class="step done"><strong>01</strong>选择起点</div>
+          <div class="step active"><strong>02</strong>信息录入</div>
+          <div class="step"><strong>03</strong>AI 审核</div>
+          <div class="step"><strong>04</strong>插入资质</div>
+          <div class="step"><strong>05</strong>条目校验</div>
+          <div class="step"><strong>06</strong>导出 Word</div>
+        </div>
+        <div class="wizard-grid">
+          <div class="card card-pad">
+            <h3>选择工程化模板</h3>
+            <p class="lead" style="font-size:14px;margin-bottom:14px;">只展示可作为起点的模板，招标文件与历史项目不再混在同一列表。</p>
+            <div class="template-card active"><div class="doc-thumb">DOC</div><div><strong>铁路工程施工总承包模板</strong><br /><small>32 个章节 · 18 个占位符 · 最近更新</small></div><span class="status status-done">推荐</span></div>
+            <div class="template-card"><div class="doc-thumb">DOC</div><div><strong>物资采购投标文件模板</strong><br /><small>24 个章节 · 12 个占位符</small></div><button class="btn btn-ghost">选择</button></div>
+            <div class="template-card"><div class="doc-thumb">DOC</div><div><strong>维保服务响应文件模板</strong><br /><small>21 个章节 · 9 个占位符</small></div><button class="btn btn-ghost">选择</button></div>
+          </div>
+          <div class="card card-pad">
+            <h3>基础信息</h3>
+            <p class="lead" style="font-size:14px;margin-bottom:14px;">企业默认值自动预填，仅突出需要人工确认的字段。</p>
+            <div class="field-grid">
+              <div class="field"><label>项目名称 *</label><input value="京沪高铁维保标段" /></div>
+              <div class="field"><label>招标人 *</label><input value="中国铁路上海局集团" /></div>
+              <div class="field"><label>项目类型</label><select><option>铁路维保</option></select></div>
+              <div class="field"><label>投标截止日期</label><input value="2026-09-18" /></div>
+              <div class="field" style="grid-column:1/-1;"><label>项目摘要</label><textarea rows="4">负责线路巡检、设备维护、故障响应及驻场服务。</textarea></div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:18px;">
+          <button class="btn btn-ghost">上一步</button>
+          <div style="display:flex;gap:10px;"><button class="btn btn-secondary">保存</button><button class="btn btn-primary">保存并进入 AI 生成</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="agent">
+    <div class="section-head">
+      <div class="eyebrow">Document Agent Workspace</div>
+      <h2>文档 Agent：预览、编辑、对话合并</h2>
+      <p class="lead">用户不再需要猜测“对话在哪里影响文档”。左侧始终是真实文档，右侧是对话和上下文操作；选中文字后，修改指令自动绑定选区。</p>
+    </div>
+    <div class="hero-card chat-layout">
+      <section class="doc-pane">
+        <div class="doc-toolbar">
+          <div><strong>京沪高铁维保标段.docx</strong><br /><small style="color:var(--muted);">已同步 · 128 段 · 3 处待确认</small></div>
+          <div style="display:flex;gap:8px;"><button class="btn btn-secondary">版本</button><button class="btn btn-primary">导出</button></div>
+        </div>
+        <article class="doc-page">
+          <h1>京沪高铁维保标段投标文件</h1>
+          <p><strong>一、项目理解。</strong>本项目覆盖线路巡检、设备维护、故障响应及驻场服务，需要建立覆盖计划、人员、物资、质量与安全的完整保障体系。</p>
+          <p style="background:#fff7ed;">本单位拟投入 12 名具备铁路维保经验的专业人员，其中包括 2 名高级工程师、4 名注册安全工程师。</p>
+          <p><strong>二、服务方案。</strong>采用“预防性维护 + 状态检修 + 应急响应”三层机制，确保关键设备可用率不低于 99.5%。</p>
+          <p>针对夜间天窗点作业，设置双人复核与作业许可流程，并通过移动端记录巡检结果。</p>
+        </article>
+      </section>
+      <aside class="chat-pane">
+        <div class="chat-head"><h3>Agent 对话</h3><p class="lead" style="font-size:13px;margin-top:4px;">当前上下文：第 2 段 · 人员配置</p></div>
+        <div class="chat-messages">
+          <div class="msg user">把选中段落改得更符合铁路维保评分标准。</div>
+          <div class="msg bot">已补充资质等级、响应时限和驻场机制，并保留可核验数据。建议将“12 名人员”替换为证书编号引用。</div>
+          <div class="msg user">继续，语言更正式。</div>
+          <div class="msg bot">已生成正式版本。你可以点击“应用到文档”或继续微调。</div>
+        </div>
+        <div class="composer"><input value="继续优化服务响应承诺…" /><button class="btn btn-primary">发送</button></div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="section" id="admin">
+    <div class="section-head">
+      <div class="eyebrow">Master Data</div>
+      <h2>数据管理：采用标准企业后台模式</h2>
+      <p class="lead">企业档案、字段、模板、资质、校验规则、FAQ 统一为“列表 → 筛选 → 编辑 → 预览”的一致交互，降低学习成本。</p>
+    </div>
+    <div class="hero-card admin-grid">
+      <aside class="admin-nav">
+        <button class="admin-item">企业档案</button>
+        <button class="admin-item">字段定义</button>
+        <button class="admin-item active">模板库</button>
+        <button class="admin-item">资质库</button>
+        <button class="admin-item">校验规则</button>
+        <button class="admin-item">FAQ</button>
+      </aside>
+      <main class="content">
+        <div class="toolbar">
+          <div class="toolbar-left"><div class="search" style="width:320px;">⌕<input value="搜索模板…" /></div><button class="pill">类型：工程化</button><button class="pill">状态：启用</button></div>
+          <div style="display:flex;gap:8px;"><button class="btn btn-secondary">导入 DOCX</button><button class="btn btn-primary">新建模板</button></div>
+        </div>
+        <div class="card">
+          <table class="table">
+            <thead><tr><th>模板</th><th>章节</th><th>占位符</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
+            <tbody>
+              <tr><td><strong>铁路工程施工总承包模板</strong></td><td>32</td><td>18</td><td><span class="status status-done">启用</span></td><td>今天</td><td><button class="btn btn-ghost">工程化</button></td></tr>
+              <tr><td><strong>物资采购投标文件模板</strong></td><td>24</td><td>12</td><td><span class="status status-done">启用</span></td><td>昨天</td><td><button class="btn btn-ghost">预览</button></td></tr>
+              <tr><td><strong>维保服务响应文件模板</strong></td><td>21</td><td>9</td><td><span class="status status-review">草稿</span></td><td>3 天前</td><td><button class="btn btn-ghost">编辑</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <section class="section" id="system">
+    <div class="section-head">
+      <div class="eyebrow">Design System</div>
+      <h2>设计原则与落地规范</h2>
+      <p class="lead">采用通用现代管理系统语言：浅色背景、深色侧边导航、蓝色主行动、卡片化内容、清晰状态色和一致的表格/表单模式。</p>
+    </div>
+    <div class="principles">
+      <div class="card principle"><span class="num">01</span><h3>任务优先</h3><p>首页只回答“我现在该处理什么”，功能入口收进导航。</p></div>
+      <div class="card principle"><span class="num">02</span><h3>单一步骤</h3><p>向导每屏只保留当前决策，主按钮始终只有一个。</p></div>
+      <div class="card principle"><span class="num">03</span><h3>上下文可见</h3><p>AI 对话、选中文本、文档预览同屏，避免隐式修改。</p></div>
+      <div class="card principle"><span class="num">04</span><h3>管理一致</h3><p>所有基础数据使用相同列表、筛选、详情和危险操作规范。</p></div>
+    </div>
+    <div style="height:16px;"></div>
+    <div class="download-note">
+      <span>本文件为单文件 HTML 原型，可直接离线查看、打印或另存为 PDF。</span>
+      <code>tender-agent-ui-redesign.html</code>
+    </div>
+  </section>
+</body>
+</html>
