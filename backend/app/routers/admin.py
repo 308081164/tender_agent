@@ -488,6 +488,13 @@ async def admin_upload_template(
     )
     ph_list = word.extract_placeholders(data)
     ph_meta: dict = {"list": ph_list}
+    upload_desc = {
+        "history": "基于完整标书上传：需在工程化工作台标记项目名称、招标编号、金额等大量可变字段。",
+        "skeleton": "基于空白模板上传：含编写规则与格式要求；立项生成 AI 章节时将引用模板全文。",
+        "template": "工程化模板上传。",
+    }
+    if kind == "skeleton":
+        ph_meta["ai_reference_full_doc"] = True
     try:
         from app.services.doc_engine.engine import attach_manifest_to_template
         from app.services.doc_engine.parser import parse_template_manifest
@@ -498,7 +505,7 @@ async def admin_upload_template(
         print(f"[upload] manifest analyze warn: {e}")
     t = Template(
         name=name or fname,
-        description="管理端上传",
+        description=upload_desc.get(kind, "管理端上传"),
         object_key=key,
         placeholders=ph_meta,
         template_code=template_code,

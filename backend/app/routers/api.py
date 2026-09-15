@@ -579,6 +579,33 @@ def _company_context(db: Session) -> str:
     ])
 
 
+def _template_reference_context(db: Session, project: TenderProject) -> str:
+    """空白模板类文档：将模板正文作为 AI 生成参考（含编写规则、格式说明等）。"""
+    if not project.template_id:
+        return ""
+    tpl = db.query(Template).filter(Template.id == project.template_id).first()
+    if not tpl or not tpl.object_key:
+        return ""
+    ph = tpl.placeholders or {}
+    use_full = (
+        getattr(tpl, "kind", "") == "skeleton"
+        or bool(ph.get("ai_reference_full_doc"))
+    )
+    if not use_full:
+        return ""
+    try:
+        data = storage.download_bytes(tpl.object_key)
+        preview = word.extract_preview(data, max_paragraphs=250)
+        lines = [p.get("text", "") for p in (preview.get("paragraphs") or []) if p.get("text")]
+        body = "\n".join(lines).strip()
+        if not body:
+            return ""
+        return f"模板参考文档（{tpl.name}）：\n{body[:4500]}"
+    except Exception as e:
+        print(f"[generate] template reference warn: {e}")
+        return ""
+
+
 @router.post("/projects/{project_id}/generate")
 async def generate_content(project_id: int, body: GenerateRequest, db: Session = Depends(get_db)):
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
@@ -595,9 +622,12 @@ async def generate_content(project_id: int, body: GenerateRequest, db: Session =
         "人员配置说明",
     ]
     ctx = _company_context(db)
+    tpl_ref = _template_reference_context(db, p)
     chapters = dict(p.chapters or {})
     for key in keys:
-        chapters[key] = await ai_svc.generate_chapter(key, p.fields or {}, db=db, company_context=ctx)
+        chapters[key] = await ai_svc.generate_chapter(
+            key, p.fields or {}, db=db, company_context=ctx, template_reference=tpl_ref,
+        )
     p.chapters = chapters
     flag_modified(p, "chapters")
     p.current_step = max(p.current_step, 3)
@@ -615,7 +645,11 @@ async def regenerate_chapter(project_id: int, chapter_key: str, db: Session = De
         raise HTTPException(404, "项目不存在")
     chapters = dict(p.chapters or {})
     chapters[chapter_key] = await ai_svc.generate_chapter(
-        chapter_key, p.fields or {}, db=db, company_context=_company_context(db)
+        chapter_key,
+        p.fields or {},
+        db=db,
+        company_context=_company_context(db),
+        template_reference=_template_reference_context(db, p),
     )
     p.chapters = chapters
     flag_modified(p, "chapters")

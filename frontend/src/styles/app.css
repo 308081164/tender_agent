@@ -549,6 +549,17 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 .admin-meta-dl dt { color: var(--muted); margin: 0; }
 .admin-meta-dl dd { margin: 0; }
 .upload-kind-picker .upload-kind-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.upload-kind-dialog { max-width: 560px; }
+.upload-kind-options { display: grid; gap: 12px; margin: 16px 0; }
+.upload-kind-option {
+  display: grid; gap: 6px; text-align: left; padding: 14px 16px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
+  cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.upload-kind-option:hover { border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08); }
+.upload-kind-option strong { font-size: 15px; color: var(--text); }
+.upload-kind-option span { font-size: 13px; line-height: 1.55; color: var(--muted); }
+.admin-row-actions button.linkish { background: none; border: none; padding: 0; cursor: pointer; font: inherit; }
 .placeholder-preview-legend { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 16px 16px 0; }
 .legend-items { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; align-items: center; }
 

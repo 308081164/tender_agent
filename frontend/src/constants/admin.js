@@ -25,10 +25,25 @@ export const TEMPLATE_KINDS = [
 /** 列表分类与创建方式展示 */
 export const TEMPLATE_SOURCE_LABELS = {
   history: '基于完整标书创建',
-  template: '基于空白模板创建',
   skeleton: '基于空白模板创建',
+  template: '工程化模板',
   tender_doc: '招标文件',
 }
+
+export const TEMPLATE_UPLOAD_OPTIONS = [
+  {
+    kind: 'history',
+    title: '基于完整标书创建',
+    description:
+      '适用于已填写的完整投标文件。工程化时需标记项目名称、招标编号、金额等大量可变字段，完成后可基于快照做智能替换。',
+  },
+  {
+    kind: 'skeleton',
+    title: '基于空白模板创建',
+    description:
+      '适用于含编写规则、格式要求的空白或半空白模板。占位符较少、自由度更高；立项生成 AI 章节时会将模板全文作为参考上下文。',
+  },
+]
 
 export function templateSourceLabel(kind) {
   return TEMPLATE_SOURCE_LABELS[kind] || kind || '—'
