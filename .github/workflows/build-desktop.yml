@@ -105,6 +105,9 @@ jobs:
         shell: pwsh
         run: ./scripts/verify_desktop_runtime.ps1
 
+      - name: Install release pack dependencies
+        run: pip install python-docx openpyxl
+
       - name: Build offline installer
         shell: pwsh
         env:

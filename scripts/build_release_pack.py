@@ -82,12 +82,18 @@ def main() -> None:
     if verify_ps1.exists():
         shutil.copy2(verify_ps1, RELEASE / "verify_windows_features.ps1")
 
-    # 测试材料包
+    # 测试材料包（CI 已在 Linux 构建；本地/Windows 失败时不阻断安装包发布）
     test_zip = RELEASE / f"tender-agent-test-materials-v{version}.zip"
-    subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "build_test_materials_pack.py")],
-        check=True,
-    )
+    if test_zip.exists():
+        print(f"Test materials already present: {test_zip.name}")
+    else:
+        try:
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "build_test_materials_pack.py")],
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            print(f"WARN: test materials pack build failed (non-blocking): {exc}")
 
     zip_path = RELEASE / f"tender-agent-release-v{version}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:

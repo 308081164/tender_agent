@@ -178,5 +178,8 @@ if (Test-Path $buildRelease) {
   $py = Get-Command python -ErrorAction SilentlyContinue
   if ($py) {
     & python $buildRelease
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "WARN: release pack step had errors (installer already built)" -ForegroundColor Yellow
+    }
   }
 }
