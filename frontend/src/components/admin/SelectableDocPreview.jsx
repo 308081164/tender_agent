@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo } from 'react'
 import { renderPlaceholderText } from './DocxTextPreview'
+import { paragraphPreviewStyle } from './FormatInfoSummary'
 
 export default function SelectableDocPreview({
   paragraphs = [],
@@ -30,16 +31,20 @@ export default function SelectableDocPreview({
       {paragraphs.map((p, i) => {
         const text = p.display_text ?? p.text
         const changed = p.changed || (p.display_text && p.display_text !== p.text)
+        const style = paragraphPreviewStyle(p)
+        const content = renderPlaceholderText(text, highlightTexts)
         return p.is_heading ? (
           <div
             key={i}
             className={`preview-h level-${Math.min(p.level || 1, 3)} ${changed ? 'mapping-changed' : ''}`}
+            style={style}
+            title={p.style || undefined}
           >
-            {renderPlaceholderText(text, highlightTexts)}
+            {content}
           </div>
         ) : (
-          <p key={i} className={`preview-p ${changed ? 'mapping-changed' : ''}`}>
-            {renderPlaceholderText(text, highlightTexts)}
+          <p key={i} className={`preview-p ${changed ? 'mapping-changed' : ''}`} style={style} title={p.style || undefined}>
+            {content}
           </p>
         )
       })}
