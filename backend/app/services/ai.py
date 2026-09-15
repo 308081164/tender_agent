@@ -118,16 +118,21 @@ async def generate_chapter(
     fields: dict,
     db: Session | None = None,
     company_context: str = "",
+    template_reference: str = "",
 ) -> dict:
     style = (
         "正式严谨，符合铁路/轨道交通行业规范；禁止口语化；"
         "数字、日期、金额须前后一致；全面响应招标要求。"
     )
     ctx = (company_context or "")[:2500]
+    tpl_ctx = (template_reference or "")[:4500]
+    ref_block = f"\n模板编写规则与参考正文：\n{tpl_ctx}\n" if tpl_ctx else ""
     prompt = (
         f"你是铁路行业标书撰写助手。请为章节「{chapter_key}」撰写正式、严谨的中文段落，"
         f"约200-400字。\n文风要求：{style}\n企业背景：{ctx}\n项目信息：{fields}。"
+        f"{ref_block}"
         f"不要使用口语，不要编造无法核实的资质编号。"
+        f"{'请严格遵循模板参考中的编写规则与格式要求。' if tpl_ctx else ''}"
     )
     ai_text = await chat_completion([
         {"role": "system", "content": "你是专业的铁路工程标书撰写助手。"},
