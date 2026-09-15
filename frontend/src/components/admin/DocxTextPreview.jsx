@@ -1,4 +1,5 @@
 import React from 'react'
+import { paragraphPreviewStyle } from './FormatInfoSummary'
 
 const PLACEHOLDER_RE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g
 const AI_MARKER_RE = /【AI_GENERATED:([^】]+)】/g
@@ -108,15 +109,24 @@ export default function DocxTextPreview({
   }
   return (
     <div className="preview-doc preview-text admin-template-text">
-      {paragraphs.map((p, i) => (
-        p.is_heading ? (
-          <div key={i} className={`preview-h level-${Math.min(p.level || 1, 3)}`}>
-            {renderPlaceholderText(p.text, highlightTexts)}
+      {paragraphs.map((p, i) => {
+        const style = paragraphPreviewStyle(p)
+        const content = renderPlaceholderText(p.display_text ?? p.text, highlightTexts)
+        return p.is_heading ? (
+          <div
+            key={i}
+            className={`preview-h level-${Math.min(p.level || 1, 3)}`}
+            style={style}
+            title={p.style || undefined}
+          >
+            {content}
           </div>
         ) : (
-          <p key={i} className="preview-p">{renderPlaceholderText(p.text, highlightTexts)}</p>
+          <p key={i} className="preview-p" style={style} title={p.style || undefined}>
+            {content}
+          </p>
         )
-      ))}
+      })}
       {truncated ? <p className="muted preview-truncated">内容较长，此处仅展示前 800 段；完整版请下载 DOCX。</p> : null}
     </div>
   )

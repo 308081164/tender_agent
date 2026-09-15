@@ -364,7 +364,9 @@ def admin_list_templates(
     db: Session = Depends(get_db),
 ):
     query = db.query(Template)
-    if kind:
+    if kind == "blank":
+        query = query.filter(Template.kind.in_(["template", "skeleton"]))
+    elif kind:
         query = query.filter(Template.kind == kind)
     if template_code:
         query = query.filter(Template.template_code == template_code)
@@ -425,6 +427,7 @@ def preview_template(template_id: int, db: Session = Depends(get_db)):
         "headings": structured.get("headings") or [],
         "paragraphs": structured.get("paragraphs") or [],
         "truncated": bool(structured.get("truncated")),
+        "format_info": structured.get("format_info") or {},
         "placeholder_count": len(placeholders),
         "placeholders": placeholders[:60],
     }
@@ -604,6 +607,7 @@ def preview_template_mappings(
     approved = [m for m in mappings if m.get("approved", True) and m.get("action", "replace") != "keep"]
     return {
         "paragraphs": paragraphs,
+        "format_info": preview.get("format_info") or {},
         "approved_count": len(approved),
         "placeholder_keys": sorted({m.get("key") for m in approved if m.get("key")}),
     }

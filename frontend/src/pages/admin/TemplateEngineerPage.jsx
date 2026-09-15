@@ -4,6 +4,7 @@ import { useApp } from '../../App'
 import { api } from '../../api/client'
 import AdminDetailHeader from '../../components/admin/AdminDetailHeader'
 import SelectableDocPreview from '../../components/admin/SelectableDocPreview'
+import FormatInfoSummary from '../../components/admin/FormatInfoSummary'
 
 const STEPS = ['智能识别', '编辑确认', '应用生成']
 
@@ -24,6 +25,7 @@ export default function TemplateEngineerPage() {
   const [selectedText, setSelectedText] = useState('')
   const [manualKey, setManualKey] = useState('project_name')
   const [tplName, setTplName] = useState('')
+  const [formatInfo, setFormatInfo] = useState(null)
 
   const loadFields = useCallback(async () => {
     const fields = await api.adminFields({ page: 1, pageSize: 200 })
@@ -33,6 +35,9 @@ export default function TemplateEngineerPage() {
   useEffect(() => {
     loadFields().catch(() => {})
     api.getTemplate(id).then((t) => setTplName(t.name || '')).catch(() => {})
+    api.adminTemplatePreview(id)
+      .then((pv) => setFormatInfo(pv.format_info || null))
+      .catch(() => {})
   }, [id, loadFields])
 
   const detect = async () => {
@@ -48,6 +53,7 @@ export default function TemplateEngineerPage() {
       setMappings(items)
       const preview = await api.previewTemplateMappings(id, items)
       setParagraphs(preview.paragraphs || [])
+      if (preview.format_info) setFormatInfo(preview.format_info)
       setStep(1)
       showToast(`识别到 ${items.length} 个候选字段`)
     } catch (e) {
@@ -61,6 +67,7 @@ export default function TemplateEngineerPage() {
     try {
       const res = await api.previewTemplateMappings(id, nextMappings)
       setParagraphs(res.paragraphs || [])
+      if (res.format_info) setFormatInfo(res.format_info)
     } catch (e) {
       showToast(e.message)
     }
@@ -149,12 +156,12 @@ export default function TemplateEngineerPage() {
 
       {step === 0 ? (
         <div className="card-block engineer-intro">
-          <h3>从完整标书创建可复用模板</h3>
+          <h3>模板工程化工作台</h3>
           <p className="muted">
-            第一步将使用 AI + 规则识别项目名称、招标编号等可变信息。
-            第二步可在可编辑页面手动恢复原文、或选中文本指定为占位符。
-            第三步确认后由 Aspose 引擎写入 <code>{'{{key}}'}</code> 并保存。
+            系统将提取文档正文与各级标题的字体、字号、对齐等格式信息，并识别项目名称、招标编号等可变字段。
+            确认映射后写入 <code>{'{{key}}'}</code> 占位符并保存为可复用模板。
           </p>
+          <FormatInfoSummary formatInfo={formatInfo} />
           <button type="button" onClick={detect} disabled={detecting}>
             {detecting ? '识别中…' : '开始智能识别'}
           </button>
@@ -180,6 +187,7 @@ export default function TemplateEngineerPage() {
           </div>
 
           <aside className="engineer-side-pane card-block">
+            <FormatInfoSummary formatInfo={formatInfo} />
             <h3>映射编辑 ({mappings.length})</h3>
             {selectedText ? (
               <div className="manual-map-box">

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 
@@ -31,6 +32,93 @@ def _heading_level(style_name: str) -> int:
             level = int(ch)
             break
     return level
+
+
+def _alignment_name(alignment) -> str:
+    mapping = {
+        aw.ParagraphAlignment.LEFT: "left",
+        aw.ParagraphAlignment.CENTER: "center",
+        aw.ParagraphAlignment.RIGHT: "right",
+        aw.ParagraphAlignment.JUSTIFY: "justify",
+        aw.ParagraphAlignment.DISTRIBUTED: "justify",
+    }
+    try:
+        return mapping.get(alignment, "left")
+    except Exception:
+        return "left"
+
+
+def _points(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        pts = float(value)
+        return round(pts, 1) if pts else None
+    except Exception:
+        return None
+
+
+def _clean_display_text(text: str) -> str:
+    """去除控制字符、零宽字符等无意义符号，提升阅读体验。"""
+    if not text:
+        return ""
+    cleaned: list[str] = []
+    for ch in text:
+        if ch in "\n\t":
+            cleaned.append(ch)
+            continue
+        cat = unicodedata.category(ch)
+        if cat.startswith("C"):
+            continue
+        cleaned.append(ch)
+    text = "".join(cleaned)
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff\u00ad]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _paragraph_run_format(para: aw.Paragraph) -> dict:
+    font_name = ""
+    font_size = None
+    bold = False
+    italic = False
+    try:
+        runs = para.runs
+        if runs.count > 0:
+            run = runs[0]
+            font = run.font
+            font_name = (font.name or "").strip()
+            font_size = _points(font.size)
+            bold = bool(font.bold)
+            italic = bool(font.italic)
+    except Exception:
+        pass
+    if not font_name:
+        try:
+            style_font = para.paragraph_format.style.font
+            font_name = (style_font.name or "").strip()
+            if font_size is None:
+                font_size = _points(style_font.size)
+            if not bold:
+                bold = bool(style_font.bold)
+            if not italic:
+                italic = bool(style_font.italic)
+        except Exception:
+            pass
+    pf = para.paragraph_format
+    return {
+        "font_name": font_name or "默认",
+        "font_size_pt": font_size,
+        "bold": bold,
+        "italic": italic,
+        "alignment": _alignment_name(pf.alignment),
+        "indent_pt": _points(pf.left_indent),
+        "first_line_indent_pt": _points(pf.first_line_indent),
+        "space_before_pt": _points(pf.space_before),
+        "space_after_pt": _points(pf.space_after),
+    }
 
 
 def _iter_paragraphs(doc: aw.Document):
@@ -91,28 +179,45 @@ def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
     doc = _load_document(docx_bytes)
     headings = []
     paragraphs = []
+    heading_formats: dict[int, dict] = {}
+    body_format_samples: list[dict] = []
     for idx, para in enumerate(_iter_paragraphs(doc)):
         style = _paragraph_style_name(para)
-        text = para.get_text().strip()
-        if not text:
+        raw_text = para.get_text() or ""
+        text = _clean_display_text(raw_text)
+        if not text or re.fullmatch(r"[\s\W_]+", text):
             continue
+        fmt = _paragraph_run_format(para)
         is_heading = style.startswith("Heading") or style.startswith("标题")
         level = _heading_level(style) if is_heading else 0
         if is_heading:
-            headings.append({"level": level, "text": text})
+            headings.append({"level": level, "text": text, **fmt})
+            heading_formats[level] = fmt
+        else:
+            if len(body_format_samples) < 5:
+                body_format_samples.append(fmt)
         paragraphs.append({
             "index": idx,
             "text": text,
             "style": style,
             "is_heading": is_heading,
             "level": level,
+            **fmt,
         })
         if len(paragraphs) >= max_paragraphs:
             break
+    default_body = body_format_samples[0] if body_format_samples else {}
     return {
         "headings": headings,
         "paragraphs": paragraphs,
         "truncated": len(paragraphs) >= max_paragraphs,
+        "format_info": {
+            "default_body": default_body,
+            "heading_styles": [
+                {"level": lvl, **heading_formats[lvl]}
+                for lvl in sorted(heading_formats.keys())
+            ],
+        },
     }
 
 
