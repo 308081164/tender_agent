@@ -118,6 +118,8 @@ export const api = {
   },
   detectTemplatePlaceholders: (id) =>
     request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
+  searchMappingResources: (q = '') =>
+    request(`/admin/mapping-resources${q ? `?q=${encodeURIComponent(q)}` : ''}`),
   applyTemplatePlaceholders: (id, mappings) =>
     request(`/admin/templates/${id}/apply-placeholders`, {
       method: 'POST',
