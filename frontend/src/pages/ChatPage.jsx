@@ -2,9 +2,10 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
+import BackChevron from '../components/chat/BackChevron'
 import ChatMessageBubble from '../components/chat/ChatMessageBubble'
+import ChatSessionSidebar from '../components/chat/ChatSessionSidebar'
 import DocumentWorkspace from '../components/chat/DocumentWorkspace'
-import { formatTime } from '../utils/format'
 
 export default function ChatPage() {
   const { showToast } = useApp()
@@ -16,12 +17,11 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [features, setFeatures] = useState({ feature_cards: [], suggested_prompts: [] })
-  const [renamingId, setRenamingId] = useState(null)
-  const [renameValue, setRenameValue] = useState('')
   const [selectedText, setSelectedText] = useState('')
   const [showSessions, setShowSessions] = useState(false)
+  const [actingCardId, setActingCardId] = useState(null)
   const fileRef = useRef(null)
-  const bottomRef = useRef(null)
+  const messagesRef = useRef(null)
 
   const refreshWorkspace = async (id) => {
     if (!id) return
@@ -61,14 +61,15 @@ export default function ChatPage() {
   }, [showToast])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [messages, loading])
 
   const ensureSession = async () => {
     if (sessionId) return sessionId
     const s = await api.createChatSession('新对话')
     setSessionId(s.id)
-    setMessages([])
     await refreshSessions()
     return s.id
   }
@@ -78,7 +79,8 @@ export default function ChatPage() {
     if (!q || loading) return
     setInput('')
     setLoading(true)
-    const optimistic = { role: 'user', content: q }
+    const optimisticId = `tmp-${Date.now()}`
+    const optimistic = { id: optimisticId, role: 'user', content: q }
     setMessages((m) => [...m, optimistic])
     try {
       const id = await ensureSession()
@@ -86,7 +88,7 @@ export default function ChatPage() {
         selected_text: selectedText,
       })
       setMessages((m) => [
-        ...m.filter((x) => x !== optimistic),
+        ...m.filter((x) => x.id !== optimisticId),
         res.user_message,
         res.assistant_message,
       ])
@@ -99,7 +101,7 @@ export default function ChatPage() {
       }
     } catch (e) {
       setMessages((m) => [
-        ...m.filter((x) => x !== optimistic),
+        ...m.filter((x) => x.id !== optimisticId),
         optimistic,
         { role: 'assistant', content: `发送失败：${e.message}` },
       ])
@@ -120,18 +122,33 @@ export default function ChatPage() {
 
   const uploadFile = async (file) => {
     if (!file || loading) return
+    const optimisticId = `tmp-file-${Date.now()}`
+    const optimistic = {
+      id: optimisticId,
+      role: 'user',
+      content: `[上传文件] ${file.name}`,
+    }
+    setMessages((m) => [...m, optimistic])
     setLoading(true)
     try {
       const id = await ensureSession()
       const res = await api.uploadChatFile(id, file)
-      setMessages((m) => [...m, res.user_message, res.assistant_message])
+      setMessages((m) => [
+        ...m.filter((x) => x.id !== optimisticId),
+        res.user_message,
+        res.assistant_message,
+      ])
       setWorkspace(res.workspace || {})
       await refreshWorkspace(id)
       if (res.session) {
         setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
       }
     } catch (e) {
-      showToast(e.message)
+      setMessages((m) => [
+        ...m.filter((x) => x.id !== optimisticId),
+        optimistic,
+        { role: 'assistant', content: `上传失败：${e.message}` },
+      ])
     } finally {
       setLoading(false)
       if (fileRef.current) fileRef.current.value = ''
@@ -146,32 +163,61 @@ export default function ChatPage() {
     showToast('段落已保存')
   }
 
+  const handleCardAction = async (message, card, action, payload) => {
+    if (actingCardId || loading) return
+    setActingCardId(card.id)
+    try {
+      const id = await ensureSession()
+      const res = await api.sendChatAction(id, {
+        message_id: message.id,
+        card_id: card.id,
+        action,
+        payload: payload || {},
+      })
+      setMessages((list) => {
+        const next = list.map((m) => (
+          m.id && res.acted_message && m.id === res.acted_message.id ? res.acted_message : m
+        ))
+        if (res.user_message) next.push(res.user_message)
+        if (res.assistant_message) next.push(res.assistant_message)
+        return next
+      })
+      if (res.session) {
+        setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
+        setWorkspace(res.session.workspace || {})
+      }
+      if (res.metadata?.workspace_updated || res.session?.workspace) {
+        await refreshWorkspace(id)
+      }
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setActingCardId(null)
+    }
+  }
+
   return (
     <div className="chat-workspace-page">
       <header className="chat-workspace-topbar">
-        <Link to="/" className="ghost">← 返回</Link>
+        <Link to="/" className="chat-back-btn" aria-label="返回首页">
+          <BackChevron />
+          <span>返回</span>
+        </Link>
         <strong>文档 Agent 工作区</strong>
         <div className="chat-workspace-top-actions">
-          <button type="button" className="ghost" onClick={() => setShowSessions((v) => !v)}>对话列表</button>
+          <button type="button" className="ghost" onClick={() => setShowSessions(true)}>历史对话</button>
           <button type="button" onClick={newChat}>新对话</button>
         </div>
       </header>
 
-      {showSessions ? (
-        <div className="chat-session-drawer">
-          {sessions.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={`chat-session-item ${sessionId === s.id ? 'active' : ''}`}
-              onClick={() => loadSession(s.id)}
-            >
-              <strong>{s.title}</strong>
-              <span>{formatTime(s.updated_at || s.created_at)}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <ChatSessionSidebar
+        open={showSessions}
+        onClose={() => setShowSessions(false)}
+        sessions={sessions}
+        sessionId={sessionId}
+        onSelectSession={loadSession}
+        onNewChat={newChat}
+      />
 
       <div className="chat-workspace-split">
         <section className="chat-workspace-doc">
@@ -190,12 +236,15 @@ export default function ChatPage() {
         <aside className="chat-workspace-panel">
           <div className="chat-panel-head">
             <h3>Agent 对话</h3>
-            <p className="muted">上传模板 + 编写要求 → 生成标书；选中片段 → 多轮修改</p>
+            <p className="muted">语义理解 → 调用系统能力 → 结合上下文精准回复</p>
           </div>
 
-          <div className="chat-messages-area compact">
+          <div className="chat-messages-area compact" ref={messagesRef}>
             {messages.length === 0 && !loading ? (
               <div className="chat-empty compact">
+                <p className="muted chat-empty-hint">
+                  可查询企业信息、检索标书、上传 DOCX 生成模板或编写标书，也可询问「如何使用本系统」。
+                </p>
                 <div className="chat-prompt-chips">
                   {(features.suggested_prompts || []).map((p) => (
                     <button key={p} type="button" className="chip" onClick={() => send(p)}>{p}</button>
@@ -203,10 +252,16 @@ export default function ChatPage() {
                 </div>
               </div>
             ) : (
-              messages.map((m, i) => <ChatMessageBubble key={m.id || i} message={m} />)
+              messages.map((m, i) => (
+                <ChatMessageBubble
+                  key={m.id || i}
+                  message={m}
+                  onCardAction={handleCardAction}
+                  actingCardId={actingCardId}
+                />
+              ))
             )}
-            {loading ? <div className="chat-msg bot">处理中…</div> : null}
-            <div ref={bottomRef} />
+            {loading ? <div className="chat-msg bot">思考中…</div> : null}
           </div>
 
           {selectedText ? (
@@ -225,12 +280,12 @@ export default function ChatPage() {
               accept=".docx"
               onChange={(e) => uploadFile(e.target.files?.[0])}
             />
-            <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传模板 DOCX">📎</button>
+            <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传 DOCX">📎</button>
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
-              placeholder="编写要求 / 修改指令…"
+              placeholder="提问、检索标书、编写/替换指令…"
               disabled={loading}
             />
             <button type="button" onClick={() => send()} disabled={loading || !input.trim()}>发送</button>

@@ -10,6 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
 from app.models import (
@@ -21,6 +22,7 @@ from app.models import (
     FAQItem,
 )
 from app.services import storage, word, pdf_convert, template_detect
+from app.services.mapping_resources import build_mapping_resource_catalog, search_mapping_resources
 from app.seed.import_customer_pack import run_import
 from app.services.migration_pack import export_pack, import_pack
 from app.services.qual_extract import analyze_qualification_file
@@ -295,6 +297,27 @@ def get_field(field_id: int, db: Session = Depends(get_db)):
     return field_dict(f)
 
 
+@router.get("/field-modules")
+def list_field_modules(db: Session = Depends(get_db)):
+    """字段定义可选模块列表（供现场创建字段下拉选择）。"""
+    presets = [
+        "基本信息", "项目信息", "投标报价", "工期与服务", "人员配置",
+        "企业档案", "资质材料", "临场填写", "其他",
+    ]
+    existing = [
+        row[0] for row in db.query(FieldDef.module).distinct().all()
+        if row[0] and str(row[0]).strip()
+    ]
+    modules = []
+    seen = set()
+    for m in presets + sorted(existing):
+        m = str(m).strip()
+        if m and m not in seen:
+            seen.add(m)
+            modules.append(m)
+    return {"modules": modules}
+
+
 @router.post("/fields")
 def create_field(body: FieldIn, db: Session = Depends(get_db)):
     if db.query(FieldDef).filter(FieldDef.key == body.key).first():
@@ -366,7 +389,9 @@ def admin_list_templates(
     db: Session = Depends(get_db),
 ):
     query = db.query(Template)
-    if kind:
+    if kind == "blank":
+        query = query.filter(Template.kind.in_(["template", "skeleton"]))
+    elif kind:
         query = query.filter(Template.kind == kind)
     if template_code:
         query = query.filter(Template.template_code == template_code)
@@ -427,6 +452,7 @@ def preview_template(template_id: int, db: Session = Depends(get_db)):
         "headings": structured.get("headings") or [],
         "paragraphs": structured.get("paragraphs") or [],
         "truncated": bool(structured.get("truncated")),
+        "format_info": structured.get("format_info") or {},
         "placeholder_count": len(placeholders),
         "placeholders": placeholders[:60],
     }
@@ -485,12 +511,28 @@ async def admin_upload_template(
     storage.upload_bytes(
         key, data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    ph = word.extract_placeholders(data)
+    ph_list = word.safe_extract_placeholders(data)
+    ph_meta: dict = {"list": ph_list}
+    upload_desc = {
+        "history": "基于完整标书上传：需在工程化工作台标记项目名称、招标编号、金额等大量可变字段。",
+        "skeleton": "基于空白模板上传：含编写规则与格式要求；立项生成 AI 章节时将引用模板全文。",
+        "template": "工程化模板上传。",
+    }
+    if kind == "skeleton":
+        ph_meta["ai_reference_full_doc"] = True
+    try:
+        from app.services.doc_engine.engine import attach_manifest_to_template
+        from app.services.doc_engine.parser import parse_template_manifest
+        is_history = kind == "history"
+        manifest = parse_template_manifest(data, is_history=is_history)
+        ph_meta = attach_manifest_to_template(ph_meta, manifest)
+    except Exception as e:
+        print(f"[upload] manifest analyze warn: {e}")
     t = Template(
         name=name or fname,
-        description="管理端上传",
+        description=upload_desc.get(kind, "管理端上传"),
         object_key=key,
-        placeholders={"list": ph},
+        placeholders=ph_meta,
         template_code=template_code,
         kind=kind,
         enabled=True,
@@ -501,12 +543,75 @@ async def admin_upload_template(
     return tpl_dict(t)
 
 
+@router.get("/templates/{template_id}/manifest")
+def get_template_manifest(template_id: int, db: Session = Depends(get_db)):
+    t = _get_template_or_404(db, template_id)
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+
+    data = storage.download_bytes(t.object_key)
+    manifest = get_manifest(t.placeholders) or parse_template_manifest(
+        data, is_history=getattr(t, "kind", "") == "history",
+    )
+    return {"template_id": t.id, "manifest": manifest}
+
+
+class ManifestBlockBindIn(BaseModel):
+    block_id: str
+    bind: dict
+
+
+@router.put("/templates/{template_id}/manifest/image-bindings")
+def update_template_image_bindings(
+    template_id: int, body: ManifestBlockBindIn, db: Session = Depends(get_db),
+):
+    t = _get_template_or_404(db, template_id)
+    from app.services.doc_engine.image_bindings import update_manifest_block_bind
+    from app.services.doc_engine.manifest import get_manifest, set_manifest
+
+    ph = dict(t.placeholders or {})
+    manifest = get_manifest(ph)
+    if not manifest:
+        raise HTTPException(400, "模板尚无 manifest，请先分析模板")
+    manifest = update_manifest_block_bind(manifest, body.block_id, body.bind)
+    t.placeholders = set_manifest(ph, manifest)
+    flag_modified(t, "placeholders")
+    db.commit()
+    db.refresh(t)
+    return {"template": tpl_dict(t), "manifest": manifest}
+
+
+@router.post("/templates/{template_id}/analyze-manifest")
+def analyze_template_manifest(template_id: int, db: Session = Depends(get_db)):
+    """重新解析模板并更新 manifest v2。"""
+    t = _get_template_or_404(db, template_id)
+    data = storage.download_bytes(t.object_key)
+    from app.services.doc_engine.engine import attach_manifest_to_template
+    from app.services.doc_engine.parser import parse_template_manifest
+    is_history = getattr(t, "kind", "") == "history"
+    manifest = parse_template_manifest(data, is_history=is_history)
+    ph = dict(t.placeholders or {})
+    t.placeholders = attach_manifest_to_template(ph, manifest)
+    if is_history and not t.source_snapshot:
+        from app.services.doc_engine.parser import enrich_snapshot_with_locations
+        vals = {k: v for k, v in (t.source_snapshot or {}).items() if isinstance(v, str)}
+        if not vals and t.name:
+            vals = {"project_name": t.name}
+        t.source_snapshot = enrich_snapshot_with_locations(data, vals)
+    flag_modified(t, "placeholders")
+    db.commit()
+    db.refresh(t)
+    return {"template": tpl_dict(t), "manifest": manifest}
+
+
 class PlaceholderMappingIn(BaseModel):
     key: str
     original_text: str
     approved: bool = True
     action: str = "replace"  # replace | keep
     field_name: str = ""
+    bind_type: str = "field"  # field | qual | runtime
+    qualification_id: int | None = None
 
 
 class ApplyPlaceholdersIn(BaseModel):
@@ -517,6 +622,26 @@ class ApplyPlaceholdersIn(BaseModel):
 
 class PreviewMappingsIn(BaseModel):
     mappings: list[PlaceholderMappingIn]
+
+
+@router.get("/mapping-resources")
+def list_mapping_resources(
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """工程化映射可选资源目录（字段定义、企业档案、资质库、FAQ、临场填写），支持关键词搜索。"""
+    catalog = build_mapping_resource_catalog(db)
+    items = search_mapping_resources(catalog, q, limit=60) if q else (catalog.get("all_bindable") or [])[:60]
+    return {
+        "items": items,
+        "field_keys": catalog.get("field_keys") or [],
+        "counts": {
+            "fields": len(catalog.get("fields") or []),
+            "qualifications": len(catalog.get("qualifications") or []),
+            "company": len(catalog.get("company") or []),
+            "faqs": len(catalog.get("faqs") or []),
+        },
+    }
 
 
 @router.post("/templates/{template_id}/preview-mappings")
@@ -536,9 +661,53 @@ def preview_template_mappings(
     approved = [m for m in mappings if m.get("approved", True) and m.get("action", "replace") != "keep"]
     return {
         "paragraphs": paragraphs,
+        "format_info": preview.get("format_info") or {},
         "approved_count": len(approved),
         "placeholder_keys": sorted({m.get("key") for m in approved if m.get("key")}),
     }
+
+
+@router.post("/templates/{template_id}/preview-mappings.pdf")
+def preview_template_mappings_pdf(
+    template_id: int,
+    body: PreviewMappingsIn,
+    db: Session = Depends(get_db),
+):
+    """将当前映射应用到临时文档并转为 PDF，便于查看占位符效果（不写入模板）。"""
+    t = _get_template_or_404(db, template_id)
+    if not t.object_key:
+        raise HTTPException(400, "模板文件不存在")
+    data = storage.download_bytes(t.object_key)
+    mappings = [m.model_dump() for m in body.mappings]
+    mapped_bytes, _, _ = template_detect.apply_placeholder_mappings(data, mappings, highlight=False)
+    try:
+        pdf_bytes = pdf_convert.convert_docx_to_pdf(mapped_bytes)
+    except RuntimeError as err:
+        raise HTTPException(503, str(err)) from err
+    pdf_name = quote(f"{t.name or 'template'}-mapped-preview.pdf")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{pdf_name}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _regenerate_template_pdf(docx_bytes: bytes, object_key: str) -> None:
+    """工程化完成后生成/更新 PDF 预览缓存。"""
+    pdf_key = pdf_convert.pdf_object_key(object_key)
+    try:
+        if storage.object_exists(pdf_key):
+            storage.delete_object(pdf_key)
+    except Exception:
+        pass
+    try:
+        pdf_bytes = pdf_convert.convert_docx_to_pdf(docx_bytes)
+        storage.upload_bytes(pdf_key, pdf_bytes, "application/pdf")
+    except Exception:
+        pass
 
 
 @router.post("/templates/{template_id}/detect-placeholders")
@@ -584,7 +753,27 @@ async def apply_template_placeholders(
     )
     old_key = t.object_key
     t.object_key = new_key
-    t.placeholders = {"list": placeholders, "detected": True}
+    ph_meta = {"list": placeholders, "detected": True}
+    try:
+        from app.services.doc_engine.engine import (
+            attach_manifest_to_template,
+            engineer_template_with_sdt,
+        )
+        from app.services.doc_engine.parser import parse_template_manifest
+        manifest = parse_template_manifest(new_bytes)
+        new_bytes, manifest = engineer_template_with_sdt(new_bytes, manifest)
+        storage.upload_bytes(
+            new_key,
+            new_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        ph_meta = attach_manifest_to_template(ph_meta, manifest)
+    except Exception:
+        pass
+    _regenerate_template_pdf(new_bytes, new_key)
+    ph_meta["pdf_preview_ready"] = True
+    t.placeholders = ph_meta
+    flag_modified(t, "placeholders")
     t.source_snapshot = {**(t.source_snapshot or {}), **snapshot}
     if body.kind:
         t.kind = body.kind
@@ -595,6 +784,9 @@ async def apply_template_placeholders(
     if old_key and old_key != new_key:
         try:
             storage.delete_object(old_key)
+            old_pdf = pdf_convert.pdf_object_key(old_key)
+            if storage.object_exists(old_pdf):
+                storage.delete_object(old_pdf)
         except Exception:
             pass
     return {
@@ -602,6 +794,7 @@ async def apply_template_placeholders(
         "applied_count": len(snapshot),
         "placeholders": placeholders,
         "source_snapshot": snapshot,
+        "pdf_preview_ready": True,
     }
 
 

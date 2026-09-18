@@ -7,6 +7,8 @@ from app.models import SystemSetting
 
 env = get_settings()
 
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
+
 
 def _mask(key: str) -> str:
     if not key:
@@ -24,7 +26,7 @@ def get_or_create_setting(db: Session) -> SystemSetting:
         id=1,
         deepseek_api_key=env.deepseek_api_key or "",
         deepseek_base_url=env.deepseek_base_url or "https://api.deepseek.com",
-        deepseek_model="deepseek-chat",
+        deepseek_model=DEEPSEEK_DEFAULT_MODEL,
         qwen_api_key=env.qwen_api_key or "",
         qwen_base_url=env.qwen_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         qwen_model="qwen-plus",
@@ -41,7 +43,7 @@ def resolve_ai_config(db: Session | None = None) -> dict:
     cfg = {
         "deepseek_api_key": env.deepseek_api_key or "",
         "deepseek_base_url": env.deepseek_base_url or "https://api.deepseek.com",
-        "deepseek_model": "deepseek-chat",
+        "deepseek_model": DEEPSEEK_DEFAULT_MODEL,
         "qwen_api_key": env.qwen_api_key or "",
         "qwen_base_url": env.qwen_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "qwen_model": "qwen-plus",
@@ -74,7 +76,7 @@ def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
         "deepseek_api_key_set": bool(ds_key),
         "deepseek_api_key_masked": _mask(ds_key),
         "deepseek_base_url": row.deepseek_base_url or env.deepseek_base_url,
-        "deepseek_model": row.deepseek_model or "deepseek-chat",
+        "deepseek_model": row.deepseek_model or DEEPSEEK_DEFAULT_MODEL,
         "qwen_api_key_set": bool(qw_key),
         "qwen_api_key_masked": _mask(qw_key),
         "qwen_base_url": row.qwen_base_url or env.qwen_base_url,

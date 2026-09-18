@@ -9,9 +9,9 @@ export default function AdminLayout() {
     <div className="admin-shell">
       <aside className="admin-sidebar">
         <button type="button" className="ghost admin-back" onClick={() => navigate('/')}>
-          ← 返回标书工作台
+          ← 返回工作台
         </button>
-        <h1 className="admin-brand">基础数据管理</h1>
+        <h1 className="admin-brand">基础数据</h1>
         <p className="admin-brand-sub">维护企业档案、模板、资质与校验规则</p>
         <nav className="admin-nav">
           {ADMIN_MODULES.map((m) => (

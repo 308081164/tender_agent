@@ -61,52 +61,55 @@ export default function DocumentWorkspace({
         </div>
       </div>
 
-      {!hasDoc ? (
-        <div className="doc-workspace-empty">
-          <p>请通过右侧聊天框上传模板 DOCX，或点击 📎 按钮。</p>
-          <p className="muted">上传后可按编写要求生成标书，并支持选中片段多轮修改。</p>
-          {onlyOfficeEnabled ? <p className="muted">OnlyOffice 已启用，上传后将自动进入 Word 在线编辑模式。</p> : null}
-        </div>
-      ) : mode === 'onlyoffice' && onlyOfficeEnabled ? (
-        <OnlyOfficeEditor sessionId={sessionId} workspace={workspace} onSaved={onRefresh} />
-      ) : mode === 'pdf' && pdfSrc && !pdfFailed ? (
-        <PdfPreview
-          src={pdfSrc}
-          title={workspace?.filename || '文档'}
-          onLoadError={() => { setPdfFailed(true); setMode('structure') }}
-        />
-      ) : (
-        <div className="doc-structure-pane">
-          <SelectableDocPreview
-            paragraphs={paragraphs}
-            mappings={[]}
-            selectedText={selectedText}
-            onSelectText={onSelectText}
-          />
-          <div className="paragraph-edit-list">
-            <h4>段落快速编辑</h4>
-            {(paragraphs || []).slice(0, 40).map((p) => (
-              <div key={p.index} className="paragraph-edit-row">
-                {editingIndex === p.index ? (
-                  <>
-                    <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} />
-                    <div className="row-actions">
-                      <button type="button" onClick={saveEdit}>保存</button>
-                      <button type="button" className="ghost" onClick={() => setEditingIndex(null)}>取消</button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="muted">#{p.index}</div>
-                    <div className="paragraph-snippet">{(p.text || '').slice(0, 120)}{(p.text || '').length > 120 ? '…' : ''}</div>
-                    <button type="button" className="ghost tiny" onClick={() => startEdit(p)}>编辑</button>
-                  </>
-                )}
-              </div>
-            ))}
+      <div className="doc-workspace-body">
+        {!hasDoc ? (
+          <div className="doc-workspace-empty">
+            <p>请通过右侧聊天框上传模板 DOCX，或点击 📎 按钮。</p>
+            <p className="muted">上传后可按编写要求生成标书，并支持选中片段多轮修改。</p>
+            {onlyOfficeEnabled ? <p className="muted">OnlyOffice 已启用，上传后将自动进入 Word 在线编辑模式。</p> : null}
           </div>
-        </div>
-      )}
+        ) : mode === 'onlyoffice' && onlyOfficeEnabled ? (
+          <OnlyOfficeEditor sessionId={sessionId} workspace={workspace} onSaved={onRefresh} />
+        ) : mode === 'pdf' && pdfSrc && !pdfFailed ? (
+          <PdfPreview
+            src={pdfSrc}
+            title={workspace?.filename || '文档'}
+            className="doc-workspace-pdf"
+            onLoadError={() => { setPdfFailed(true); setMode('structure') }}
+          />
+        ) : (
+          <div className="doc-structure-pane">
+            <SelectableDocPreview
+              paragraphs={paragraphs}
+              mappings={[]}
+              selectedText={selectedText}
+              onSelectText={onSelectText}
+            />
+            <div className="paragraph-edit-list">
+              <h4>段落快速编辑</h4>
+              {(paragraphs || []).slice(0, 40).map((p) => (
+                <div key={p.index} className="paragraph-edit-row">
+                  {editingIndex === p.index ? (
+                    <>
+                      <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={3} />
+                      <div className="row-actions">
+                        <button type="button" onClick={saveEdit}>保存</button>
+                        <button type="button" className="ghost" onClick={() => setEditingIndex(null)}>取消</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="muted">#{p.index}</div>
+                      <div className="paragraph-snippet">{(p.text || '').slice(0, 120)}{(p.text || '').length > 120 ? '…' : ''}</div>
+                      <button type="button" className="ghost tiny" onClick={() => startEdit(p)}>编辑</button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

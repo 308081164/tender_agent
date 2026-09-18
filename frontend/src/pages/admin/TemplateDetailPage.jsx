@@ -4,67 +4,35 @@ import { useApp } from '../../App'
 import { api } from '../../api/client'
 import AdminDetailHeader from '../../components/admin/AdminDetailHeader'
 import AdminConfirmDialog from '../../components/admin/AdminConfirmDialog'
-import AdminFormSection, { AdminField } from '../../components/admin/AdminFormSection'
 import TemplatePreviewPanel from '../../components/admin/TemplatePreviewPanel'
-import PlaceholderDetectPanel from '../../components/admin/PlaceholderDetectPanel'
-import { TEMPLATE_CODES, TEMPLATE_KINDS } from '../../constants/admin'
+import FormatInfoSummary from '../../components/admin/FormatInfoSummary'
+import { templateSourceLabel } from '../../constants/admin'
 
 export default function TemplateDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { showToast, refreshBaseData } = useApp()
-  const isNew = id === 'new'
-  const [form, setForm] = useState({
-    name: '', description: '', template_code: 'common', kind: 'template', enabled: true,
-  })
-  const [file, setFile] = useState(null)
   const [tpl, setTpl] = useState(null)
-  const [saving, setSaving] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(true)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [highlightTexts, setHighlightTexts] = useState([])
-  const [previewKey, setPreviewKey] = useState(0)
-
-  const reload = async () => {
-    const t = await api.getTemplate(id)
-    setTpl(t)
-    setForm({
-      name: t.name || '',
-      description: t.description || '',
-      template_code: t.template_code || 'common',
-      kind: t.kind || 'template',
-      enabled: t.enabled !== false,
-    })
-    setPreviewKey((k) => k + 1)
-    return t
-  }
 
   useEffect(() => {
-    if (isNew) return
-    reload().catch((e) => showToast(e.message))
-  }, [id, isNew, showToast])
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      if (isNew) {
-        if (!file) return showToast('请选择 DOCX 文件')
-        await api.uploadTemplate(file, {
-          name: form.name || file.name,
-          template_code: form.template_code,
-          kind: form.kind,
-        })
-      } else {
-        await api.updateTemplate(id, form)
-      }
-      await refreshBaseData?.()
-      showToast('模板已保存')
-      navigate('/admin/templates')
-    } catch (e) {
-      showToast(e.message)
-    } finally {
-      setSaving(false)
-    }
-  }
+    let cancelled = false
+    setLoading(true)
+    Promise.all([
+      api.getTemplate(id),
+      api.adminTemplatePreview(id).catch(() => null),
+    ])
+      .then(([t, pv]) => {
+        if (cancelled) return
+        setTpl(t)
+        setPreview(pv)
+      })
+      .catch((e) => showToast(e.message))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [id, showToast])
 
   const remove = async () => {
     await api.deleteTemplate(id)
@@ -73,102 +41,73 @@ export default function TemplateDetailPage() {
     navigate('/admin/templates')
   }
 
-  const onDetectPreview = (candidates) => {
-    setHighlightTexts((candidates || []).map((c) => c.original_text).filter(Boolean))
-  }
+  if (loading) return <div className="admin-loading">加载中…</div>
+  if (!tpl) return <div className="admin-empty">模板不存在</div>
 
-  const onApplied = async () => {
-    setHighlightTexts([])
-    await reload()
-    await refreshBaseData?.()
-  }
-
-  const placeholders = tpl?.placeholders?.list || []
+  const placeholders = tpl.placeholders?.list || []
 
   return (
     <>
       <AdminDetailHeader
-        title={isNew ? '上传模板' : form.name || '模板详情'}
+        title={tpl.name || '模板详情'}
         backTo="/admin/templates"
-        onSave={save}
-        onDelete={isNew ? null : () => setConfirmDelete(true)}
-        saving={saving}
-        extra={!isNew ? (
+        onDelete={() => setConfirmDelete(true)}
+        extra={(
           <>
-            <button type="button" className="ghost" onClick={() => navigate(`/admin/templates/${id}/engineer`)}>模板工程化</button>
-            <button type="button" className="ghost" onClick={() => navigate(`/admin/templates/${id}/preview`)}>查看内容</button>
+            <button type="button" className="primary" onClick={() => navigate(`/admin/templates/${id}/engineer`)}>
+              进入工程化工作台
+            </button>
+            <button type="button" className="ghost" onClick={() => navigate(`/admin/templates/${id}/preview`)}>
+              全屏预览
+            </button>
             <a className="ghost linkish" href={api.adminTemplateDownloadUrl(id)} download>下载 DOCX</a>
           </>
-        ) : null}
+        )}
       />
-      {!isNew ? (
-        <>
-          <PlaceholderDetectPanel
-            templateId={id}
-            onApplied={onApplied}
-            onCandidatesChange={onDetectPreview}
-            onOpenEngineer={() => navigate(`/admin/templates/${id}/engineer`)}
-          />
-          <div className="card-block admin-template-preview-page" style={{ marginBottom: 16 }}>
-            <div className="placeholder-preview-legend">
-              <h3 style={{ margin: 0 }}>文档预览</h3>
-              <div className="legend-items">
-                <span><mark className="placeholder-token">{'{{key}}'}</mark> 已应用占位符</span>
-                <span><mark className="detected-token">原文</mark> 待替换高亮</span>
-                <span><mark className="ai-marker-token">AI 标记</mark> AI 生成章节位</span>
-              </div>
-            </div>
-            <TemplatePreviewPanel
-              key={previewKey}
-              templateId={id}
-              compact
-              highlightTexts={highlightTexts}
-            />
-          </div>
-        </>
-      ) : null}
+
       <div className="admin-detail-grid">
         <div className="card-block">
-          <AdminFormSection title="元数据">
-            <AdminField label="名称"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></AdminField>
-            <AdminField label="说明"><input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></AdminField>
-            <AdminField label="模板代码">
-              <select value={form.template_code} onChange={(e) => setForm({ ...form, template_code: e.target.value })}>
-                {TEMPLATE_CODES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </AdminField>
-            <AdminField label="类型">
-              <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} disabled={!isNew}>
-                {TEMPLATE_KINDS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </AdminField>
-            {!isNew ? (
-              <label className="field row">
-                <input type="checkbox" checked={!!form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
-                启用
-              </label>
-            ) : (
-              <AdminField label="DOCX 文件"><input type="file" accept=".docx" onChange={(e) => setFile(e.target.files?.[0] || null)} /></AdminField>
-            )}
-          </AdminFormSection>
+          <h3>基本信息</h3>
+          <dl className="admin-meta-dl">
+            <dt>名称</dt><dd>{tpl.name || '—'}</dd>
+            <dt>说明</dt><dd>{tpl.description || '—'}</dd>
+            <dt>创建方式</dt><dd>{templateSourceLabel(tpl.kind)}</dd>
+            <dt>模板代码</dt><dd><code>{tpl.template_code || 'common'}</code></dd>
+            <dt>状态</dt><dd>{tpl.enabled ? '已启用' : '已停用'}</dd>
+            <dt>占位符数量</dt><dd>{placeholders.length}</dd>
+          </dl>
+          <FormatInfoSummary formatInfo={preview?.format_info} />
         </div>
-        {!isNew ? (
-          <aside className="card-block">
-            <h3>占位符 ({placeholders.length})</h3>
-            {placeholders.length ? (
-              <ul className="admin-tag-list">
-                {placeholders.map((p) => <li key={p}><code className="placeholder-tag">{`{{${p}}}`}</code></li>)}
-              </ul>
-            ) : <p className="muted">未检测到占位符，可使用上方「智能识别」从完整标书生成</p>}
-            {tpl?.kind === 'history' && tpl?.source_snapshot ? (
-              <>
-                <h3 style={{ marginTop: 16 }}>智能替换快照</h3>
-                <pre className="admin-pre">{JSON.stringify(tpl.source_snapshot, null, 2).slice(0, 2000)}</pre>
-              </>
-            ) : null}
-          </aside>
-        ) : null}
+
+        <aside className="card-block">
+          <h3>占位符 ({placeholders.length})</h3>
+          {placeholders.length ? (
+            <ul className="admin-tag-list">
+              {placeholders.map((p) => <li key={p}><code className="placeholder-tag">{`{{${p}}}`}</code></li>)}
+            </ul>
+          ) : (
+            <p className="muted">暂无占位符。请进入工程化工作台识别并应用可变字段。</p>
+          )}
+          {tpl.kind === 'history' && tpl.source_snapshot ? (
+            <>
+              <h3 style={{ marginTop: 16 }}>智能替换快照</h3>
+              <pre className="admin-pre">{JSON.stringify(tpl.source_snapshot, null, 2).slice(0, 2000)}</pre>
+            </>
+          ) : null}
+        </aside>
       </div>
+
+      <div className="card-block admin-template-preview-page" style={{ marginTop: 16 }}>
+        <div className="placeholder-preview-legend">
+          <h3 style={{ margin: 0 }}>文档预览</h3>
+          <div className="legend-items">
+            <span><mark className="placeholder-token">{'{{key}}'}</mark> 已应用占位符</span>
+            <span><mark className="ai-marker-token">AI 标记</mark> AI 生成章节位</span>
+          </div>
+        </div>
+        <TemplatePreviewPanel templateId={id} compact />
+      </div>
+
       <AdminConfirmDialog
         open={confirmDelete}
         title="删除模板"

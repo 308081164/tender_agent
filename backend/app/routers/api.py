@@ -1,5 +1,6 @@
 from datetime import datetime
 from urllib.parse import quote
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -283,6 +284,13 @@ def health():
     return {"status": "ok", "app": "tender-agent"}
 
 
+@router.get("/system/check")
+def system_environment_check(db: Session = Depends(get_db)):
+    """运行环境自检（设置页 / 部署验收）。"""
+    from app.services.system_check import run_system_check
+    return run_system_check(db)
+
+
 @router.get("/settings")
 def get_settings_api(db: Session = Depends(get_db)):
     row = settings_svc.get_or_create_setting(db)
@@ -314,7 +322,7 @@ def list_templates(include_disabled: bool = False, db: Session = Depends(get_db)
         q = q.filter(Template.enabled.is_(True))
     # 招标文件不作为导出起点
     q = q.filter(Template.kind != "tender_doc")
-    items = q.order_by(Template.kind, Template.id).all()
+    items = q.order_by(Template.id.desc()).all()
     return [
         {
             "id": t.id,
@@ -459,6 +467,24 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     return project_to_dict(p)
 
 
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    for e in list(p.exports or []):
+        try:
+            storage.delete_object(e.object_key)
+            pdf_key = pdf_convert.pdf_object_key(e.object_key)
+            if storage.object_exists(pdf_key):
+                storage.delete_object(pdf_key)
+        except Exception:
+            pass
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/projects/{project_id}/save")
 def save_progress(project_id: int, body: SaveProgressRequest, db: Session = Depends(get_db)):
     """每步保存：持久化当前内容并创建快照，可选进入下一步。"""
@@ -571,6 +597,33 @@ def _company_context(db: Session) -> str:
     ])
 
 
+def _template_reference_context(db: Session, project: TenderProject) -> str:
+    """空白模板类文档：将模板正文作为 AI 生成参考（含编写规则、格式说明等）。"""
+    if not project.template_id:
+        return ""
+    tpl = db.query(Template).filter(Template.id == project.template_id).first()
+    if not tpl or not tpl.object_key:
+        return ""
+    ph = tpl.placeholders or {}
+    use_full = (
+        getattr(tpl, "kind", "") == "skeleton"
+        or bool(ph.get("ai_reference_full_doc"))
+    )
+    if not use_full:
+        return ""
+    try:
+        data = storage.download_bytes(tpl.object_key)
+        preview = word.extract_preview(data, max_paragraphs=250)
+        lines = [p.get("text", "") for p in (preview.get("paragraphs") or []) if p.get("text")]
+        body = "\n".join(lines).strip()
+        if not body:
+            return ""
+        return f"模板参考文档（{tpl.name}）：\n{body[:4500]}"
+    except Exception as e:
+        print(f"[generate] template reference warn: {e}")
+        return ""
+
+
 @router.post("/projects/{project_id}/generate")
 async def generate_content(project_id: int, body: GenerateRequest, db: Session = Depends(get_db)):
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
@@ -587,9 +640,12 @@ async def generate_content(project_id: int, body: GenerateRequest, db: Session =
         "人员配置说明",
     ]
     ctx = _company_context(db)
+    tpl_ref = _template_reference_context(db, p)
     chapters = dict(p.chapters or {})
     for key in keys:
-        chapters[key] = await ai_svc.generate_chapter(key, p.fields or {}, db=db, company_context=ctx)
+        chapters[key] = await ai_svc.generate_chapter(
+            key, p.fields or {}, db=db, company_context=ctx, template_reference=tpl_ref,
+        )
     p.chapters = chapters
     flag_modified(p, "chapters")
     p.current_step = max(p.current_step, 3)
@@ -607,7 +663,11 @@ async def regenerate_chapter(project_id: int, chapter_key: str, db: Session = De
         raise HTTPException(404, "项目不存在")
     chapters = dict(p.chapters or {})
     chapters[chapter_key] = await ai_svc.generate_chapter(
-        chapter_key, p.fields or {}, db=db, company_context=_company_context(db)
+        chapter_key,
+        p.fields or {},
+        db=db,
+        company_context=_company_context(db),
+        template_reference=_template_reference_context(db, p),
     )
     p.chapters = chapters
     flag_modified(p, "chapters")
@@ -714,8 +774,223 @@ def validate_project(project_id: int, db: Session = Depends(get_db)):
     return result
 
 
+class WritingRequirementsIn(BaseModel):
+    requirements: str = ""
+
+
+class GuidedIntakeIn(BaseModel):
+    answered: dict[str, str] = {}
+
+
+@router.post("/projects/{project_id}/doc-review")
+async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
+    """文档引擎 v2：LLM+规则全篇审阅（导出前预检）。"""
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    export_fields = _fill_field_defaults(db, p.fields)
+    from app.services.doc_engine.engine import render_project_document, review_project_document
+
+    snap = getattr(tpl, "source_snapshot", None) or {}
+    writing_req = str(export_fields.get("_writing_requirements") or "")
+    doc_bytes, _ = await render_project_document(
+        tpl_bytes,
+        tpl.placeholders,
+        export_fields,
+        p.chapters,
+        source_snapshot=snap if getattr(tpl, "kind", "") == "history" else None,
+        highlight=False,
+        requirements=writing_req,
+        company_context=_company_context(db),
+        db=db,
+        mode="replace" if getattr(tpl, "kind", "") == "history" else None,
+    )
+    required = ["project_name", "tender_no", "tenderer", "project_manager"]
+    review = await review_project_document(
+        doc_bytes, tpl.placeholders, export_fields, snap, required, db=db
+    )
+    merged = dict(p.checklist_result or {})
+    merged["doc_review"] = review
+    merged["can_export"] = review.get("can_export", False) and merged.get("can_export", True)
+    p.checklist_result = merged
+    flag_modified(p, "checklist_result")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return review
+
+
+@router.get("/projects/{project_id}/workflow-plan")
+def get_project_workflow_plan(project_id: int, db: Session = Depends(get_db)):
+    """根据所选模板返回工作流模式：占位符替换或 AI 创作。"""
+    from app.services.project_workflow import get_workflow_plan
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    plan = get_workflow_plan(db, p.template_id)
+    plan["project_id"] = p.id
+    plan["current_step"] = p.current_step
+    return plan
+
+
+@router.post("/projects/{project_id}/guided-intake")
+async def project_guided_intake(
+    project_id: int,
+    body: GuidedIntakeIn,
+    db: Session = Depends(get_db),
+):
+    """AI 审视模板并生成引导式信息收集问题。"""
+    from app.services.project_workflow import guided_intake_questions
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "请先选择模板")
+    fields = _fill_field_defaults(db, p.fields)
+    return await guided_intake_questions(
+        db, p.template_id, fields, answered=body.answered or {}
+    )
+
+
+@router.post("/projects/{project_id}/compose")
+async def compose_project(
+    project_id: int,
+    body: WritingRequirementsIn,
+    db: Session = Depends(get_db),
+):
+    """创作模式：根据编写要求分块生成章节并写入项目。"""
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    fields = _fill_field_defaults(db, p.fields)
+    if body.requirements:
+        fields["_writing_requirements"] = body.requirements
+        p.fields = fields
+        flag_modified(p, "fields")
+
+    from app.services.doc_engine.composition import build_composition_plan, generate_block_contents
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+
+    manifest = get_manifest(tpl.placeholders) or parse_template_manifest(tpl_bytes)
+    plan = await build_composition_plan(
+        manifest, fields, body.requirements, _company_context(db), db=db
+    )
+    contents, table_rows = await generate_block_contents(
+        plan, fields, body.requirements, _company_context(db), db=db
+    )
+    if table_rows:
+        fields = dict(fields)
+        for bind, rows in table_rows.items():
+            fields[bind] = rows
+        p.fields = fields
+        flag_modified(p, "fields")
+    chapters = dict(p.chapters or {})
+    for k, v in contents.items():
+        if k and v and not k.startswith("field.") and not k.startswith("ai."):
+            chapters[k] = {"content": v, "source": "ai", "engine": "doc_engine_v2"}
+    p.chapters = chapters
+    flag_modified(p, "chapters")
+    p.current_step = max(p.current_step, 3)
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    save_snapshot(db, p, 3)
+    return {
+        "plan": plan,
+        "generated_keys": list(contents.keys()),
+        "table_binds": list(table_rows.keys()) if table_rows else [],
+        "project": project_to_dict(p),
+    }
+
+
+@router.get("/projects/{project_id}/table-slots")
+def list_project_table_slots(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        return {"slots": [], "rows": {}}
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    from app.services.doc_engine.table_compose import get_table_slot_rows, table_slots_from_template
+
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    slots = table_slots_from_template(tpl.placeholders, tpl_bytes)
+    fields = _fill_field_defaults(db, p.fields)
+    rows = {s["bind"]: get_table_slot_rows(fields, s["bind"]) for s in slots if s.get("bind")}
+    return {"slots": slots, "rows": rows}
+
+
+class TableRowsUpdate(BaseModel):
+    bind: str
+    rows: list[dict]
+
+
+class GenerateTablesIn(BaseModel):
+    requirements: str = ""
+
+
+@router.put("/projects/{project_id}/table-slots")
+def update_project_table_slots(
+    project_id: int, body: TableRowsUpdate, db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    fields = dict(_fill_field_defaults(db, p.fields))
+    fields[body.bind] = body.rows
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"bind": body.bind, "row_count": len(body.rows), "project": project_to_dict(p)}
+
+
+@router.post("/projects/{project_id}/generate-tables")
+async def generate_project_tables(
+    project_id: int, body: GenerateTablesIn, db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "未选择模板")
+    tpl = db.query(Template).filter(Template.id == p.template_id).first()
+    tpl_bytes = storage.download_bytes(tpl.object_key)
+    fields = _fill_field_defaults(db, p.fields)
+    req = body.requirements or str(fields.get("_writing_requirements") or "")
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+    from app.services.doc_engine.table_compose import generate_all_table_rows, table_slots_from_template
+
+    manifest = get_manifest(tpl.placeholders) or parse_template_manifest(tpl_bytes)
+    table_rows = await generate_all_table_rows(
+        manifest, fields, req, _company_context(db), db=db,
+    )
+    for bind, rows in table_rows.items():
+        fields[bind] = rows
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {
+        "table_binds": list(table_rows.keys()),
+        "rows": table_rows,
+        "slots": table_slots_from_template(tpl.placeholders, tpl_bytes),
+        "project": project_to_dict(p),
+    }
+
+
 @router.get("/projects/{project_id}/export")
-def export_project(project_id: int, db: Session = Depends(get_db)):
+async def export_project(project_id: int, db: Session = Depends(get_db)):
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
@@ -746,44 +1021,57 @@ def export_project(project_id: int, db: Session = Depends(get_db)):
         p.fields = export_fields
         flag_modified(p, "fields")
         db.commit()
-    doc_bytes = word.render_document(
+    qual_files = []
+    for q in quals:
+        data = b""
+        if q.object_key:
+            try:
+                data = storage.download_bytes(q.object_key)
+            except Exception:
+                data = b""
+        qual_files.append({
+            "name": q.name,
+            "category": q.category,
+            "section_hint": getattr(q, "section_hint", "") or "",
+            "file_type": q.file_type,
+            "ocr_text": getattr(q, "ocr_text", "") or "",
+            "data": data,
+        })
+
+    writing_req = (export_fields.get("_writing_requirements") or "") or (
+        (p.chapters or {}).get("_writing_requirements") or ""
+    )
+    from app.services.doc_engine.engine import render_project_document, review_project_document
+
+    doc_bytes, _render_meta = await render_project_document(
         tpl_bytes,
+        tpl.placeholders,
         export_fields,
         chapters,
-        highlight=True,
         source_snapshot=snap if getattr(tpl, "kind", "") == "history" else None,
+        qual_files=qual_files,
+        highlight=True,
+        requirements=str(writing_req),
+        company_context=_company_context(db),
+        db=db,
+        mode="replace" if getattr(tpl, "kind", "") == "history" else None,
     )
-    # 嵌入资质附件（图片/docx/pdf）
-    if quals:
-        qual_files = []
-        for q in quals:
-            data = b""
-            if q.object_key:
-                try:
-                    data = storage.download_bytes(q.object_key)
-                except Exception:
-                    data = b""
-            qual_files.append({
-                "name": q.name,
-                "category": q.category,
-                "section_hint": getattr(q, "section_hint", "") or "",
-                "file_type": q.file_type,
-                "data": data,
-            })
-        try:
-            doc_bytes = word.embed_qualifications(doc_bytes, qual_files)
-        except Exception as e:
-            print(f"[export] embed quals warn: {e}")
 
     fields = export_fields
     required = ["project_name", "tender_no", "tenderer", "project_manager"]
-    if fields.get("bid_amount_upper") or fields.get("bid_amount"):
-        pass
-    else:
+    if not (fields.get("bid_amount_upper") or fields.get("bid_amount")):
         required.append("bid_amount_upper")
-    validation = word.validate_export(doc_bytes, required, fields)
-    if validation["status"] == "red":
-        raise HTTPException(400, detail={"message": "导出格式校验未通过", "validation": validation})
+
+    validation = await review_project_document(
+        doc_bytes,
+        tpl.placeholders,
+        fields,
+        snap if getattr(tpl, "kind", "") == "history" else None,
+        required,
+        db=db,
+    )
+    if not validation.get("can_export", validation.get("status") != "red"):
+        raise HTTPException(400, detail={"message": "文档审阅未通过，无法导出", "validation": validation})
 
     filename = f"{(p.fields or {}).get('project_name') or p.title or 'bid'}.docx"
     stamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
@@ -1063,6 +1351,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         faq_items=items,
         workspace=getattr(s, "workspace", None) or {},
         context=body.context or {},
+        session=s,
     )
 
     meta = dict(result.get("metadata") or {})
@@ -1093,6 +1382,26 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
                 (result.get("answer") or "")
                 + f"\n\n✅ 已生成新标书（版本 v{ws['version']}），请在左侧预览查看。"
                 f" 共填充 {len(gen_meta.get('generated_keys') or [])} 个字段/章节。"
+            )
+            meta["workspace_updated"] = True
+
+    # 工作区：全文批量替换
+    if meta.get("needs_workspace_bulk_replace"):
+        doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+        old_t = meta.get("old_text") or ""
+        new_t = meta.get("new_text") or ""
+        if doc_key and old_t:
+            doc_bytes = storage.download_bytes(doc_key)
+            new_bytes = word.apply_literal_replacements(doc_bytes, [(old_t, new_t)])
+            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_replaced.docx"
+            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ws["draft_object_key"] = new_key
+            ws["version"] = int(ws.get("version") or 0) + 1
+            ws["last_action"] = "bulk_replace"
+            s.workspace = ws
+            result["answer"] = (
+                f"✅ 已完成全文替换（版本 v{ws['version']}）：\n"
+                f"「{old_t}」→「{new_t}」\n\n请在左侧预览确认效果。"
             )
             meta["workspace_updated"] = True
 
@@ -1151,6 +1460,84 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         "source": result.get("source"),
         "matched_question": result.get("matched_question"),
         "mode": result.get("mode"),
+        "metadata": meta,
+    }
+
+
+class ChatActionRequest(BaseModel):
+    message_id: int | None = None
+    card_id: str = ""
+    action: str
+    payload: dict = {}
+
+
+def _resolve_card_state(message: ChatMessage | None, card_id: str, action: str, label: str) -> None:
+    """将卡片状态固化为 confirmed/cancelled，防止重复操作。"""
+    if not message or not card_id:
+        return
+    meta = dict(getattr(message, "metadata_json", None) or {})
+    cards = meta.get("cards") or []
+    changed = False
+    for card in cards:
+        if card.get("id") == card_id and card.get("state") == "active":
+            card["state"] = "cancelled" if action == "cancel_flow" else "confirmed"
+            card["result_label"] = label
+            changed = True
+    if changed:
+        meta["cards"] = cards
+        message.metadata_json = meta
+        flag_modified(message, "metadata_json")
+
+
+@router.post("/chat/sessions/{session_id}/actions")
+async def post_chat_action(session_id: int, body: ChatActionRequest, db: Session = Depends(get_db)):
+    """卡片动作回调：驱动多轮流程状态机，返回用户操作消息与新的助手消息。"""
+    from app.services import agent_flows
+
+    s = get_session_or_404(db, session_id)
+    acted_message = None
+    if body.message_id:
+        acted_message = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.id == body.message_id, ChatMessage.session_id == s.id)
+            .first()
+        )
+
+    user_label, result, _ws_updated = await agent_flows.handle_action(
+        db, s, body.action, body.payload or {}
+    )
+    meta = dict(result.get("metadata") or {})
+
+    if acted_message is not None:
+        _resolve_card_state(acted_message, body.card_id, body.action, user_label)
+
+    user_msg = None
+    if user_label:
+        user_msg = ChatMessage(session_id=s.id, role="user", content=user_label)
+        db.add(user_msg)
+        db.flush()
+
+    bot_msg = ChatMessage(
+        session_id=s.id,
+        role="assistant",
+        content=result.get("answer") or "",
+        source=result.get("source") or "",
+        matched_question=result.get("matched_question") or "",
+        metadata_json=meta,
+    )
+    db.add(bot_msg)
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(bot_msg)
+    db.refresh(s)
+    if user_msg is not None:
+        db.refresh(user_msg)
+
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg) if user_msg is not None else None,
+        "assistant_message": message_to_dict(bot_msg),
+        "acted_message": message_to_dict(acted_message) if acted_message is not None else None,
         "metadata": meta,
     }
 
@@ -1253,25 +1640,67 @@ async def upload_chat_file(
     is_docx = fname.lower().endswith(".docx")
     if is_docx:
         placeholders = word.extract_placeholders(data)
+        preview = word.extract_preview(data, max_paragraphs=30)
+        para_count = len(preview.get("paragraphs") or [])
         ws = dict(getattr(s, "workspace", None) or {})
         ws["template_object_key"] = key
         ws["draft_object_key"] = key
         ws["filename"] = fname
         ws["version"] = 1
         ws["last_action"] = "upload"
+        ws["awaiting_file_intent"] = True
+        ws["upload_meta"] = {
+            "placeholder_count": len(placeholders),
+            "paragraph_count": para_count,
+            "size_kb": len(data) // 1024,
+        }
         s.workspace = ws
         answer = (
-            f"已加载模板「{fname}」到左侧工作区（{len(data) // 1024} KB）。\n\n"
-            f"检测到 {len(placeholders)} 个占位符。\n"
-            "请说明编写要求，例如：「按模板生成标书，项目名称…，招标人…」。"
-            "也可选中左侧段落发送修改指令。"
+            f"已收到并阅读文档「{fname}」（{len(data) // 1024} KB，约 {para_count} 段）。\n\n"
+            f"检测到 {len(placeholders)} 个占位符。\n\n"
+            "**在您明确下达指令前，我不会自动修改文档。** 请告诉我您希望进行哪种操作：\n"
+            "1. 工程化为可复用模板\n"
+            "2. 结合企业信息按此格式编写招标标书\n"
+            "3. 在文档中批量替换指定文字\n"
+            "4. 仅作为工作区文档预览/编辑\n\n"
+            "也可直接用自然语言描述您的需求。"
         )
         actions = [
             {"type": "link", "label": "下载当前文档", "url": f"/api/chat/sessions/{session_id}/workspace/download"},
         ]
+        uid = uuid.uuid4().hex[:8]
+        cards = [
+            {
+                "id": f"upload-tpl-{uid}",
+                "type": "confirm",
+                "title": "生成标书模板",
+                "state": "active",
+                "payload": {
+                    "message": "识别项目名称、招标人等字段并替换为占位符，生成可复用模板。",
+                    "confirm_label": "创建模板",
+                    "cancel_label": "暂不",
+                    "confirm_action": "start_template_create",
+                    "cancel_action": "dismiss_card",
+                },
+            },
+            {
+                "id": f"upload-gen-{uid}",
+                "type": "confirm",
+                "title": "按此格式编写标书",
+                "state": "active",
+                "payload": {
+                    "message": "将结合系统内企业信息，按当前文档版式生成招标标书（需补充编写要求）。",
+                    "confirm_label": "开始编写",
+                    "cancel_label": "暂不",
+                    "confirm_action": "dismiss_card",
+                    "cancel_action": "dismiss_card",
+                },
+            },
+        ]
     else:
         answer = f"已收到文件「{fname}」。当前支持 DOCX 标书文件的模板化分析，其他格式可作为参考资料。"
         actions = [{"type": "link", "label": "前往数据管理", "url": "/admin"}]
+        cards = []
 
     user_msg = ChatMessage(
         session_id=s.id,
@@ -1284,7 +1713,7 @@ async def upload_chat_file(
         session_id=s.id,
         role="assistant",
         content=answer,
-        metadata_json={"intent": "file_upload", "actions": actions, "attachment_key": key},
+        metadata_json={"intent": "file_upload", "actions": actions, "attachment_key": key, "cards": cards},
     )
     db.add(bot_msg)
     s.updated_at = datetime.utcnow()

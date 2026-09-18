@@ -9,20 +9,28 @@ function buildQuery(params = {}) {
   return s ? `?${s}` : ''
 }
 
+async function readErrorDetail(res) {
+  const text = await res.text()
+  if (!text) return `请求失败 ${res.status}`
+  try {
+    const data = JSON.parse(text)
+    const d = data.detail
+    if (typeof d === 'string') return d
+    if (d?.message) return d.message
+    if (d) return JSON.stringify(d)
+    return JSON.stringify(data)
+  } catch {
+    return text
+  }
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   })
   if (!res.ok) {
-    let detail = ''
-    try {
-      const data = await res.json()
-      detail = data.detail?.message || data.detail || JSON.stringify(data)
-    } catch {
-      detail = await res.text()
-    }
-    throw new Error(detail || `请求失败 ${res.status}`)
+    throw new Error(await readErrorDetail(res))
   }
   if (res.status === 204) return null
   const type = res.headers.get('content-type') || ''
@@ -30,8 +38,17 @@ async function request(path, options = {}) {
   return res
 }
 
+async function fetchBlob(path, options = {}) {
+  const res = await fetch(`${BASE}${path}`, options)
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res))
+  }
+  return res.blob()
+}
+
 export const api = {
   health: () => request('/health'),
+  systemCheck: () => request('/system/check'),
   steps: () => request('/meta/steps'),
   templates: () => request('/templates'),
   fields: () => request('/fields'),
@@ -42,6 +59,7 @@ export const api = {
   projects: () => request('/projects'),
   getProject: (id) => request(`/projects/${id}`),
   createProject: (body) => request('/projects', { method: 'POST', body: JSON.stringify(body) }),
+  deleteProject: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
   confirmStep1: (id, body) => request(`/projects/${id}/step1`, { method: 'POST', body: JSON.stringify(body) }),
   updateFields: (id, fields, confirm = false) =>
     request(`/projects/${id}/fields`, { method: 'PUT', body: JSON.stringify({ fields, confirm }) }),
@@ -52,10 +70,32 @@ export const api = {
   insertQuals: (id, qualification_ids) =>
     request(`/projects/${id}/insert-quals`, { method: 'POST', body: JSON.stringify({ qualification_ids }) }),
   validate: (id) => request(`/projects/${id}/validate`, { method: 'POST' }),
-  exportDoc: async (id) => {
-    const res = await request(`/projects/${id}/export`)
-    return res.blob()
-  },
+  docReview: (id) => request(`/projects/${id}/doc-review`, { method: 'POST' }),
+  compose: (id, requirements) =>
+    request(`/projects/${id}/compose`, {
+      method: 'POST',
+      body: JSON.stringify({ requirements }),
+    }),
+  getTableSlots: (id) => request(`/projects/${id}/table-slots`),
+  updateTableSlots: (id, bind, rows) =>
+    request(`/projects/${id}/table-slots`, {
+      method: 'PUT',
+      body: JSON.stringify({ bind, rows }),
+    }),
+  generateTables: (id, requirements = '') =>
+    request(`/projects/${id}/generate-tables`, {
+      method: 'POST',
+      body: JSON.stringify({ requirements }),
+    }),
+  getTemplateManifest: (id) => request(`/admin/templates/${id}/manifest`),
+  updateTemplateImageBinding: (id, blockId, bind) =>
+    request(`/admin/templates/${id}/manifest/image-bindings`, {
+      method: 'PUT',
+      body: JSON.stringify({ block_id: blockId, bind }),
+    }),
+  analyzeTemplateManifest: (id) =>
+    request(`/admin/templates/${id}/analyze-manifest`, { method: 'POST' }),
+  exportDoc: (id) => fetchBlob(`/projects/${id}/export`),
   listExports: (id) => request(`/projects/${id}/exports`),
   previewExport: (projectId, exportId) =>
     request(`/projects/${projectId}/exports/${exportId}/preview`),
@@ -63,10 +103,8 @@ export const api = {
     `${BASE}/projects/${projectId}/exports/${exportId}/preview.pdf`,
   downloadExportUrl: (projectId, exportId, inline = false) =>
     `${BASE}/projects/${projectId}/exports/${exportId}/download${inline ? '?inline=1' : ''}`,
-  downloadExport: async (projectId, exportId) => {
-    const res = await request(`/projects/${projectId}/exports/${exportId}/download`)
-    return res.blob()
-  },
+  downloadExport: (projectId, exportId) =>
+    fetchBlob(`/projects/${projectId}/exports/${exportId}/download`),
   snapshots: (id) => request(`/projects/${id}/snapshots`),
   rollback: (id, snapshot_id) =>
     request(`/projects/${id}/rollback`, { method: 'POST', body: JSON.stringify({ snapshot_id }) }),
@@ -92,6 +130,28 @@ export const api = {
   },
   detectTemplatePlaceholders: (id) =>
     request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
+  searchMappingResources: (q = '') =>
+    request(`/admin/mapping-resources${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  adminFieldModules: () => request('/admin/field-modules'),
+  getWorkflowPlan: (projectId) => request(`/projects/${projectId}/workflow-plan`),
+  guidedIntake: (projectId, answered = {}) =>
+    request(`/projects/${projectId}/guided-intake`, {
+      method: 'POST',
+      body: JSON.stringify({ answered }),
+    }),
+  previewTemplateMappingsPdf: async (id, mappings) => {
+    const res = await fetch(`${BASE}/admin/templates/${id}/preview-mappings.pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mappings }),
+    })
+    if (!res.ok) {
+      let detail = ''
+      try { detail = await res.text() } catch { /* ignore */ }
+      throw new Error(detail || `PDF 预览失败 ${res.status}`)
+    }
+    return URL.createObjectURL(await res.blob())
+  },
   applyTemplatePlaceholders: (id, mappings) =>
     request(`/admin/templates/${id}/apply-placeholders`, {
       method: 'POST',
@@ -104,6 +164,8 @@ export const api = {
       body: JSON.stringify({ content, context }),
     }),
   getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),
+  sendChatAction: (sessionId, body) =>
+    request(`/chat/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(body) }),
   getOnlyOfficeConfig: (sessionId) => request(`/chat/sessions/${sessionId}/onlyoffice/config`),
   getOnlyOfficeStatus: () => request('/onlyoffice/status'),
   updateWorkspaceParagraph: (sessionId, paragraphIndex, text) =>

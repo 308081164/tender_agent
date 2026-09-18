@@ -5,23 +5,25 @@ export default function StepNav({ project, activeStep, onGoStep }) {
   const currentStep = project?.current_step || 1
 
   return (
-    <ul className="step-list">
+    <div className="stepbar">
       {STEPS.map((s) => {
         const reachable = s.step <= currentStep
         const done = currentStep > s.step
           || (currentStep === 6 && s.step === 6 && project.status === 'exported')
         const active = activeStep === s.step
         return (
-          <li
+          <button
+            type="button"
             key={s.step}
-            className={`step-item ${active ? 'active' : ''} ${done && !active ? 'done' : ''} ${reachable ? 'clickable' : ''}`}
+            className={`stepbar-item ${active ? 'active' : ''} ${done && !active ? 'done' : ''} ${reachable ? 'clickable' : ''}`}
             onClick={() => reachable && onGoStep?.(s.step)}
+            disabled={!reachable}
           >
-            <span className="step-num">{done && !active ? '✓' : s.step}</span>
-            <span>{s.name}</span>
-          </li>
+            <strong>{String(s.step).padStart(2, '0')}{done && !active ? ' ✓' : ''}</strong>
+            {s.name}
+          </button>
         )
       })}
-    </ul>
+    </div>
   )
 }

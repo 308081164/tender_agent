@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api/client'
 import FloatingChat from './components/FloatingChat'
 import Toast from './components/Toast'
+import AdminConfirmDialog from './components/admin/AdminConfirmDialog'
 import { useToast } from './hooks/useToast'
 import { useChatSessions } from './hooks/useChat'
 import { useSettings } from './hooks/useSettings'
@@ -15,6 +16,8 @@ export function useApp() {
 
 export default function App() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const hideFloatingChat = location.pathname.startsWith('/chat')
   const { toast, showToast } = useToast()
   const chat = useChatSessions(showToast)
   const settings = useSettings(showToast)
@@ -25,15 +28,8 @@ export default function App() {
   const [categories, setCategories] = useState([])
   const [projects, setProjects] = useState([])
   const [bootLoading, setBootLoading] = useState(true)
-
-  const [wizardLayout, setWizardLayout] = useState({
-    project: null,
-    activeStep: 1,
-    onGoStep: null,
-    snapshots: [],
-    onRollback: null,
-    loading: false,
-  })
+  const [confirmNewOpen, setConfirmNewOpen] = useState(false)
+  const [creatingProject, setCreatingProject] = useState(false)
 
   const refreshProjects = async () => {
     const list = await api.projects()
@@ -82,7 +78,22 @@ export default function App() {
     })()
   }, [])
 
-  const startNew = () => navigate('/projects/new')
+  const requestStartNew = () => setConfirmNewOpen(true)
+
+  const confirmStartNew = async () => {
+    setCreatingProject(true)
+    try {
+      const p = await api.createProject({ title: '新建标书' })
+      await refreshProjects()
+      showToast('已创建新标书项目')
+      setConfirmNewOpen(false)
+      navigate(`/projects/${p.id}/step/1`)
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setCreatingProject(false)
+    }
+  }
 
   const ctx = useMemo(() => ({
     showToast,
@@ -95,20 +106,26 @@ export default function App() {
     refreshBaseData,
     settingsInfo: settings.settingsInfo,
     settings,
-    setWizardLayout,
-    wizardLayout,
-    startNew,
+    startNew: requestStartNew,
     bootLoading,
   }), [
     showToast, templates, fieldDefs, quals, categories, projects,
-    settings, bootLoading, wizardLayout, startNew,
+    settings, bootLoading,
   ])
 
   return (
     <AppContext.Provider value={ctx}>
       <Outlet />
-      <FloatingChat chat={chat} />
+      {!hideFloatingChat ? <FloatingChat chat={chat} /> : null}
       <Toast message={toast} />
+      <AdminConfirmDialog
+        open={confirmNewOpen}
+        title="新建标书"
+        message="确认创建一份新的标书项目？创建后将进入六步向导。"
+        confirmLabel={creatingProject ? '创建中…' : '确认创建'}
+        onCancel={() => { if (!creatingProject) setConfirmNewOpen(false) }}
+        onConfirm={confirmStartNew}
+      />
     </AppContext.Provider>
   )
 }

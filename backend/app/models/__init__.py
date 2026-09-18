@@ -167,7 +167,7 @@ class SystemSetting(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     deepseek_api_key: Mapped[str] = mapped_column(Text, default="")
     deepseek_base_url: Mapped[str] = mapped_column(String(300), default="https://api.deepseek.com")
-    deepseek_model: Mapped[str] = mapped_column(String(100), default="deepseek-chat")
+    deepseek_model: Mapped[str] = mapped_column(String(100), default="deepseek-v4-pro")
     qwen_api_key: Mapped[str] = mapped_column(Text, default="")
     qwen_base_url: Mapped[str] = mapped_column(
         String(300), default="https://dashscope.aliyuncs.com/compatible-mode/v1"

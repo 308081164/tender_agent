@@ -25,6 +25,9 @@ ALTERS = [
     "ALTER TABLE field_defs ALTER COLUMN default_value TYPE VARCHAR(500)",
     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata JSON DEFAULT '{}'::json",
     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS workspace JSON DEFAULT '{}'::json",
+    # DeepSeek V4 Pro 默认模型升级（保留用户自定义的其他模型名）
+    "UPDATE system_settings SET deepseek_model = 'deepseek-v4-pro' "
+    "WHERE deepseek_model IS NULL OR deepseek_model IN ('', 'deepseek-chat', 'deepseek-reasoner')",
 ]
 
 

@@ -62,7 +62,7 @@ async def chat_completion(
                 return await _openai_compat(
                     cfg["deepseek_base_url"],
                     cfg["deepseek_api_key"],
-                    cfg.get("deepseek_model") or "deepseek-chat",
+                    cfg.get("deepseek_model") or "deepseek-v4-pro",
                     messages,
                 )
             except Exception:
@@ -118,16 +118,21 @@ async def generate_chapter(
     fields: dict,
     db: Session | None = None,
     company_context: str = "",
+    template_reference: str = "",
 ) -> dict:
     style = (
         "正式严谨，符合铁路/轨道交通行业规范；禁止口语化；"
         "数字、日期、金额须前后一致；全面响应招标要求。"
     )
     ctx = (company_context or "")[:2500]
+    tpl_ctx = (template_reference or "")[:4500]
+    ref_block = f"\n模板编写规则与参考正文：\n{tpl_ctx}\n" if tpl_ctx else ""
     prompt = (
         f"你是铁路行业标书撰写助手。请为章节「{chapter_key}」撰写正式、严谨的中文段落，"
         f"约200-400字。\n文风要求：{style}\n企业背景：{ctx}\n项目信息：{fields}。"
+        f"{ref_block}"
         f"不要使用口语，不要编造无法核实的资质编号。"
+        f"{'请严格遵循模板参考中的编写规则与格式要求。' if tpl_ctx else ''}"
     )
     ai_text = await chat_completion([
         {"role": "system", "content": "你是专业的铁路工程标书撰写助手。"},
@@ -142,6 +147,34 @@ async def generate_chapter(
     }
 
 
+def _score_faq_match(question: str, item: dict) -> float:
+    q = question.strip()
+    if not q:
+        return 0.0
+    iq = item.get("question") or ""
+    ia = item.get("answer") or ""
+    ic = item.get("category") or ""
+    corpus = f"{iq}{ia}{ic}"
+
+    # 领域关键词重合优先于单字重叠，避免「你是谁」误命中「审计报告」类 FAQ
+    domain_words = [
+        "资质", "业绩", "项目经理", "建造师", "审计", "行贿", "安全", "地铁", "铁路",
+        "财务", "证书", "社保", "注册资金", "投标", "招标",
+    ]
+    keyword_hits = sum(1 for w in domain_words if w in q and w in corpus)
+    if keyword_hits:
+        return 0.25 + 0.2 * keyword_hits
+
+    q_chars = {c for c in q if not c.isspace() and c not in "，。！？、；：""''（）【】"}
+    i_chars = {c for c in iq if not c.isspace() and c not in "，。！？、；：""''（）【】"}
+    if len(q_chars) < 4:
+        return 0.0
+    overlap = len(q_chars & i_chars) / max(len(q_chars), 1)
+    if overlap < 0.45:
+        return 0.0
+    return overlap
+
+
 async def answer_faq(
     question: str,
     faq_items: list[dict],
@@ -152,14 +185,7 @@ async def answer_faq(
     best = None
     best_score = 0.0
     for item in faq_items:
-        q_chars = set(q)
-        i_chars = set(item["question"])
-        score = len(q_chars & i_chars) / max(len(q_chars), 1)
-        if any(w in item["question"] for w in q if len(w) > 1):
-            score += 0.2
-        for word in ["资质", "业绩", "项目经理", "建造师", "审计", "行贿", "安全", "地铁", "铁路"]:
-            if word in q and word in (item["question"] + item["answer"] + item.get("category", "")):
-                score += 0.3
+        score = _score_faq_match(q, item)
         if score > best_score:
             best_score = score
             best = item
@@ -172,7 +198,7 @@ async def answer_faq(
         if role in ("user", "assistant") and content:
             hist.append({"role": role, "content": content})
 
-    if best and best_score > 0.15:
+    if best and best_score > 0.35:
         answer = best["answer"]
         source = best.get("source", "")
         messages = [
@@ -186,7 +212,15 @@ async def answer_faq(
         return {"answer": answer, "source": source, "matched_question": best["question"], "mode": "kb"}
 
     messages = [
-        {"role": "system", "content": "你是企业问答助手。若无法从企业资料确认，请明确说明需人工核实。"},
+        {
+            "role": "system",
+            "content": (
+                "你是标书智能体助手，兼具基础对话与企业投标问答能力。"
+                "当用户闲聊、询问你的身份或能力时，请自然介绍自己并说明可协助的标书编写、"
+                "模板工程化、资质检索等功能；不要编造企业事实。"
+                "当用户询问具体企业资质/业绩时，若资料不足请说明需人工核实。"
+            ),
+        },
         *hist,
         {"role": "user", "content": q},
     ]
@@ -212,18 +246,22 @@ async def detect_placeholder_candidates(
     if not document_text.strip() or not field_defs:
         return []
 
-    catalog = json.dumps(field_defs[:80], ensure_ascii=False)
+    catalog = json.dumps(field_defs[:100], ensure_ascii=False)
     prompt = (
         "你是铁路/轨道交通行业标书模板工程化专家。"
         "请分析文档正文，找出应替换为模板占位符的具体原文片段。\n\n"
-        f"可用字段目录（key 必须从中选择）：\n{catalog}\n\n"
+        f"可用字段目录（key 优先从中选择）：\n{catalog}\n\n"
         f"文档正文（节选）：\n{document_text[:14000]}\n\n"
-        "要求：\n"
-        "1. original_text 必须是文档中可精确搜索到的连续原文，优先较长片段\n"
-        "2. 同一 key 可有多处，但避免过短（<4字）或泛化词\n"
-        "3. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason\n"
-        "4. 只返回 JSON，不要 markdown 代码块\n"
-        "5. 最多 25 项，按 confidence 降序"
+        "识别规则（务必遵守）：\n"
+        "1. original_text 必须是文档中可精确搜索的连续原文，优先较长片段，禁止 Word 域代码（如 PAGE \\*、TOC、HYPERLINK）\n"
+        "2. tender_no 仅用于「招标编号/项目编号/采购编号」语境，不要把页码、包件序号、表格序号、型号编号一律标为 tender_no\n"
+        "3. package_no 用于包件号/标段号；project_name 用于完整项目名称\n"
+        "4. bid_date/sign_date 用于确定日期（如 2025年7月1日）；duration 用于工期/供货期（如 90日历天、6个月），不要混淆\n"
+        "5. 金额用 bid_amount；电话 phone；邮编 postcode；法人 legal_name\n"
+        "6. 若原文更适合资质材料插入位，bind_type 设为 qual 并给出 key=qual_<id>（若目录无则 bind_type=field）\n"
+        "7. 若需立项时临场决策填写，bind_type=runtime，key=runtime_custom 或建议新 key\n"
+        "8. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason, bind_type, value_type(日期/工期/金额/文本)\n"
+        "9. 只返回 JSON，不要 markdown；最多 30 项"
     )
     raw = await chat_completion([
         {"role": "system", "content": "你是标书模板工程化助手，只输出合法 JSON 数组。"},
@@ -233,6 +271,69 @@ async def detect_placeholder_candidates(
         return []
     from app.services.template_detect import parse_llm_candidate_json
     return parse_llm_candidate_json(raw)
+
+
+async def resolve_placeholder_mappings(
+    candidates: list[dict],
+    resource_catalog: dict,
+    document_text: str = "",
+    db: Session | None = None,
+) -> list[dict]:
+    """结合系统字段/资质/企业档案目录，为候选原文二次决策映射目标。"""
+    import json
+
+    if not candidates:
+        return []
+
+    fields = (resource_catalog.get("fields") or [])[:80]
+    quals = (resource_catalog.get("qualifications") or [])[:40]
+    runtime = resource_catalog.get("runtime") or []
+    compact_fields = [
+        {k: v for k, v in item.items() if k in ("key", "name", "field_type", "module", "required")}
+        for item in fields
+    ]
+    compact_quals = [
+        {k: v for k, v in item.items() if k in ("id", "key", "name", "category", "keywords", "section_hint")}
+        for item in quals
+    ]
+    payload = json.dumps(candidates[:40], ensure_ascii=False)
+    prompt = (
+        "你是标书模板工程化映射专家。请为下列「原文片段」选择最合适的系统字段或材料绑定。\n\n"
+        f"字段定义目录：\n{json.dumps(compact_fields, ensure_ascii=False)}\n\n"
+        f"资质材料目录：\n{json.dumps(compact_quals, ensure_ascii=False)}\n\n"
+        f"临场填写选项：\n{json.dumps(runtime, ensure_ascii=False)}\n\n"
+        f"待映射候选：\n{payload}\n\n"
+        f"文档上下文（节选）：\n{document_text[:6000]}\n\n"
+        "决策规则：\n"
+        "1. 保留 original_text 不变；为每项输出最终 key、field_name、bind_type(field|qual|runtime)、confidence、reason\n"
+        "2. tender_no 仅用于招标编号语境；日期用 bid_date；工期用 duration；不要滥用 tender_no\n"
+        "3. 资质章节中的证照名称优先 bind_type=qual 并填 qualification_id\n"
+        "4. 无合适字段时 bind_type=runtime，并给出 suggested_field{name,key,field_type,module}\n"
+        "5. 返回与候选数量相同的 JSON 数组，只输出 JSON"
+    )
+    raw = await chat_completion([
+        {"role": "system", "content": "你是标书映射决策助手，只输出合法 JSON 数组。"},
+        {"role": "user", "content": prompt},
+    ], db=db)
+    if not raw:
+        return candidates
+    from app.services.template_detect import parse_resolve_json
+    resolved = parse_resolve_json(raw)
+    if not resolved:
+        return candidates
+    by_text = {(r.get("original_text") or "").strip(): r for r in resolved if r.get("original_text")}
+    merged = []
+    for c in candidates:
+        ot = (c.get("original_text") or "").strip()
+        hit = by_text.get(ot)
+        if hit:
+            item = {**c, **hit, "source": c.get("source", "ai"), "resolved_by_ai": True}
+            if hit.get("bind_type") == "qual" and hit.get("qualification_id"):
+                item["qualification_id"] = hit["qualification_id"]
+            merged.append(item)
+        else:
+            merged.append(c)
+    return merged
 
 
 async def test_provider(provider: str, db: Session | None = None) -> dict:
@@ -245,7 +346,7 @@ async def test_provider(provider: str, db: Session | None = None) -> dict:
             text = await _openai_compat(
                 cfg["deepseek_base_url"],
                 cfg["deepseek_api_key"],
-                cfg.get("deepseek_model") or "deepseek-chat",
+                cfg.get("deepseek_model") or "deepseek-v4-pro",
                 [{"role": "user", "content": "请只回复：ok"}],
             )
             return {"ok": True, "message": "DeepSeek 连接成功", "sample": (text or "")[:80]}

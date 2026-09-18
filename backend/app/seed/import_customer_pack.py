@@ -194,11 +194,19 @@ def import_templates(db: Session, base: Path):
         storage.upload_file(key, str(f), MIME[".docx"])
         data = f.read_bytes()
         ph = extract_placeholders(data)
+        ph_meta = {"list": ph}
+        try:
+            from app.services.doc_engine.engine import attach_manifest_to_template
+            from app.services.doc_engine.parser import parse_template_manifest
+            manifest = parse_template_manifest(data)
+            ph_meta = attach_manifest_to_template(ph_meta, manifest)
+        except Exception:
+            pass
         db.add(Template(
             name=f.stem,
             description="工程化可替换模板",
             object_key=key,
-            placeholders={"list": ph},
+            placeholders=ph_meta,
             template_code=code,
             kind=kind,
             enabled=True,
@@ -212,15 +220,29 @@ def import_templates(db: Session, base: Path):
             storage.upload_file(key, str(f), MIME[".docx"])
             # 历史快照：从文件名粗提取
             snap = {"project_name": f.stem, "bidder_name": "和远智能科技股份有限公司"}
+            ph_meta = {"list": [], "is_history": not is_tender}
+            enriched_snap = snap
+            if not is_tender:
+                try:
+                    from app.services.doc_engine.engine import attach_manifest_to_template
+                    from app.services.doc_engine.parser import (
+                        enrich_snapshot_with_locations,
+                        parse_template_manifest,
+                    )
+                    manifest = parse_template_manifest(data, is_history=True)
+                    ph_meta = attach_manifest_to_template(ph_meta, manifest)
+                    enriched_snap = enrich_snapshot_with_locations(data, snap)
+                except Exception:
+                    pass
             db.add(Template(
                 name=f.stem,
                 description="招标文件（只读参考）" if is_tender else "历史标书（智能替换起点）",
                 object_key=key,
-                placeholders={"list": [], "is_history": not is_tender},
+                placeholders=ph_meta,
                 template_code="history",
                 kind="tender_doc" if is_tender else "history",
                 enabled=not is_tender,
-                source_snapshot=snap,
+                source_snapshot=enriched_snap,
             ))
     db.commit()
     print("[import] templates ok")

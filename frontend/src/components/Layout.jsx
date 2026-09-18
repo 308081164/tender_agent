@@ -1,49 +1,57 @@
 import React from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import StepNav from './StepNav'
+import { NavLink, useNavigate } from 'react-router-dom'
 
 export default function Layout({
   children,
-  project = null,
-  activeStep = 1,
-  onGoStep,
   settingsInfo = null,
   loading = false,
   onStartNew,
 }) {
   const navigate = useNavigate()
-  const inWizard = Boolean(project)
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <Link to="/" className="brand-link">
-          <h1 className="brand">标书智能体</h1>
-        </Link>
+        <NavLink to="/" className="brand-link">
+          <div className="brand-row">
+            <span className="brand-logo">T</span>
+            <h1 className="brand">标书智能体</h1>
+          </div>
+        </NavLink>
         <div className="brand-sub">铁路行业投标文件智能编写</div>
-        {inWizard ? (
-          <StepNav
-            project={project}
-            activeStep={activeStep}
-            onGoStep={onGoStep}
-          />
-        ) : (
-          <div className="empty">创建或打开标书后显示六步向导。</div>
-        )}
-        <div className="actions" style={{ marginTop: 24 }}>
-          <button className="secondary" onClick={() => navigate('/')}>项目列表</button>
-          <button onClick={onStartNew} disabled={loading}>新建标书</button>
-          <button className="ghost" onClick={() => navigate('/chat')} disabled={loading}>智能助手</button>
-          <button className="ghost" onClick={() => navigate('/settings')} disabled={loading}>系统设置</button>
-          <button className="ghost" onClick={() => navigate('/admin')} disabled={loading}>数据管理</button>
-        </div>
+
+        <nav>
+          <div className="side-section">工作</div>
+          <NavLink to="/" end className={({ isActive }) => `side-item${isActive ? ' active' : ''}`}>
+            <span className="side-icon">⌂</span>工作台
+          </NavLink>
+          <button type="button" className="side-item" onClick={onStartNew} disabled={loading}>
+            <span className="side-icon">＋</span>新建标书
+          </button>
+          <NavLink to="/chat" className={({ isActive }) => `side-item${isActive ? ' active' : ''}`}>
+            <span className="side-icon">✦</span>文档 Agent
+          </NavLink>
+
+          <div className="side-section">管理</div>
+          <NavLink to="/admin" className={({ isActive }) => `side-item${isActive ? ' active' : ''}`}>
+            <span className="side-icon">▦</span>数据管理
+          </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => `side-item${isActive ? ' active' : ''}`}>
+            <span className="side-icon">⚙</span>系统设置
+          </NavLink>
+        </nav>
+
         {settingsInfo && (
-          <div style={{ marginTop: 16, fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
-            AI：{settingsInfo.preferred_provider || 'auto'}
+          <div className="sidebar-foot">
+            AI 模型：{settingsInfo.preferred_provider || 'auto'}
             <br />
-            DeepSeek：{settingsInfo.deepseek_api_key_set ? '已配置' : '未配置'}
+            DeepSeek{' '}
+            <span className={settingsInfo.deepseek_api_key_set ? 'ok-dot' : 'off-dot'}>●</span>{' '}
+            {settingsInfo.deepseek_api_key_set ? '已配置' : '未配置'}
             <br />
-            通义千问：{settingsInfo.qwen_api_key_set ? '已配置' : '未配置'}
+            通义千问{' '}
+            <span className={settingsInfo.qwen_api_key_set ? 'ok-dot' : 'off-dot'}>●</span>{' '}
+            {settingsInfo.qwen_api_key_set ? '已配置' : '未配置'}
           </div>
         )}
       </aside>

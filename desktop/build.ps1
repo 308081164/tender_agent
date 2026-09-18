@@ -11,7 +11,8 @@ $ElectronDir = Join-Path $Root "desktop\electron"
 $PgVersion = "16.6-1"
 $PgZipName = "postgresql-$PgVersion-windows-x64-binaries.zip"
 $PgUrl = "https://get.enterprisedb.com/postgresql/$PgZipName"
-$MinioUrl = "https://dl.min.io/server/minio/release/windows-amd64/minio.exe"
+# dl.min.io 社区版已 410；固定使用 GitHub 最后社区发行版
+$MinioUrl = "https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.windows-amd64.RELEASE.2025-09-07T16-13-09Z.exe"
 $PythonVersion = "3.11.9"
 $EmbedZipName = "python-$PythonVersion-embed-amd64.zip"
 $EmbedUrl = "https://www.python.org/ftp/python/$PythonVersion/$EmbedZipName"
@@ -277,9 +278,44 @@ foreach ($required in @("bin\initdb.exe", "bin\pg_ctl.exe", "bin\psql.exe", "bin
   }
 }
 
+# 捆绑 VC++ 2015-2022 运行时 DLL，保证全新 Windows（无开发环境、未装运行库）可运行。
+# EDB 官方二进制依赖 VCRUNTIME140.dll / MSVCP140.dll，但不随包提供；
+# 这些 DLL 属于 Microsoft 官方允许再分发的运行时组件。
+Write-Host "==> Bundling Visual C++ runtime DLLs for PostgreSQL"
+$VcDlls = @("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll")
+$VcSources = @(
+  (Join-Path $env:SystemRoot "System32"),
+  (Join-Path $env:SystemRoot "SysWOW64")
+)
+foreach ($dll in $VcDlls) {
+  $copied = $false
+  foreach ($dir in $VcSources) {
+    $src = Join-Path $dir $dll
+    if (Test-Path -LiteralPath $src) {
+      # 仅接受 64 位 DLL（System32）；SysWOW64 为 32 位，跳过
+      if ($dir -like "*SysWOW64*") { continue }
+      Copy-Item -LiteralPath $src -Destination (Join-Path $PgDest "bin\$dll") -Force
+      Write-Host "  bundled $dll"
+      $copied = $true
+      break
+    }
+  }
+  if (-not $copied) {
+    throw "VC++ runtime DLL not found on build machine: $dll (install vc_redist.x64 on the runner)"
+  }
+}
+
 Write-Host "==> Downloading MinIO"
 $MinioDest = Join-Path $ToolsDir "minio.exe"
 Download-File -Url $MinioUrl -Destination $MinioDest
+
+Write-Host "==> Bundling Tesseract OCR (optional, skip on failure)"
+$TessDest = Join-Path $ToolsDir "tesseract"
+try {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\ci\download-tesseract-windows.ps1") -DestinationDir $TessDest
+} catch {
+  Write-Host "  WARN: Tesseract bundle skipped: $_"
+}
 
 Write-Host "==> Copying Aspose license"
 $AsposeDest = Join-Path $Stage "aspose"
