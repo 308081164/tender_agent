@@ -4,10 +4,10 @@ import React from 'react'
  * High-fidelity DOCX preview via Aspose/LibreOffice → PDF.
  * Browser native PDF viewer provides page breaks matching Word pagination.
  */
-export default function PdfPreview({ src, title = '文档预览', onLoadError }) {
+export default function PdfPreview({ src, title = '文档预览', className = '', onLoadError }) {
   if (!src) return null
   return (
-    <div className="preview-doc preview-pdf">
+    <div className={`preview-doc preview-pdf ${className}`.trim()}>
       <iframe
         className="preview-pdf-frame"
         title={title}

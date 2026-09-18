@@ -606,7 +606,12 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 .chip:hover { border-color: #c7d7fe; background: var(--primary-soft); }
 
 /* Agent 工作区（文档 + 对话同屏） */
-.chat-workspace-page { display: flex; flex-direction: column; min-height: 100vh; background: var(--bg); }
+.chat-workspace-page {
+  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+  max-height: 100vh; max-height: 100dvh;
+  overflow: hidden; background: var(--bg);
+}
 .chat-workspace-topbar {
   display: flex; align-items: center; gap: 12px; padding: 10px 16px;
   background: var(--surface); border-bottom: 1px solid var(--line);
@@ -650,22 +655,72 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 .chat-history-empty { padding: 16px; text-align: center; font-size: 13px; }
 .chat-empty-hint { font-size: 13px; line-height: 1.6; margin: 0 0 12px; }
 .icon-btn { padding: 6px; border-radius: 8px; line-height: 0; }
-.chat-workspace-split { display: grid; grid-template-columns: 1fr 400px; flex: 1; min-height: 0; }
-.chat-workspace-doc { min-height: 0; overflow: hidden; padding: 12px; }
-.chat-workspace-panel { display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); min-height: 0; }
-.chat-panel-head { padding: 14px 16px 8px; border-bottom: 1px solid var(--line); }
+.chat-workspace-split {
+  display: grid; grid-template-columns: 1fr 400px;
+  flex: 1; min-height: 0; overflow: hidden;
+}
+.chat-workspace-doc {
+  min-height: 0; overflow: hidden; padding: 12px;
+  display: flex; flex-direction: column;
+}
+.chat-workspace-panel {
+  display: flex; flex-direction: column;
+  background: var(--surface); border-left: 1px solid var(--line);
+  min-height: 0; max-height: 100%; overflow: hidden;
+}
+.chat-panel-head {
+  flex-shrink: 0;
+  padding: 14px 16px 8px; border-bottom: 1px solid var(--line);
+}
 .chat-panel-head h3 { margin: 0 0 4px; }
-.chat-messages-area.compact { flex: 1; padding: 12px; }
-.chat-composer.compact { padding: 12px; }
-.chat-selection-hint { padding: 8px 12px; font-size: 12px; background: var(--primary-soft); border-top: 1px solid #c7d7fe; }
-.doc-workspace { display: flex; flex-direction: column; height: calc(100vh - 72px); background: var(--surface); border-radius: 12px; border: 1px solid var(--line); overflow: hidden; }
-.doc-workspace-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.chat-messages-area.compact {
+  flex: 1; min-height: 0; padding: 12px;
+  overflow-x: hidden; overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.chat-composer.compact { flex-shrink: 0; padding: 12px; }
+.chat-selection-hint {
+  flex-shrink: 0;
+  padding: 8px 12px; font-size: 12px; background: var(--primary-soft); border-top: 1px solid #c7d7fe;
+}
+.doc-workspace {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0; height: 100%;
+  background: var(--surface); border-radius: 12px; border: 1px solid var(--line);
+  overflow: hidden;
+}
+.doc-workspace-toolbar {
+  flex-shrink: 0;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.doc-workspace-body {
+  flex: 1; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.doc-workspace .preview-doc.preview-pdf.doc-workspace-pdf {
+  flex: 1; min-height: 0; min-height: unset;
+  display: flex; flex-direction: column;
+}
+.doc-workspace .preview-doc.preview-pdf.doc-workspace-pdf .preview-pdf-frame {
+  flex: 1; min-height: 0; height: 100%;
+}
 .doc-workspace-tabs { display: flex; gap: 8px; align-items: center; }
 .doc-workspace-tabs button.active { background: var(--primary-soft); border-color: #c7d7fe; color: var(--primary); }
 .doc-workspace-empty { padding: 48px 24px; text-align: center; color: var(--muted); }
-.doc-structure-pane { display: grid; grid-template-columns: 1fr 280px; gap: 0; flex: 1; min-height: 0; overflow: hidden; }
-.doc-structure-pane .selectable-doc-preview { padding: 16px; overflow: auto; max-height: calc(100vh - 160px); }
-.paragraph-edit-list { border-left: 1px solid var(--line); padding: 12px; overflow: auto; font-size: 12px; }
+.doc-structure-pane {
+  display: grid; grid-template-columns: 1fr 280px; gap: 0;
+  flex: 1; min-height: 0; overflow: hidden;
+}
+.doc-structure-pane .selectable-doc-preview {
+  padding: 16px; overflow: auto; min-height: 0;
+  overscroll-behavior: contain;
+}
+.paragraph-edit-list {
+  border-left: 1px solid var(--line); padding: 12px;
+  overflow: auto; min-height: 0; font-size: 12px;
+  overscroll-behavior: contain;
+}
 .paragraph-edit-row { display: grid; gap: 6px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--line); }
 .paragraph-snippet { line-height: 1.4; }
 .onlyoffice-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
@@ -827,8 +882,11 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 
 /* ============ 响应式 ============ */
 @media (max-width: 1100px) {
-  .chat-workspace-split { grid-template-columns: 1fr; }
-  .chat-workspace-panel { border-left: none; border-top: 1px solid var(--line); max-height: 50vh; }
+  .chat-workspace-split { grid-template-columns: 1fr; grid-template-rows: 1fr minmax(280px, 42vh); }
+  .chat-workspace-panel {
+    border-left: none; border-top: 1px solid var(--line);
+    max-height: none; min-height: 0;
+  }
   .engineer-workbench { grid-template-columns: 1fr; }
   .doc-structure-pane { grid-template-columns: 1fr; }
   .admin-shell { grid-template-columns: 1fr; }
