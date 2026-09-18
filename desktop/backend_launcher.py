@@ -1023,12 +1023,14 @@ def _runtime_env(install_dir: Path, data_dir: Path | None = None) -> dict[str, s
         runtime_bin = str(scripts) + os.pathsep + runtime_bin
     env["PATH"] = runtime_bin + os.pathsep + env.get("PATH", "")
     env["TENDER_INSTALL_DIR"] = str(install_dir)
-    tess_exe = install_dir / "tools" / "tesseract" / "tesseract.exe"
-    tessdata = install_dir / "tools" / "tesseract" / "tessdata"
+    tess_root = install_dir / "tools" / "tesseract"
+    tess_exe = tess_root / "tesseract.exe"
+    tessdata = tess_root / "tessdata"
     if tess_exe.is_file():
         env["TESSERACT_CMD"] = str(tess_exe)
         if tessdata.is_dir():
-            env["TESSDATA_PREFIX"] = str(tessdata)
+            # TESSDATA_PREFIX 指向含 tessdata 子目录的安装根，而非 tessdata 本身
+            env["TESSDATA_PREFIX"] = str(tess_root)
     if data_dir is not None:
         env["TENDER_DATA_DIR"] = str(data_dir)
     env.setdefault("PYTHONUTF8", "1")
@@ -1053,6 +1055,8 @@ def _verify_install_layout(install_dir: Path) -> None:
         ("postgres server", _postgres_bin(install_dir, "postgres.exe"), True),
         ("postgres pg_ctl", _postgres_bin(install_dir, "pg_ctl.exe"), True),
         ("minio", install_dir / "tools" / "minio.exe", True),
+        ("tesseract", install_dir / "tools" / "tesseract" / "tesseract.exe", True),
+        ("tesseract chi_sim", install_dir / "tools" / "tesseract" / "tessdata" / "chi_sim.traineddata", True),
         ("aspose license", install_dir / "aspose" / "Aspose.License.txt", True),
     ]
     missing: list[str] = []

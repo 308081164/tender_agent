@@ -309,12 +309,14 @@ Write-Host "==> Downloading MinIO"
 $MinioDest = Join-Path $ToolsDir "minio.exe"
 Download-File -Url $MinioUrl -Destination $MinioDest
 
-Write-Host "==> Bundling Tesseract OCR (optional, skip on failure)"
+Write-Host "==> Bundling Tesseract OCR (required)"
 $TessDest = Join-Path $ToolsDir "tesseract"
-try {
-  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\ci\download-tesseract-windows.ps1") -DestinationDir $TessDest
-} catch {
-  Write-Host "  WARN: Tesseract bundle skipped: $_"
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\ci\download-tesseract-windows.ps1") -DestinationDir $TessDest
+if (-not (Test-Path (Join-Path $TessDest "tesseract.exe"))) {
+  throw "Tesseract bundle failed: tesseract.exe missing"
+}
+if (-not (Test-Path (Join-Path $TessDest "tessdata\chi_sim.traineddata"))) {
+  throw "Tesseract bundle failed: chi_sim.traineddata missing"
 }
 
 Write-Host "==> Copying Aspose license"

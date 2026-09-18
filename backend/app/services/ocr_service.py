@@ -11,15 +11,15 @@ from xml.etree import ElementTree
 
 
 def _bundled_tesseract_paths() -> tuple[str | None, str | None]:
-    """桌面安装包内置 Tesseract 路径。"""
+    """桌面安装包内置 Tesseract 路径 (exe, TESSDATA_PREFIX 根目录)。"""
     install = os.environ.get("TENDER_INSTALL_DIR", "").strip()
     if not install:
         return None, None
     root = Path(install) / "tools" / "tesseract"
     exe = root / "tesseract.exe"
     tessdata = root / "tessdata"
-    if exe.is_file():
-        return str(exe), str(tessdata) if tessdata.is_dir() else None
+    if exe.is_file() and tessdata.is_dir():
+        return str(exe), str(root)
     return None, None
 
 
@@ -66,13 +66,14 @@ def _pypdf_available() -> bool:
 
 def ocr_runtime_status() -> dict[str, object]:
     cmd = resolve_tesseract_cmd()
-    tessdata = os.environ.get("TESSDATA_PREFIX", "").strip()
-    if not tessdata:
-        _, bundled_data = _bundled_tesseract_paths()
-        tessdata = bundled_data or ""
+    prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if not prefix:
+        _, bundled_prefix = _bundled_tesseract_paths()
+        prefix = bundled_prefix or ""
+    tessdata_dir = Path(prefix) / "tessdata" if prefix else Path()
     langs = []
-    if tessdata and os.path.isdir(tessdata):
-        langs = [p.stem for p in Path(tessdata).glob("*.traineddata")]
+    if tessdata_dir.is_dir():
+        langs = [p.stem for p in tessdata_dir.glob("*.traineddata")]
     pillow = _pillow_available()
     pytess = _pytesseract_available()
     pypdf = _pypdf_available()
@@ -81,7 +82,7 @@ def ocr_runtime_status() -> dict[str, object]:
     return {
         "tesseract_available": tesseract_ready,
         "tesseract_cmd": cmd or "",
-        "tessdata_prefix": tessdata,
+        "tessdata_prefix": prefix,
         "languages": sorted(langs)[:20],
         "chi_sim": "chi_sim" in langs,
         "pillow_available": pillow,

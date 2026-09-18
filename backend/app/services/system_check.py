@@ -22,9 +22,12 @@ def _check_aspose() -> dict[str, Any]:
 
 def _check_ocr() -> dict[str, Any]:
     st = ocr_runtime_status()
-    if st.get("tesseract_available"):
+    if st.get("tesseract_available") and st.get("chi_sim"):
         detail = {**st, "mode": "tesseract"}
         return {"id": "ocr", "name": "资质 OCR (Tesseract)", "status": "ok", "detail": detail}
+    if st.get("tesseract_available"):
+        detail = {**st, "mode": "tesseract", "note": "缺少 chi_sim 语言包，中文识别可能受限"}
+        return {"id": "ocr", "name": "资质 OCR (Tesseract)", "status": "warn", "detail": detail}
     if st.get("ocr_capable"):
         detail = {
             **st,
