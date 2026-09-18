@@ -13,6 +13,23 @@ const EMPTY = {
   valid_from: '', valid_to: '', is_long_term: false, ocr_text: '',
 }
 
+function applyAiResult(form, result) {
+  return {
+    ...form,
+    category: result.category || form.category,
+    name: result.name || form.name,
+    issuer: result.issuer || form.issuer,
+    keywords: result.keywords || form.keywords,
+    section_hint: result.section_hint || form.section_hint,
+    valid_from: result.valid_from || form.valid_from || '',
+    valid_to: result.valid_to || form.valid_to || '',
+    is_long_term: result.is_long_term ?? form.is_long_term,
+    file_type: result.file_type || form.file_type,
+    file_name: result.file_name || form.file_name,
+    ocr_text: result.ocr_text || form.ocr_text,
+  }
+}
+
 export default function QualificationDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -21,8 +38,10 @@ export default function QualificationDetailPage() {
   const [form, setForm] = useState(EMPTY)
   const [categories, setCategories] = useState([])
   const [saving, setSaving] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [uploadFile, setUploadFile] = useState(null)
+  const [previewObjectUrl, setPreviewObjectUrl] = useState(null)
 
   useEffect(() => {
     api.qualCategories().then(setCategories).catch(() => {})
@@ -35,6 +54,37 @@ export default function QualificationDetailPage() {
     }
     api.getQual(id).then(setForm).catch((e) => showToast(e.message))
   }, [id, isNew, showToast])
+
+  useEffect(() => {
+    if (!uploadFile) {
+      setPreviewObjectUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(uploadFile)
+    setPreviewObjectUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [uploadFile])
+
+  const runAiFill = async () => {
+    setAnalyzing(true)
+    try {
+      let result
+      if (uploadFile) {
+        result = await api.analyzeQualFile(uploadFile)
+      } else if (!isNew && form.object_key) {
+        result = await api.analyzeQualExisting(id)
+      } else {
+        showToast('请先上传附件')
+        return
+      }
+      setForm((prev) => applyAiResult(prev, result))
+      showToast(result.source === 'ai' ? 'AI 已识别并填充表单' : '已根据附件内容填充（规则模式）')
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   const save = async () => {
     setSaving(true)
@@ -64,7 +114,11 @@ export default function QualificationDetailPage() {
     navigate('/admin/qualifications')
   }
 
-  const previewUrl = !isNew && form.object_key ? api.adminQualFileUrl(id, true) : null
+  const previewUrl = previewObjectUrl || (!isNew && form.object_key ? api.adminQualFileUrl(id, true) : null)
+  const previewType = uploadFile
+    ? (uploadFile.name.split('.').pop() || form.file_type)
+    : form.file_type
+  const canAnalyze = !!uploadFile || (!isNew && form.object_key)
 
   return (
     <>
@@ -98,16 +152,39 @@ export default function QualificationDetailPage() {
           </AdminFormSection>
           <AdminFormSection title="附件">
             <AdminField label={isNew ? '上传文件' : '替换文件'}>
-              <input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
+              <input
+                type="file"
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+                onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+              />
             </AdminField>
             {form.file_name ? <p className="muted">当前：{form.file_name}</p> : null}
+            {canAnalyze ? (
+              <div className="actions" style={{ marginTop: 8 }}>
+                <button type="button" className="secondary" disabled={analyzing} onClick={runAiFill}>
+                  {analyzing ? '识别中…' : 'AI 识别并填充'}
+                </button>
+              </div>
+            ) : null}
           </AdminFormSection>
         </div>
         <aside className="card-block">
           <h3>文件预览</h3>
-          <AdminFilePreview url={previewUrl} fileType={form.file_type} name={form.file_name || form.name} />
+          <AdminFilePreview url={previewUrl} fileType={previewType} name={form.file_name || form.name} />
         </aside>
       </div>
+      {canAnalyze ? (
+        <button
+          type="button"
+          className="floating-chat-btn"
+          disabled={analyzing}
+          onClick={runAiFill}
+          aria-label="AI 助手识别附件"
+        >
+          <span className="floating-chat-icon">AI</span>
+          <span className="floating-chat-label">{analyzing ? '识别中…' : 'AI 助手'}</span>
+        </button>
+      ) : null}
       <AdminConfirmDialog
         open={confirmDelete}
         title="删除资质"

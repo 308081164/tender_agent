@@ -369,7 +369,6 @@ def run_import(force: bool = False) -> dict:
             clear_base_data(db)
         import_company(db, base)
         import_fields(db, base)
-        import_templates(db, base)
         import_qualifications(db, base)
         import_checklist(db, base)
         import_faq(db, base)

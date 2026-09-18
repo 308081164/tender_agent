@@ -205,4 +205,46 @@ export const api = {
   deleteFaq: (id) => request(`/admin/faqs/${id}`, { method: 'DELETE' }),
   adminImport: (force = false) => request('/admin/import', { method: 'POST', body: JSON.stringify({ force }) }),
   adminExportSnapshot: () => request('/admin/export-snapshot'),
+  adminExportPack: async () => {
+    const res = await fetch(`${BASE}/admin/export-pack`)
+    if (!res.ok) {
+      let detail = ''
+      try { detail = await res.text() } catch { /* ignore */ }
+      throw new Error(detail || `导出失败 ${res.status}`)
+    }
+    return res.blob()
+  },
+  adminImportPack: async (file, force = true) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/admin/import-pack?force=${force ? 'true' : 'false'}`, { method: 'POST', body: fd })
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const data = await res.json()
+        detail = data.detail?.message || data.detail || JSON.stringify(data)
+      } catch {
+        detail = await res.text()
+      }
+      throw new Error(detail || `导入失败 ${res.status}`)
+    }
+    return res.json()
+  },
+  analyzeQualFile: async (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/admin/qualifications/analyze-file`, { method: 'POST', body: fd })
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const data = await res.json()
+        detail = data.detail?.message || data.detail || JSON.stringify(data)
+      } catch {
+        detail = await res.text()
+      }
+      throw new Error(detail || `识别失败 ${res.status}`)
+    }
+    return res.json()
+  },
+  analyzeQualExisting: (id) => request(`/admin/qualifications/${id}/analyze`, { method: 'POST' }),
 }

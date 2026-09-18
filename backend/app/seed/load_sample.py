@@ -209,10 +209,7 @@ def run_seed():
     print(f"[seed] sample_data = {root}")
     db = SessionLocal()
     try:
-        seed_templates(db, root)
-        seed_qualifications(db, root)
-        seed_checklist(db, root)
-        seed_faq(db, root)
+        # 新版本不再预置默认模板与演示数据，请通过迁移包导入
         seed_fields(db, root)
         print("[seed] done")
     finally:
