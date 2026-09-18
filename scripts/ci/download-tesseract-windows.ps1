@@ -7,7 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 
-$SetupUrl = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+# GitHub Releases 镜像（Mannheim 官网在 CI 环境常返回 403）
+$SetupUrl = "https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
 $SetupPath = Join-Path $env:TEMP "tesseract-setup.exe"
 $TessdataBestBase = "https://github.com/tesseract-ocr/tessdata_best/raw/main"
 
@@ -43,7 +44,8 @@ function Ensure-TessLangFile {
 }
 
 Write-Host "Downloading Tesseract from $SetupUrl"
-Invoke-WebRequest -Uri $SetupUrl -OutFile $SetupPath -UseBasicParsing
+$headers = @{ "User-Agent" = "TenderAgent-Desktop-Build/1.0" }
+Invoke-WebRequest -Uri $SetupUrl -OutFile $SetupPath -Headers $headers -UseBasicParsing
 
 $seven = Get-7Zip
 if (-not $seven) {
