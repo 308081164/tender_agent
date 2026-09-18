@@ -38,17 +38,52 @@ def get_company_summary(db: Session) -> dict[str, Any]:
     }
 
 
+_KIND_LABELS = {
+    "template": "工程化模板",
+    "history": "基于完整标书创建",
+    "skeleton": "基于空白模板创建",
+    "tender_doc": "招标文件",
+}
+
+
+def _template_brief(t: Template) -> dict[str, Any]:
+    ph = (t.placeholders or {}).get("list") or []
+    return {
+        "id": t.id,
+        "name": t.name,
+        "kind": t.kind or "template",
+        "kind_label": _KIND_LABELS.get(t.kind or "template", t.kind or "template"),
+        "enabled": bool(t.enabled),
+        "placeholder_count": len(ph),
+        "description": (t.description or "")[:200],
+        "created_at": t.created_at.isoformat() if t.created_at else "",
+    }
+
+
+def list_all_templates(db: Session, *, enabled_only: bool = False, limit: int = 50) -> list[dict[str, Any]]:
+    q = db.query(Template).filter(Template.kind != "tender_doc")
+    if enabled_only:
+        q = q.filter(Template.enabled.is_(True))
+    rows = q.order_by(Template.id.desc()).limit(limit).all()
+    return [_template_brief(t) for t in rows]
+
+
 def count_templates(db: Session) -> dict[str, Any]:
-    total = db.query(Template).count()
-    enabled = db.query(Template).filter(Template.enabled.is_(True)).count()
+    total = db.query(Template).filter(Template.kind != "tender_doc").count()
+    enabled = db.query(Template).filter(
+        Template.enabled.is_(True), Template.kind != "tender_doc"
+    ).count()
     by_kind: dict[str, int] = {}
-    for t in db.query(Template).all():
+    for t in db.query(Template).filter(Template.kind != "tender_doc").all():
         k = t.kind or "template"
         by_kind[k] = by_kind.get(k, 0) + 1
+    templates = list_all_templates(db, limit=30)
     return {
         "total": total,
         "enabled": enabled,
         "by_kind": by_kind,
+        "by_kind_labels": {k: _KIND_LABELS.get(k, k) for k in by_kind},
+        "templates": templates,
         "label": "标书模板/脚本",
     }
 
@@ -90,25 +125,16 @@ def search_projects(db: Session, query: str, limit: int = 8) -> list[dict[str, A
 
 def search_templates(db: Session, query: str, limit: int = 8) -> list[dict[str, Any]]:
     q = (query or "").strip()
-    templates = db.query(Template).order_by(Template.id.desc()).limit(80).all()
+    if not q:
+        return list_all_templates(db, limit=limit)
+    templates = db.query(Template).filter(Template.kind != "tender_doc").order_by(Template.id.desc()).limit(80).all()
     scored = []
     for t in templates:
         score = _fuzzy_score(q, f"{t.name} {t.description or ''}")
         if score >= 0.35:
             scored.append((score, t))
     scored.sort(key=lambda x: x[0], reverse=True)
-    out = []
-    for _, t in scored[:limit]:
-        ph = (t.placeholders or {}).get("list") or []
-        out.append({
-            "id": t.id,
-            "name": t.name,
-            "kind": t.kind,
-            "enabled": bool(t.enabled),
-            "placeholder_count": len(ph),
-            "created_at": t.created_at.isoformat() if t.created_at else "",
-        })
-    return out
+    return [_template_brief(t) for _, t in scored[:limit]]
 
 
 def _project_brief(p: TenderProject, db: Session, include_exports: bool = False) -> dict[str, Any]:

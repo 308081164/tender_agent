@@ -120,6 +120,26 @@ export const api = {
     request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
   searchMappingResources: (q = '') =>
     request(`/admin/mapping-resources${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  adminFieldModules: () => request('/admin/field-modules'),
+  getWorkflowPlan: (projectId) => request(`/projects/${projectId}/workflow-plan`),
+  guidedIntake: (projectId, answered = {}) =>
+    request(`/projects/${projectId}/guided-intake`, {
+      method: 'POST',
+      body: JSON.stringify({ answered }),
+    }),
+  previewTemplateMappingsPdf: async (id, mappings) => {
+    const res = await fetch(`${BASE}/admin/templates/${id}/preview-mappings.pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mappings }),
+    })
+    if (!res.ok) {
+      let detail = ''
+      try { detail = await res.text() } catch { /* ignore */ }
+      throw new Error(detail || `PDF 预览失败 ${res.status}`)
+    }
+    return URL.createObjectURL(await res.blob())
+  },
   applyTemplatePlaceholders: (id, mappings) =>
     request(`/admin/templates/${id}/apply-placeholders`, {
       method: 'POST',

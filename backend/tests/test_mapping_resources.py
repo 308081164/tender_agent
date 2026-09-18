@@ -1,8 +1,13 @@
-"""映射资源目录搜索测试。"""
+"""映射资源目录搜索与路由关键词测试。"""
 import json
 import re
 
 from app.services.mapping_resources import search_mapping_resources
+
+
+def test_list_templates_keyword_pattern():
+    q = "告诉我现在系统内有哪些模板"
+    assert re.search(r"(有哪些|有什么|列出|显示|查看|告诉我).*(模板|标书模板|脚本)", q)
 
 
 def test_search_mapping_resources_keyword():

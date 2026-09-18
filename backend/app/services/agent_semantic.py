@@ -14,6 +14,7 @@ INTENT_LABELS = [
     "teach",
     "query_company",
     "query_template_stats",
+    "list_templates",
     "query_recent_projects",
     "search_project",
     "search_template",
@@ -48,6 +49,9 @@ def _keyword_route(text: str) -> tuple[str, dict[str, Any], float]:
 
     if re.search(r"(多少|几个|数量|统计).*(模板|脚本|标书模板)", q) or re.search(r"(模板|脚本).*(多少|几个)", q):
         return "query_template_stats", {}, 0.88
+
+    if re.search(r"(有哪些|有什么|列出|显示|查看|告诉我).*(模板|标书模板|脚本)", q) or re.search(r"(模板|标书模板).*(有哪些|有什么|列表)", q):
+        return "list_templates", {}, 0.9
 
     if re.search(r"(最近|近一周|近7天|这周).*(标书|项目)", q):
         days = 7
@@ -276,6 +280,33 @@ async def process_with_semantic_router(
                 "tool_data": data,
                 "actions": [{"type": "link", "label": "模板管理", "url": "/admin/templates", "primary": True}],
             },
+        }
+
+    if intent == "list_templates" and confidence >= 0.5:
+        if db is None:
+            return None
+        templates = agent_query_tools.list_all_templates(db, limit=40)
+        data = {
+            "count": len(templates),
+            "templates": templates,
+            "fallback_answer": (
+                f"系统内共有 {len(templates)} 个可用模板（已排除招标文件）。"
+                if templates
+                else "系统内暂无模板，请前往「数据管理 → 模板」上传或工程化创建。"
+            ),
+        }
+        answer = await _synthesize(text, intent, data, hist, db)
+        actions = [{"type": "link", "label": "模板管理", "url": "/admin/templates", "primary": True}]
+        for i, t in enumerate(templates[:3]):
+            actions.append({
+                "type": "link",
+                "label": f"{t['name'][:16]}…" if len(t["name"]) > 16 else t["name"],
+                "url": "/admin/templates",
+            })
+        return {
+            "answer": answer,
+            "mode": "query",
+            "metadata": {"intent": intent, "tool_data": data, "actions": actions},
         }
 
     if intent == "query_recent_projects" and confidence >= 0.5:

@@ -760,6 +760,10 @@ class WritingRequirementsIn(BaseModel):
     requirements: str = ""
 
 
+class GuidedIntakeIn(BaseModel):
+    answered: dict[str, str] = {}
+
+
 @router.post("/projects/{project_id}/doc-review")
 async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
     """文档引擎 v2：LLM+规则全篇审阅（导出前预检）。"""
@@ -799,6 +803,40 @@ async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
     p.updated_at = datetime.utcnow()
     db.commit()
     return review
+
+
+@router.get("/projects/{project_id}/workflow-plan")
+def get_project_workflow_plan(project_id: int, db: Session = Depends(get_db)):
+    """根据所选模板返回工作流模式：占位符替换或 AI 创作。"""
+    from app.services.project_workflow import get_workflow_plan
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    plan = get_workflow_plan(db, p.template_id)
+    plan["project_id"] = p.id
+    plan["current_step"] = p.current_step
+    return plan
+
+
+@router.post("/projects/{project_id}/guided-intake")
+async def project_guided_intake(
+    project_id: int,
+    body: GuidedIntakeIn,
+    db: Session = Depends(get_db),
+):
+    """AI 审视模板并生成引导式信息收集问题。"""
+    from app.services.project_workflow import guided_intake_questions
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not p.template_id:
+        raise HTTPException(400, "请先选择模板")
+    fields = _fill_field_defaults(db, p.fields)
+    return await guided_intake_questions(
+        db, p.template_id, fields, answered=body.answered or {}
+    )
 
 
 @router.post("/projects/{project_id}/compose")
