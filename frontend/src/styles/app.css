@@ -722,6 +722,26 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 .inline-field-form input, .inline-field-form select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
 .inline-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .form-error { color: var(--danger); font-size: 12px; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.runtime-hint { font-size: 12px; margin: 0; padding: 8px; background: #f5f3ff; border-radius: 8px; }
+.processing-overlay {
+  position: fixed; inset: 0; z-index: 200; background: rgba(15,23,42,.42);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.processing-overlay.blocking { pointer-events: all; }
+.processing-overlay-card {
+  background: var(--surface); border-radius: 14px; padding: 28px 32px; max-width: 420px;
+  text-align: center; box-shadow: 0 20px 50px rgba(15,23,42,.2);
+}
+.processing-spinner {
+  width: 36px; height: 36px; margin: 0 auto 14px; border: 3px solid var(--line);
+  border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.workflow-mode-banner {
+  display: grid; gap: 4px; margin-bottom: 14px; padding: 12px 14px;
+  background: var(--primary-soft); border: 1px solid #bfdbfe; border-radius: 10px;
+}
 .engineer-doc-pane { min-height: 520px; }
 .engineer-side-pane { position: sticky; top: 12px; max-height: calc(100vh - 120px); overflow: auto; }
 .manual-map-box { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px; background: var(--surface-2); border-radius: 8px; }

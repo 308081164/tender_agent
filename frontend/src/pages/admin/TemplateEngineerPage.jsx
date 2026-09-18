@@ -54,6 +54,8 @@ export default function TemplateEngineerPage() {
   const [previewMode, setPreviewMode] = useState('mapping')
   const [pdfMeta, setPdfMeta] = useState({ pdf_available: false, pdf_engine: '' })
   const [pdfFailed, setPdfFailed] = useState(false)
+  const [mappedPdfUrl, setMappedPdfUrl] = useState('')
+  const [mappedPdfLoading, setMappedPdfLoading] = useState(false)
   const [createFieldFor, setCreateFieldFor] = useState(null)
 
   const catalogItems = useMemo(() => flattenCatalog(resourceCatalog), [resourceCatalog])
@@ -211,8 +213,41 @@ export default function TemplateEngineerPage() {
     }
   }
 
-  const pdfSrc = previewMode === 'pdf' && pdfMeta.pdf_available && !pdfFailed
-    ? api.adminTemplatePreviewPdfUrl(id)
+  const approvedMappings = useMemo(
+    () => mappings.filter((m) => m.approved && m.action !== 'keep'),
+    [mappings],
+  )
+
+  useEffect(() => {
+    if (previewMode !== 'pdf' || !approvedMappings.length) {
+      if (mappedPdfUrl) URL.revokeObjectURL(mappedPdfUrl)
+      setMappedPdfUrl('')
+      return undefined
+    }
+    let cancelled = false
+    setMappedPdfLoading(true)
+    api.previewTemplateMappingsPdf(id, approvedMappings)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        if (mappedPdfUrl) URL.revokeObjectURL(mappedPdfUrl)
+        setMappedPdfUrl(url)
+      })
+      .catch((e) => {
+        if (!cancelled) showToast(e.message || '占位符 PDF 生成失败')
+      })
+      .finally(() => {
+        if (!cancelled) setMappedPdfLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [previewMode, id, approvedMappings, showToast])
+
+  const pdfSrc = previewMode === 'pdf' && !pdfFailed
+    ? (mappedPdfUrl || (approvedMappings.length === 0 && pdfMeta.pdf_available
+      ? api.adminTemplatePreviewPdfUrl(id)
+      : null))
     : null
 
   return (
@@ -269,10 +304,10 @@ export default function TemplateEngineerPage() {
                 <button
                   type="button"
                   className={`filter-tab ${previewMode === 'pdf' ? 'active' : ''}`}
-                  disabled={!pdfMeta.pdf_available || pdfFailed}
+                  disabled={pdfFailed || (!approvedMappings.length && !pdfMeta.pdf_available)}
                   onClick={() => setPreviewMode('pdf')}
                 >
-                  PDF 分页预览
+                  占位符 PDF 预览
                 </button>
                 {previewMode === 'mapping' ? (
                   <div className="legend-items">
@@ -286,7 +321,9 @@ export default function TemplateEngineerPage() {
                 )}
               </div>
             </div>
-            {previewMode === 'pdf' && pdfSrc ? (
+            {previewMode === 'pdf' && mappedPdfLoading ? (
+              <div className="admin-loading">正在生成占位符 PDF 预览…</div>
+            ) : previewMode === 'pdf' && pdfSrc ? (
               <PdfPreview
                 src={pdfSrc}
                 title={tplName || '模板预览'}

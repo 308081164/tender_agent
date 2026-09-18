@@ -11,6 +11,7 @@ import PreviewModal from '../components/PreviewModal'
 import Step1TemplatePicker from '../components/Step1TemplatePicker'
 import StepNav from '../components/StepNav'
 import TableSlotsEditor from '../components/TableSlotsEditor'
+import ProcessingOverlay from '../components/ProcessingOverlay'
 
 export default function WizardPage() {
   const { id, step: stepParam } = useParams()
@@ -34,6 +35,10 @@ export default function WizardPage() {
   const [previewOpen, setPreviewOpen] = useState(false)
   const [writingRequirements, setWritingRequirements] = useState('')
   const [docReview, setDocReview] = useState(null)
+  const [workflowPlan, setWorkflowPlan] = useState(null)
+  const [guidedIntake, setGuidedIntake] = useState(null)
+  const [guidedAnswers, setGuidedAnswers] = useState({})
+  const [processing, setProcessing] = useState({ open: false, title: '', message: '' })
 
   const viewStep = Math.min(Math.max(parseInt(stepParam, 10) || 1, 1), 6)
   const currentStep = project?.current_step || 1
@@ -71,6 +76,45 @@ export default function WizardPage() {
       api.listExports(id).then(setExports).catch(() => setExports([]))
     }
   }, [id, project?.status, activeStep, lastSavedAt])
+
+  useEffect(() => {
+    if (!project?.id || activeStep !== 3) return
+    api.getWorkflowPlan(project.id)
+      .then((plan) => {
+        setWorkflowPlan(plan)
+        if (plan.mode === 'compose') {
+          api.guidedIntake(project.id, guidedAnswers)
+            .then(setGuidedIntake)
+            .catch(() => {})
+        }
+      })
+      .catch(() => {})
+  }, [project?.id, activeStep, selectedTpl])
+
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === selectedTpl) || null,
+    [templates, selectedTpl],
+  )
+
+  const buildRequirements = () => {
+    const parts = [writingRequirements.trim()]
+    Object.entries(guidedAnswers).forEach(([qid, val]) => {
+      if (val?.trim()) {
+        const q = (guidedIntake?.questions || []).find((x) => x.id === qid)
+        parts.push(`${q?.text || qid}：${val.trim()}`)
+      }
+    })
+    return parts.filter(Boolean).join('\n\n')
+  }
+
+  const withProcessing = async (title, message, fn) => {
+    setProcessing({ open: true, title, message })
+    try {
+      return await fn()
+    } finally {
+      setProcessing({ open: false, title: '', message: '' })
+    }
+  }
 
   const handleRollback = async (snapshotId) => {
     const p = await doRollback(snapshotId)
@@ -113,33 +157,68 @@ export default function WizardPage() {
   }
 
   const doGenerate = async () => {
-    setLoading(true)
-    try {
-      await api.saveProgress(project.id, { fields, current_step: 3, create_snapshot: true })
-      const p = await api.generate(project.id)
-      await applyProject(p)
-      showToast('AI 内容已生成并已自动保存')
-    } catch (e) {
-      showToast(e.message)
-    } finally {
-      setLoading(false)
-    }
+    await withProcessing(
+      'AI 正在生成章节…',
+      '正在根据模板与项目信息撰写内容，请勿离开本页。',
+      async () => {
+        setLoading(true)
+        try {
+          await api.saveProgress(project.id, { fields, current_step: 3, create_snapshot: true })
+          const p = await api.generate(project.id)
+          await applyProject(p)
+          showToast('AI 内容已生成并已自动保存')
+        } catch (e) {
+          showToast(e.message)
+        } finally {
+          setLoading(false)
+        }
+      },
+    )
   }
 
   const doCompose = async () => {
-    if (!writingRequirements.trim()) return showToast('请先填写编写要求（招标条款、评分点等）')
-    setLoading(true)
-    try {
-      const nextFields = { ...fields, _writing_requirements: writingRequirements }
-      await api.saveProgress(project.id, { fields: nextFields, current_step: 3, create_snapshot: true })
-      const res = await api.compose(project.id, writingRequirements)
-      await applyProject(res.project)
-      showToast(`创作模式已生成 ${(res.generated_keys || []).length} 个块`)
-    } catch (e) {
-      showToast(e.message)
-    } finally {
-      setLoading(false)
+    const requirements = buildRequirements()
+    if (!requirements.trim()) return showToast('请先回答引导问题或填写编写要求')
+    await withProcessing(
+      'AI 正在审视模板并创作…',
+      '系统正在结合模板结构、企业库与项目信息分块撰写，请勿关闭页面。',
+      async () => {
+        setLoading(true)
+        try {
+          const nextFields = { ...fields, _writing_requirements: requirements, _guided_answers: guidedAnswers }
+          await api.saveProgress(project.id, { fields: nextFields, current_step: 3, create_snapshot: true })
+          const res = await api.compose(project.id, requirements)
+          await applyProject(res.project)
+          showToast(`已生成 ${(res.generated_keys || []).length} 个内容块`)
+        } catch (e) {
+          showToast(e.message)
+        } finally {
+          setLoading(false)
+        }
+      },
+    )
+  }
+
+  const runWorkflowGenerate = async () => {
+    if (workflowPlan?.mode === 'replace' || workflowPlan?.skip_step3_generation) {
+      await withProcessing(
+        '正在确认占位符替换方案…',
+        '完整标书模板将在导出时自动替换占位符，请稍候。',
+        async () => {
+          setLoading(true)
+          try {
+            await saveStep({ advance: true, silent: true })
+            showToast('已确认：导出时将自动替换模板占位符')
+          } catch (e) {
+            showToast(e.message)
+          } finally {
+            setLoading(false)
+          }
+        },
+      )
+      return
     }
+    await doCompose()
   }
 
   const doDocReview = async () => {
@@ -171,6 +250,10 @@ export default function WizardPage() {
   }
 
   const confirmAi = async () => {
+    if (workflowPlan?.skip_step3_generation) {
+      await saveStep({ advance: true })
+      return
+    }
     if (!Object.keys(project.chapters || {}).length) return showToast('请先生成 AI 内容')
     await saveStep({ advance: true })
   }
@@ -361,43 +444,81 @@ export default function WizardPage() {
 
         {step === 3 && (
           <>
-            <h2>AI 内容生成与审核</h2>
-            <p className="lead">空白/结构模板请使用「智能创作」；已有章节模板可一键生成。引擎 v2 将按模板语义分块撰写。</p>
-            <div className="field full" style={{ marginBottom: 12 }}>
-              <label>编写要求（创作模式）</label>
-              <textarea
-                rows={4}
-                value={writingRequirements}
-                onChange={(e) => setWritingRequirements(e.target.value)}
-                placeholder="粘贴招标条款、评分点、工期/供货要求等，系统将结合企业库与项目信息分块创作…"
+            <h2>{workflowPlan?.mode === 'replace' ? '占位符替换确认' : 'AI 引导式内容创作'}</h2>
+            {workflowPlan ? (
+              <div className="workflow-mode-banner">
+                <strong>{workflowPlan.label}</strong>
+                <span className="muted">{workflowPlan.description}</span>
+                {selectedTemplate ? (
+                  <span className="muted">当前模板：{selectedTemplate.name}</span>
+                ) : null}
+              </div>
+            ) : null}
+            {workflowPlan?.mode === 'compose' ? (
+              <>
+                <p className="lead">系统已根据所选模板审视结构，请先补充以下项目信息，再开始 AI 创作（无需手动选择生成模式）。</p>
+                {(guidedIntake?.questions || []).map((q) => (
+                  <div className="field full" key={q.id}>
+                    <label>{q.text}</label>
+                    {q.hint ? <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>{q.hint}</div> : null}
+                    <textarea
+                      rows={2}
+                      value={guidedAnswers[q.id] || ''}
+                      onChange={(e) => setGuidedAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                      placeholder="请填写…"
+                    />
+                  </div>
+                ))}
+                <div className="field full" style={{ marginBottom: 12 }}>
+                  <label>补充编写要求（可选）</label>
+                  <textarea
+                    rows={3}
+                    value={writingRequirements}
+                    onChange={(e) => setWritingRequirements(e.target.value)}
+                    placeholder="可粘贴招标条款、评分点等特殊要求…"
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="lead">
+                您选择的是完整标书模板（含 {workflowPlan?.placeholder_count || 0} 个占位符）。
+                第 2 步填写的信息将在导出 Word 时自动替换对应占位符，本步无需 AI 盲写章节。
+              </p>
+            )}
+            {workflowPlan?.mode === 'compose' ? (
+              <TableSlotsEditor
+                projectId={project.id}
+                fields={fields}
+                loading={loading}
+                onChange={setFields}
+                onGenerate={async () => {
+                  const req = buildRequirements()
+                  if (!req.trim()) return showToast('请先填写引导问题')
+                  await withProcessing('AI 正在生成表格…', '请勿离开本页。', async () => {
+                    setLoading(true)
+                    try {
+                      const res = await api.generateTables(project.id, req)
+                      if (res.project?.fields) setFields(res.project.fields)
+                      showToast(`已生成 ${(res.table_binds || []).length} 个表格`)
+                    } catch (e) {
+                      showToast(e.message)
+                    } finally {
+                      setLoading(false)
+                    }
+                  })
+                }}
               />
-            </div>
-            <TableSlotsEditor
-              projectId={project.id}
-              fields={fields}
-              loading={loading}
-              onChange={setFields}
-              onGenerate={async () => {
-                if (!writingRequirements.trim()) return showToast('请先填写编写要求')
-                setLoading(true)
-                try {
-                  const res = await api.generateTables(project.id, writingRequirements)
-                  if (res.project?.fields) setFields(res.project.fields)
-                  showToast(`已生成 ${(res.table_binds || []).length} 个表格`)
-                } catch (e) {
-                  showToast(e.message)
-                } finally {
-                  setLoading(false)
-                }
-              }}
-            />
+            ) : null}
             <div className="actions" style={{ marginTop: 0, marginBottom: 16 }}>
-              <button onClick={doCompose} disabled={loading}>智能创作（空白模板）</button>
-              <button className="secondary" onClick={doGenerate} disabled={loading}>一键生成全部章节</button>
+              <button onClick={runWorkflowGenerate} disabled={loading}>
+                {workflowPlan?.mode === 'replace' ? '确认并进入资质插入' : '开始 AI 创作'}
+              </button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
             </div>
-            {Object.keys(project.chapters || {}).length === 0 ? (
-              <div className="empty">尚未生成内容，请点击上方按钮。</div>
+            {workflowPlan?.mode === 'replace' ? (
+              <div className="empty">占位符替换将在最终导出时执行，确认信息无误后点击上方按钮继续。</div>
+            ) : Object.keys(project.chapters || {}).length === 0 ? (
+              <div className="empty">尚未生成内容，请填写引导信息后点击「开始 AI 创作」。</div>
             ) : (
               Object.entries(project.chapters).map(([key, val]) => (
                 <div className="chapter" key={key}>
@@ -415,7 +536,12 @@ export default function WizardPage() {
             <div className="actions">
               <button className="secondary" onClick={() => goStep(2)}>返回修改信息</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
-              <button onClick={confirmAi} disabled={loading || !Object.keys(project.chapters || {}).length}>
+              <button
+                onClick={confirmAi}
+                disabled={loading || (
+                  !workflowPlan?.skip_step3_generation && !Object.keys(project.chapters || {}).length
+                )}
+              >
                 保存并进入资质插入
               </button>
             </div>
@@ -595,6 +721,12 @@ export default function WizardPage() {
           </>
         )}
       </div>
+
+      <ProcessingOverlay
+        open={processing.open || (loading && activeStep === 3)}
+        title={processing.title || '正在处理…'}
+        message={processing.message || '请勿关闭或离开当前页面，以免任务中断。'}
+      />
 
       {previewOpen && (
         <PreviewModal

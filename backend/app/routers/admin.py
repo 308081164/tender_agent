@@ -294,6 +294,27 @@ def get_field(field_id: int, db: Session = Depends(get_db)):
     return field_dict(f)
 
 
+@router.get("/field-modules")
+def list_field_modules(db: Session = Depends(get_db)):
+    """字段定义可选模块列表（供现场创建字段下拉选择）。"""
+    presets = [
+        "基本信息", "项目信息", "投标报价", "工期与服务", "人员配置",
+        "企业档案", "资质材料", "临场填写", "其他",
+    ]
+    existing = [
+        row[0] for row in db.query(FieldDef.module).distinct().all()
+        if row[0] and str(row[0]).strip()
+    ]
+    modules = []
+    seen = set()
+    for m in presets + sorted(existing):
+        m = str(m).strip()
+        if m and m not in seen:
+            seen.add(m)
+            modules.append(m)
+    return {"modules": modules}
+
+
 @router.post("/fields")
 def create_field(body: FieldIn, db: Session = Depends(get_db)):
     if db.query(FieldDef).filter(FieldDef.key == body.key).first():
@@ -643,6 +664,49 @@ def preview_template_mappings(
     }
 
 
+@router.post("/templates/{template_id}/preview-mappings.pdf")
+def preview_template_mappings_pdf(
+    template_id: int,
+    body: PreviewMappingsIn,
+    db: Session = Depends(get_db),
+):
+    """将当前映射应用到临时文档并转为 PDF，便于查看占位符效果（不写入模板）。"""
+    t = _get_template_or_404(db, template_id)
+    if not t.object_key:
+        raise HTTPException(400, "模板文件不存在")
+    data = storage.download_bytes(t.object_key)
+    mappings = [m.model_dump() for m in body.mappings]
+    mapped_bytes, _, _ = template_detect.apply_placeholder_mappings(data, mappings, highlight=False)
+    try:
+        pdf_bytes = pdf_convert.convert_docx_to_pdf(mapped_bytes)
+    except RuntimeError as err:
+        raise HTTPException(503, str(err)) from err
+    pdf_name = quote(f"{t.name or 'template'}-mapped-preview.pdf")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{pdf_name}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _regenerate_template_pdf(docx_bytes: bytes, object_key: str) -> None:
+    """工程化完成后生成/更新 PDF 预览缓存。"""
+    pdf_key = pdf_convert.pdf_object_key(object_key)
+    try:
+        if storage.object_exists(pdf_key):
+            storage.delete_object(pdf_key)
+    except Exception:
+        pass
+    try:
+        pdf_bytes = pdf_convert.convert_docx_to_pdf(docx_bytes)
+        storage.upload_bytes(pdf_key, pdf_bytes, "application/pdf")
+    except Exception:
+        pass
+
+
 @router.post("/templates/{template_id}/detect-placeholders")
 async def detect_template_placeholders(template_id: int, db: Session = Depends(get_db)):
     """使用 LLM + 规则从完整标书中识别可模板化的字段原文。"""
@@ -703,7 +767,10 @@ async def apply_template_placeholders(
         ph_meta = attach_manifest_to_template(ph_meta, manifest)
     except Exception:
         pass
+    _regenerate_template_pdf(new_bytes, new_key)
+    ph_meta["pdf_preview_ready"] = True
     t.placeholders = ph_meta
+    flag_modified(t, "placeholders")
     t.source_snapshot = {**(t.source_snapshot or {}), **snapshot}
     if body.kind:
         t.kind = body.kind
@@ -714,6 +781,9 @@ async def apply_template_placeholders(
     if old_key and old_key != new_key:
         try:
             storage.delete_object(old_key)
+            old_pdf = pdf_convert.pdf_object_key(old_key)
+            if storage.object_exists(old_pdf):
+                storage.delete_object(old_pdf)
         except Exception:
             pass
     return {
@@ -721,6 +791,7 @@ async def apply_template_placeholders(
         "applied_count": len(snapshot),
         "placeholders": placeholders,
         "source_snapshot": snapshot,
+        "pdf_preview_ready": True,
     }
 
 
