@@ -17,3 +17,5 @@ customer_data/**/manifest.json
 .build/
 vendor/aspose-words/
 .build/
+release/TenderAgentSetup*.exe
+release/TenderAgentSetup.exe

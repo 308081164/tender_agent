@@ -1,13 +1,23 @@
 {
-  "version": "1.1.0",
-  "display_version": "v1.1.0",
-  "built_at": "2026-09-12T12:06:19Z",
+  "version": "1.1.0.69",
+  "display_version": "v1.1.0.69",
+  "built_at": "2026-09-18T03:40:23Z",
+  "commit": "0f93286",
+  "build_number": 69,
   "deepseek_default_model": "deepseek-v4-pro",
   "doc_engine": "v2",
+  "github_release": "https://github.com/308081164/tender_agent/releases/tag/desktop-v1.1.0.69",
   "artifacts": {
-    "windows_installer": "TenderAgentSetup-v1.1.0.exe",
-    "user_manual": "tender-agent-manual-v1.1.0.md",
-    "docs_zip": "tender-agent-release-v1.1.0.zip",
-    "test_materials_zip": "tender-agent-test-materials-v1.1.0.zip"
-  }
+    "windows_installer": "TenderAgentSetup-v1.1.0.69.exe",
+    "windows_installer_ci": "TenderAgentSetup-1.1.0.69-0f93286.exe",
+    "user_manual": "tender-agent-manual-v1.1.0.69.md",
+    "docs_zip": "tender-agent-release-v1.1.0.69.zip",
+    "test_materials_zip": "tender-agent-test-materials-v1.1.0.69.zip"
+  },
+  "changelog_highlights": [
+    "模板工程化 AI 映射决策（字段/资质/临场填写）",
+    "映射资源关键词搜索与现场创建字段",
+    "工程化工作台 PDF 分页预览",
+    "区分 bid_date 与 duration，减少 tender_no 误匹配"
+  ]
 }
