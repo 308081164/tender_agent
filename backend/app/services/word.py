@@ -463,7 +463,12 @@ def simulate_mapping_preview(paragraphs: list[dict], mappings: list[dict]) -> li
             original = m.get("original_text") or ""
             key = m.get("key") or ""
             if original and original in display:
-                display = display.replace(original, f"{{{{{key}}}}}")
+                if m.get("bind_type") == "qual":
+                    qid = m.get("qualification_id") or key
+                    placeholder = f"【QUAL_SLOT:{qid}】"
+                else:
+                    placeholder = f"{{{{{key}}}}}"
+                display = display.replace(original, placeholder)
                 applied_keys.append(key)
         item = dict(p)
         item["display_text"] = display

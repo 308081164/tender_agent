@@ -682,7 +682,46 @@ input.desensitized { outline: 1px solid #f0c040; background: #fffbeb; }
 .engineer-step.done { border-color: #c7d7fe; }
 .step-no { width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 750; }
 .engineer-step.active .step-no { background: var(--primary); border-color: var(--primary); color: #fff; }
-.engineer-workbench { display: grid; grid-template-columns: 1fr 360px; gap: 16px; align-items: start; }
+.engineer-workbench { display: grid; grid-template-columns: 1fr 400px; gap: 16px; align-items: start; }
+.engineer-preview-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mapping-stats-bar { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.mapping-stats-bar .stat { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.mapping-stats-bar .stat.matched { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+.mapping-stats-bar .stat.low { background: #fffbeb; border-color: #fcd34d; color: #b45309; }
+.mapping-stats-bar .stat.unresolved { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
+.mapping-stats-bar .stat.runtime { background: #f5f3ff; border-color: #c4b5fd; color: #6d28d9; }
+.match-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: auto; }
+.match-badge.matched { background: #ecfdf5; color: #047857; }
+.match-badge.low_confidence { background: #fffbeb; color: #b45309; }
+.match-badge.unresolved { background: #fef2f2; color: #b91c1c; }
+.match-badge.runtime { background: #f5f3ff; color: #6d28d9; }
+.mapping-edit-item.status-low_confidence { border-color: #fcd34d; }
+.mapping-edit-item.status-unresolved { border-color: #fca5a5; background: #fffafa; }
+.mapping-edit-item.status-runtime { border-color: #c4b5fd; }
+.mapping-edit-head { align-items: center; gap: 8px; }
+.mapping-reason { font-size: 11px; margin-bottom: 4px; }
+.create-field-btn { margin-bottom: 6px; color: var(--primary); border-color: var(--primary); }
+.mapping-resource-picker { position: relative; margin: 6px 0; }
+.mapping-picker-input-wrap { position: relative; }
+.mapping-picker-search { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.mapping-picker-loading { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.mapping-picker-dropdown { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); max-height: 220px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,.12); }
+.mapping-picker-option { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 0; background: transparent; cursor: pointer; font-size: 12px; }
+.mapping-picker-option:hover, .mapping-picker-option.active { background: var(--primary-soft); }
+.mapping-picker-label { line-height: 1.4; }
+.mapping-picker-empty { padding: 10px; font-size: 12px; }
+.mapping-picker-fallback { display: none; }
+.bind-tag { flex-shrink: 0; font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+.bind-tag.bind-field { background: #e0f2fe; color: #0369a1; }
+.bind-tag.bind-qual { background: #fef3c7; color: #b45309; }
+.bind-tag.bind-runtime { background: #ede9fe; color: #6d28d9; }
+.inline-modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.inline-modal { width: min(440px, 100%); }
+.inline-field-form { display: grid; gap: 10px; margin-top: 12px; }
+.inline-field-form label { display: grid; gap: 4px; font-size: 13px; }
+.inline-field-form input, .inline-field-form select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.inline-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.form-error { color: var(--danger); font-size: 12px; }
 .engineer-doc-pane { min-height: 520px; }
 .engineer-side-pane { position: sticky; top: 12px; max-height: calc(100vh - 120px); overflow: auto; }
 .manual-map-box { display: grid; gap: 8px; margin-bottom: 12px; padding: 10px; background: var(--surface-2); border-radius: 8px; }

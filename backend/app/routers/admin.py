@@ -22,6 +22,7 @@ from app.models import (
     FAQItem,
 )
 from app.services import storage, word, pdf_convert, template_detect
+from app.services.mapping_resources import build_mapping_resource_catalog, search_mapping_resources
 from app.seed.import_customer_pack import run_import
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -585,6 +586,8 @@ class PlaceholderMappingIn(BaseModel):
     approved: bool = True
     action: str = "replace"  # replace | keep
     field_name: str = ""
+    bind_type: str = "field"  # field | qual | runtime
+    qualification_id: int | None = None
 
 
 class ApplyPlaceholdersIn(BaseModel):
@@ -595,6 +598,26 @@ class ApplyPlaceholdersIn(BaseModel):
 
 class PreviewMappingsIn(BaseModel):
     mappings: list[PlaceholderMappingIn]
+
+
+@router.get("/mapping-resources")
+def list_mapping_resources(
+    q: str = "",
+    db: Session = Depends(get_db),
+):
+    """工程化映射可选资源目录（字段定义、企业档案、资质库、FAQ、临场填写），支持关键词搜索。"""
+    catalog = build_mapping_resource_catalog(db)
+    items = search_mapping_resources(catalog, q, limit=60) if q else (catalog.get("all_bindable") or [])[:60]
+    return {
+        "items": items,
+        "field_keys": catalog.get("field_keys") or [],
+        "counts": {
+            "fields": len(catalog.get("fields") or []),
+            "qualifications": len(catalog.get("qualifications") or []),
+            "company": len(catalog.get("company") or []),
+            "faqs": len(catalog.get("faqs") or []),
+        },
+    }
 
 
 @router.post("/templates/{template_id}/preview-mappings")

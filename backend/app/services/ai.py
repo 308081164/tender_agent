@@ -246,18 +246,22 @@ async def detect_placeholder_candidates(
     if not document_text.strip() or not field_defs:
         return []
 
-    catalog = json.dumps(field_defs[:80], ensure_ascii=False)
+    catalog = json.dumps(field_defs[:100], ensure_ascii=False)
     prompt = (
         "你是铁路/轨道交通行业标书模板工程化专家。"
         "请分析文档正文，找出应替换为模板占位符的具体原文片段。\n\n"
-        f"可用字段目录（key 必须从中选择）：\n{catalog}\n\n"
+        f"可用字段目录（key 优先从中选择）：\n{catalog}\n\n"
         f"文档正文（节选）：\n{document_text[:14000]}\n\n"
-        "要求：\n"
-        "1. original_text 必须是文档中可精确搜索到的连续原文，优先较长片段\n"
-        "2. 同一 key 可有多处，但避免过短（<4字）或泛化词\n"
-        "3. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason\n"
-        "4. 只返回 JSON，不要 markdown 代码块\n"
-        "5. 最多 25 项，按 confidence 降序"
+        "识别规则（务必遵守）：\n"
+        "1. original_text 必须是文档中可精确搜索的连续原文，优先较长片段，禁止 Word 域代码（如 PAGE \\*、TOC、HYPERLINK）\n"
+        "2. tender_no 仅用于「招标编号/项目编号/采购编号」语境，不要把页码、包件序号、表格序号、型号编号一律标为 tender_no\n"
+        "3. package_no 用于包件号/标段号；project_name 用于完整项目名称\n"
+        "4. bid_date/sign_date 用于确定日期（如 2025年7月1日）；duration 用于工期/供货期（如 90日历天、6个月），不要混淆\n"
+        "5. 金额用 bid_amount；电话 phone；邮编 postcode；法人 legal_name\n"
+        "6. 若原文更适合资质材料插入位，bind_type 设为 qual 并给出 key=qual_<id>（若目录无则 bind_type=field）\n"
+        "7. 若需立项时临场决策填写，bind_type=runtime，key=runtime_custom 或建议新 key\n"
+        "8. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason, bind_type, value_type(日期/工期/金额/文本)\n"
+        "9. 只返回 JSON，不要 markdown；最多 30 项"
     )
     raw = await chat_completion([
         {"role": "system", "content": "你是标书模板工程化助手，只输出合法 JSON 数组。"},
@@ -267,6 +271,69 @@ async def detect_placeholder_candidates(
         return []
     from app.services.template_detect import parse_llm_candidate_json
     return parse_llm_candidate_json(raw)
+
+
+async def resolve_placeholder_mappings(
+    candidates: list[dict],
+    resource_catalog: dict,
+    document_text: str = "",
+    db: Session | None = None,
+) -> list[dict]:
+    """结合系统字段/资质/企业档案目录，为候选原文二次决策映射目标。"""
+    import json
+
+    if not candidates:
+        return []
+
+    fields = (resource_catalog.get("fields") or [])[:80]
+    quals = (resource_catalog.get("qualifications") or [])[:40]
+    runtime = resource_catalog.get("runtime") or []
+    compact_fields = [
+        {k: v for k, v in item.items() if k in ("key", "name", "field_type", "module", "required")}
+        for item in fields
+    ]
+    compact_quals = [
+        {k: v for k, v in item.items() if k in ("id", "key", "name", "category", "keywords", "section_hint")}
+        for item in quals
+    ]
+    payload = json.dumps(candidates[:40], ensure_ascii=False)
+    prompt = (
+        "你是标书模板工程化映射专家。请为下列「原文片段」选择最合适的系统字段或材料绑定。\n\n"
+        f"字段定义目录：\n{json.dumps(compact_fields, ensure_ascii=False)}\n\n"
+        f"资质材料目录：\n{json.dumps(compact_quals, ensure_ascii=False)}\n\n"
+        f"临场填写选项：\n{json.dumps(runtime, ensure_ascii=False)}\n\n"
+        f"待映射候选：\n{payload}\n\n"
+        f"文档上下文（节选）：\n{document_text[:6000]}\n\n"
+        "决策规则：\n"
+        "1. 保留 original_text 不变；为每项输出最终 key、field_name、bind_type(field|qual|runtime)、confidence、reason\n"
+        "2. tender_no 仅用于招标编号语境；日期用 bid_date；工期用 duration；不要滥用 tender_no\n"
+        "3. 资质章节中的证照名称优先 bind_type=qual 并填 qualification_id\n"
+        "4. 无合适字段时 bind_type=runtime，并给出 suggested_field{name,key,field_type,module}\n"
+        "5. 返回与候选数量相同的 JSON 数组，只输出 JSON"
+    )
+    raw = await chat_completion([
+        {"role": "system", "content": "你是标书映射决策助手，只输出合法 JSON 数组。"},
+        {"role": "user", "content": prompt},
+    ], db=db)
+    if not raw:
+        return candidates
+    from app.services.template_detect import parse_resolve_json
+    resolved = parse_resolve_json(raw)
+    if not resolved:
+        return candidates
+    by_text = {(r.get("original_text") or "").strip(): r for r in resolved if r.get("original_text")}
+    merged = []
+    for c in candidates:
+        ot = (c.get("original_text") or "").strip()
+        hit = by_text.get(ot)
+        if hit:
+            item = {**c, **hit, "source": c.get("source", "ai"), "resolved_by_ai": True}
+            if hit.get("bind_type") == "qual" and hit.get("qualification_id"):
+                item["qualification_id"] = hit["qualification_id"]
+            merged.append(item)
+        else:
+            merged.append(c)
+    return merged
 
 
 async def test_provider(provider: str, db: Session | None = None) -> dict:
