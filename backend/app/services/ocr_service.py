@@ -11,15 +11,15 @@ from xml.etree import ElementTree
 
 
 def _bundled_tesseract_paths() -> tuple[str | None, str | None]:
-    """桌面安装包内置 Tesseract 路径。"""
+    """桌面安装包内置 Tesseract 路径 (exe, TESSDATA_PREFIX 根目录)。"""
     install = os.environ.get("TENDER_INSTALL_DIR", "").strip()
     if not install:
         return None, None
     root = Path(install) / "tools" / "tesseract"
     exe = root / "tesseract.exe"
     tessdata = root / "tessdata"
-    if exe.is_file():
-        return str(exe), str(tessdata) if tessdata.is_dir() else None
+    if exe.is_file() and tessdata.is_dir():
+        return str(exe), str(root)
     return None, None
 
 
@@ -40,26 +40,6 @@ def resolve_tesseract_cmd() -> str | None:
     return None
 
 
-def ocr_runtime_status() -> dict[str, object]:
-    cmd = resolve_tesseract_cmd()
-    tessdata = os.environ.get("TESSDATA_PREFIX", "").strip()
-    if not tessdata:
-        _, bundled_data = _bundled_tesseract_paths()
-        tessdata = bundled_data or ""
-    langs = []
-    if tessdata and os.path.isdir(tessdata):
-        langs = [p.stem for p in Path(tessdata).glob("*.traineddata")]
-    return {
-        "tesseract_available": bool(cmd),
-        "tesseract_cmd": cmd or "",
-        "tessdata_prefix": tessdata,
-        "languages": sorted(langs)[:20],
-        "chi_sim": "chi_sim" in langs,
-        "pillow_available": _pillow_available(),
-        "pytesseract_available": _pytesseract_available(),
-    }
-
-
 def _pillow_available() -> bool:
     try:
         import PIL  # noqa: F401
@@ -74,6 +54,43 @@ def _pytesseract_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def _pypdf_available() -> bool:
+    try:
+        import pypdf  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def ocr_runtime_status() -> dict[str, object]:
+    cmd = resolve_tesseract_cmd()
+    prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if not prefix:
+        _, bundled_prefix = _bundled_tesseract_paths()
+        prefix = bundled_prefix or ""
+    tessdata_dir = Path(prefix) / "tessdata" if prefix else Path()
+    langs = []
+    if tessdata_dir.is_dir():
+        langs = [p.stem for p in tessdata_dir.glob("*.traineddata")]
+    pillow = _pillow_available()
+    pytess = _pytesseract_available()
+    pypdf = _pypdf_available()
+    tesseract_ready = bool(cmd) and pillow and pytess
+    fallback_ready = pillow and (pypdf or True)  # docx 文本提取不依赖 pypdf
+    return {
+        "tesseract_available": tesseract_ready,
+        "tesseract_cmd": cmd or "",
+        "tessdata_prefix": prefix,
+        "languages": sorted(langs)[:20],
+        "chi_sim": "chi_sim" in langs,
+        "pillow_available": pillow,
+        "pytesseract_available": pytess,
+        "pypdf_available": pypdf,
+        "fallback_text_extraction": fallback_ready,
+        "ocr_capable": tesseract_ready or fallback_ready,
+    }
 
 
 def _configure_tesseract() -> bool:
@@ -105,13 +122,26 @@ def _docx_text(data: bytes) -> str:
         return ""
 
 
+def _pdf_text(data: bytes) -> str:
+    try:
+        from pypdf import PdfReader  # type: ignore
+        reader = PdfReader(BytesIO(data))
+        parts = []
+        for page in reader.pages[:30]:
+            t = page.extract_text() or ""
+            if t.strip():
+                parts.append(t.strip())
+        return re.sub(r"\s+", " ", " ".join(parts)).strip()
+    except Exception:
+        return ""
+
+
 def _image_ocr(data: bytes) -> str:
     if not _configure_tesseract():
         return ""
     try:
         from PIL import Image  # type: ignore
         import pytesseract  # type: ignore
-
         img = Image.open(BytesIO(data))
         text = pytesseract.image_to_string(img, lang="chi_sim+eng")
         return re.sub(r"\s+", " ", (text or "").strip())
@@ -140,7 +170,7 @@ def extract_text_from_file(
     elif ftype == "docx":
         body = _docx_text(data)
     elif ftype == "pdf":
-        body = ""
+        body = _pdf_text(data)
 
     if body:
         parts.append(body)

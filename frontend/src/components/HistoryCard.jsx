@@ -1,7 +1,7 @@
 import React from 'react'
 import { formatTime } from '../utils/format'
 
-export default function HistoryCard({ project, onOpen, onPreview }) {
+export default function HistoryCard({ project, onOpen, onPreview, onDelete }) {
   const s = project.summary || {}
   const progressPct = Math.round((s.progress || (project.current_step || 1) / 6) * 100)
   const exported = project.status === 'exported'
@@ -49,6 +49,16 @@ export default function HistoryCard({ project, onOpen, onPreview }) {
           >
             继续编辑
           </button>
+          {onDelete ? (
+            <button
+              type="button"
+              className="ghost danger-text"
+              style={{ padding: '4px 12px', fontSize: 12 }}
+              onClick={() => onDelete(project)}
+            >
+              删除
+            </button>
+          ) : null}
         </div>
       </div>
     </article>

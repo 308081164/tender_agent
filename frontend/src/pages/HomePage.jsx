@@ -1,15 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
+import { api } from '../api/client'
 import PreviewModal from '../components/PreviewModal'
+import AdminConfirmDialog from '../components/admin/AdminConfirmDialog'
 import { formatTime } from '../utils/format'
 import { STEPS } from '../constants'
 
 export default function HomePage() {
   const navigate = useNavigate()
-  const { projects, refreshProjects, showToast, bootLoading } = useApp()
+  const { projects, refreshProjects, showToast, bootLoading, startNew } = useApp()
   const [homeFilter, setHomeFilter] = useState('all')
   const [previewTarget, setPreviewTarget] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     refreshProjects().catch((e) => showToast(e.message))
@@ -26,7 +30,20 @@ export default function HomePage() {
     navigate(`/projects/${p.id}/step/${step}`)
   }
 
-  const startNew = () => navigate('/projects/new')
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return
+    setDeleting(true)
+    try {
+      await api.deleteProject(deleteTarget.id)
+      await refreshProjects()
+      showToast(`已删除「${deleteTarget.summary?.project_name || deleteTarget.title || '标书'}」`)
+      setDeleteTarget(null)
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const stats = {
     all: projects.length,
@@ -96,8 +113,8 @@ export default function HomePage() {
                   <th>当前步骤</th>
                   <th>状态</th>
                   <th>更新时间</th>
-                  <th style={{ width: 140 }}></th>
-                  </tr>
+                  <th style={{ width: 180 }}></th>
+                </tr>
               </thead>
               <tbody>
                 {filteredProjects.map((p) => {
@@ -129,6 +146,13 @@ export default function HomePage() {
                           <button type="button" className="ghost tiny" onClick={() => openProject(p)}>
                             继续
                           </button>
+                          <button
+                            type="button"
+                            className="ghost tiny danger-text"
+                            onClick={() => setDeleteTarget(p)}
+                          >
+                            删除
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -147,6 +171,17 @@ export default function HomePage() {
           showToast={showToast}
         />
       )}
+      <AdminConfirmDialog
+        open={!!deleteTarget}
+        title="删除标书"
+        message={deleteTarget
+          ? `确认删除「${deleteTarget.summary?.project_name || deleteTarget.title || '标书'}」？删除后无法恢复。`
+          : ''}
+        confirmLabel={deleting ? '删除中…' : '确认删除'}
+        danger
+        onCancel={() => { if (!deleting) setDeleteTarget(null) }}
+        onConfirm={confirmDelete}
+      />
     </>
   )
 }

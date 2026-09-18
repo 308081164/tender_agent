@@ -10,7 +10,6 @@ from app.config import IS_DESKTOP, ROOT, get_settings
 from app.database_migrate import ensure_schema
 from app.routers import api, admin, onlyoffice
 from app.seed.load_sample import run_seed
-from app.seed.import_customer_pack import run_import, pack_root
 from app.services.aspose_runtime import ensure_license
 
 settings = get_settings()
@@ -21,17 +20,9 @@ async def lifespan(app: FastAPI):
     ensure_license(settings.aspose_license_path)
     ensure_schema()
     try:
-        root = pack_root()
-        if settings.prefer_customer_pack and (root / "engineered_templates").exists():
-            run_import(force=False)
-        else:
-            run_seed()
+        run_seed()
     except Exception as e:
-        print(f"[startup] seed/import warning: {e}")
-        try:
-            run_seed()
-        except Exception as e2:
-            print(f"[startup] sample seed warning: {e2}")
+        print(f"[startup] seed warning: {e}")
     yield
 
 

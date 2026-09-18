@@ -38,6 +38,8 @@ try {
   Assert-PathExists (Join-Path $InstallDir "frontend\dist\index.html") "frontend index.html"
   Assert-PathExists (Join-Path $InstallDir "tools\postgres\bin\initdb.exe") "PostgreSQL initdb"
   Assert-PathExists (Join-Path $InstallDir "tools\minio.exe") "MinIO"
+  Assert-PathExists (Join-Path $InstallDir "tools\tesseract\tesseract.exe") "Tesseract OCR"
+  Assert-PathExists (Join-Path $InstallDir "tools\tesseract\tessdata\chi_sim.traineddata") "Tesseract chi_sim"
 
   Write-Host "==> Python embed self-test"
   $env:PYTHONHOME = Join-Path $InstallDir "runtime"

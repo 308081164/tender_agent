@@ -6,7 +6,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session
@@ -24,6 +24,9 @@ from app.models import (
 from app.services import storage, word, pdf_convert, template_detect
 from app.services.mapping_resources import build_mapping_resource_catalog, search_mapping_resources
 from app.seed.import_customer_pack import run_import
+from app.services.migration_pack import export_pack, import_pack
+from app.services.qual_extract import analyze_qualification_file
+from app.services.ocr_service import extract_text_from_file
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -508,7 +511,7 @@ async def admin_upload_template(
     storage.upload_bytes(
         key, data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    ph_list = word.extract_placeholders(data)
+    ph_list = word.safe_extract_placeholders(data)
     ph_meta: dict = {"list": ph_list}
     upload_desc = {
         "history": "基于完整标书上传：需在工程化工作台标记项目名称、招标编号、金额等大量可变字段。",
@@ -862,6 +865,36 @@ def admin_list_quals(
     return _paginate(query, page, page_size, qual_dict)
 
 
+@router.post("/qualifications/analyze-file")
+async def analyze_qual_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """上传附件并由 AI 识别资质字段，用于智能填表。"""
+    data = await file.read()
+    fname = file.filename or "attachment.bin"
+    ftype = fname.rsplit(".", 1)[-1].lower() if "." in fname else "bin"
+    try:
+        result = await analyze_qualification_file(data, fname, ftype, db=db)
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"附件识别失败: {e}") from e
+
+
+@router.post("/qualifications/{qual_id}/analyze")
+async def analyze_qual_existing(qual_id: int, db: Session = Depends(get_db)):
+    """对已上传的资质附件进行 AI 识别。"""
+    q = db.query(Qualification).filter(Qualification.id == qual_id).first()
+    if not q:
+        raise HTTPException(404, "资质不存在")
+    if not q.object_key:
+        raise HTTPException(400, "请先上传附件")
+    data = storage.download_bytes(q.object_key)
+    fname = q.file_name or q.name or "attachment.bin"
+    ftype = q.file_type or (fname.rsplit(".", 1)[-1] if "." in fname else "bin")
+    try:
+        return await analyze_qualification_file(data, fname, ftype, db=db)
+    except Exception as e:
+        raise HTTPException(500, f"附件识别失败: {e}") from e
+
+
 @router.get("/qualifications/{qual_id}")
 def get_qual(qual_id: int, db: Session = Depends(get_db)):
     q = db.query(Qualification).filter(Qualification.id == qual_id).first()
@@ -950,7 +983,6 @@ async def replace_qual_file(qual_id: int, file: UploadFile = File(...), db: Sess
     q.object_key = key
     q.file_name = fname
     q.file_type = (fname.rsplit(".", 1)[-1] if "." in fname else q.file_type)
-    from app.services.ocr_service import extract_text_from_file
     ocr = extract_text_from_file(
         data, q.file_type, name=q.name, keywords=q.keywords, category=q.category,
     )
@@ -1151,3 +1183,36 @@ def export_snapshot(db: Session = Depends(get_db)):
         "faqs": [faq_dict(f) for f in db.query(FAQItem).all()],
         "exported_at": datetime.utcnow().isoformat(),
     }
+
+
+@router.get("/export-pack")
+def export_migration_pack(db: Session = Depends(get_db)):
+    """一键导出迁移包（含附件 ZIP）。"""
+    try:
+        data = export_pack(db)
+    except Exception as e:
+        raise HTTPException(500, f"导出失败: {e}") from e
+    fname = f"tender-agent-migration-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.zip"
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+    )
+
+
+@router.post("/import-pack")
+async def import_migration_pack(
+    file: UploadFile = File(...),
+    force: bool = True,
+    db: Session = Depends(get_db),
+):
+    """从迁移包 ZIP 恢复基础数据（含附件）。"""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "迁移包为空")
+    try:
+        return import_pack(db, data, force=force)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"导入失败: {e}") from e

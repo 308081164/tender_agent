@@ -467,6 +467,24 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     return project_to_dict(p)
 
 
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: int, db: Session = Depends(get_db)):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    for e in list(p.exports or []):
+        try:
+            storage.delete_object(e.object_key)
+            pdf_key = pdf_convert.pdf_object_key(e.object_key)
+            if storage.object_exists(pdf_key):
+                storage.delete_object(pdf_key)
+        except Exception:
+            pass
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/projects/{project_id}/save")
 def save_progress(project_id: int, body: SaveProgressRequest, db: Session = Depends(get_db)):
     """每步保存：持久化当前内容并创建快照，可选进入下一步。"""

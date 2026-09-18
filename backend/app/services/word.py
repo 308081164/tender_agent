@@ -151,6 +151,29 @@ def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
     return data
 
 
+def _extract_placeholders_from_xml(docx_bytes: bytes) -> list[str]:
+    """不依赖 Aspose 的占位符提取（上传兜底）。"""
+    import zipfile
+    from xml.etree import ElementTree
+    try:
+        with zipfile.ZipFile(BytesIO(docx_bytes)) as zf:
+            xml = zf.read("word/document.xml")
+        root = ElementTree.fromstring(xml)
+        texts = []
+        for t in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
+            if t.text:
+                texts.append(t.text)
+        blob = " ".join(texts)
+    except Exception:
+        blob = docx_bytes.decode("utf-8", errors="ignore")
+    found: list[str] = []
+    for m in PLACEHOLDER_RE.finditer(blob):
+        key = m.group(1)
+        if key not in found:
+            found.append(key)
+    return found
+
+
 def extract_placeholders(docx_bytes: bytes) -> list[str]:
     doc = _load_document(docx_bytes)
     found: list[str] = []
@@ -158,6 +181,13 @@ def extract_placeholders(docx_bytes: bytes) -> list[str]:
         if m.group(1) not in found:
             found.append(m.group(1))
     return found
+
+
+def safe_extract_placeholders(docx_bytes: bytes) -> list[str]:
+    try:
+        return extract_placeholders(docx_bytes)
+    except Exception:
+        return _extract_placeholders_from_xml(docx_bytes)
 
 
 def extract_structure(docx_bytes: bytes) -> dict:

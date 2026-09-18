@@ -5,7 +5,7 @@ export const ADMIN_MODULES = [
   { path: 'qualifications', label: '资质库', desc: '七大类资质材料' },
   { path: 'checklist', label: '校验清单', desc: '导出前条目校验' },
   { path: 'faqs', label: 'FAQ', desc: '企业问答知识库' },
-  { path: 'import', label: '导入/备份', desc: '客户包与 JSON 备份' },
+  { path: 'import', label: '导入/备份', desc: '迁移包导出导入' },
 ]
 
 export const TEMPLATE_CODES = [

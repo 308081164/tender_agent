@@ -22,8 +22,25 @@ def _check_aspose() -> dict[str, Any]:
 
 def _check_ocr() -> dict[str, Any]:
     st = ocr_runtime_status()
-    status = "ok" if st.get("tesseract_available") else "warn"
-    return {"id": "ocr", "name": "资质 OCR (Tesseract)", "status": status, "detail": st}
+    if st.get("tesseract_available") and st.get("chi_sim"):
+        detail = {**st, "mode": "tesseract"}
+        return {"id": "ocr", "name": "资质 OCR (Tesseract)", "status": "ok", "detail": detail}
+    if st.get("tesseract_available"):
+        detail = {**st, "mode": "tesseract", "note": "缺少 chi_sim 语言包，中文识别可能受限"}
+        return {"id": "ocr", "name": "资质 OCR (Tesseract)", "status": "warn", "detail": detail}
+    if st.get("ocr_capable"):
+        detail = {
+            **st,
+            "mode": "fallback",
+            "note": "未检测到 Tesseract，已启用 PDF/DOCX 文本提取与 AI 识别兜底",
+        }
+        return {"id": "ocr", "name": "资质 OCR (Tesseract)", "status": "ok", "detail": detail}
+    return {
+        "id": "ocr",
+        "name": "资质 OCR (Tesseract)",
+        "status": "warn",
+        "detail": {**st, "note": "将使用文件名/分类兜底匹配"},
+    }
 
 
 def _check_onlyoffice() -> dict[str, Any]:

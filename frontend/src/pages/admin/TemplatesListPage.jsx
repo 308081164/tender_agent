@@ -33,7 +33,7 @@ export default function TemplatesListPage() {
   const tabs = useMemo(() => ([
     { id: 'all', label: '全部', kind: '', enabled: 'true' },
     { id: 'history', label: '基于完整标书创建', kind: 'history', enabled: 'true' },
-    { id: 'blank', label: '基于空白模板创建', kind: 'blank', enabled: 'true' },
+    { id: 'blank', label: '基于空白模板创建', kind: 'skeleton', enabled: 'true' },
     { id: 'disabled', label: '已停用', kind: '', enabled: 'false' },
   ]), [])
 
