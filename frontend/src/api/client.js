@@ -9,25 +9,41 @@ function buildQuery(params = {}) {
   return s ? `?${s}` : ''
 }
 
+async function readErrorDetail(res) {
+  const text = await res.text()
+  if (!text) return `请求失败 ${res.status}`
+  try {
+    const data = JSON.parse(text)
+    const d = data.detail
+    if (typeof d === 'string') return d
+    if (d?.message) return d.message
+    if (d) return JSON.stringify(d)
+    return JSON.stringify(data)
+  } catch {
+    return text
+  }
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   })
   if (!res.ok) {
-    let detail = ''
-    try {
-      const data = await res.json()
-      detail = data.detail?.message || data.detail || JSON.stringify(data)
-    } catch {
-      detail = await res.text()
-    }
-    throw new Error(detail || `请求失败 ${res.status}`)
+    throw new Error(await readErrorDetail(res))
   }
   if (res.status === 204) return null
   const type = res.headers.get('content-type') || ''
   if (type.includes('application/json')) return res.json()
   return res
+}
+
+async function fetchBlob(path, options = {}) {
+  const res = await fetch(`${BASE}${path}`, options)
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res))
+  }
+  return res.blob()
 }
 
 export const api = {
@@ -78,10 +94,7 @@ export const api = {
     }),
   analyzeTemplateManifest: (id) =>
     request(`/admin/templates/${id}/analyze-manifest`, { method: 'POST' }),
-  exportDoc: async (id) => {
-    const res = await request(`/projects/${id}/export`)
-    return res.blob()
-  },
+  exportDoc: (id) => fetchBlob(`/projects/${id}/export`),
   listExports: (id) => request(`/projects/${id}/exports`),
   previewExport: (projectId, exportId) =>
     request(`/projects/${projectId}/exports/${exportId}/preview`),
@@ -89,10 +102,8 @@ export const api = {
     `${BASE}/projects/${projectId}/exports/${exportId}/preview.pdf`,
   downloadExportUrl: (projectId, exportId, inline = false) =>
     `${BASE}/projects/${projectId}/exports/${exportId}/download${inline ? '?inline=1' : ''}`,
-  downloadExport: async (projectId, exportId) => {
-    const res = await request(`/projects/${projectId}/exports/${exportId}/download`)
-    return res.blob()
-  },
+  downloadExport: (projectId, exportId) =>
+    fetchBlob(`/projects/${projectId}/exports/${exportId}/download`),
   snapshots: (id) => request(`/projects/${id}/snapshots`),
   rollback: (id, snapshot_id) =>
     request(`/projects/${id}/rollback`, { method: 'POST', body: JSON.stringify({ snapshot_id }) }),
