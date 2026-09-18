@@ -21,7 +21,7 @@ export default function ChatPage() {
   const [showSessions, setShowSessions] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const fileRef = useRef(null)
-  const bottomRef = useRef(null)
+  const messagesRef = useRef(null)
 
   const refreshWorkspace = async (id) => {
     if (!id) return
@@ -61,7 +61,9 @@ export default function ChatPage() {
   }, [showToast])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = messagesRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [messages, loading])
 
   const ensureSession = async () => {
@@ -237,7 +239,7 @@ export default function ChatPage() {
             <p className="muted">语义理解 → 调用系统能力 → 结合上下文精准回复</p>
           </div>
 
-          <div className="chat-messages-area compact">
+          <div className="chat-messages-area compact" ref={messagesRef}>
             {messages.length === 0 && !loading ? (
               <div className="chat-empty compact">
                 <p className="muted chat-empty-hint">
@@ -260,7 +262,6 @@ export default function ChatPage() {
               ))
             )}
             {loading ? <div className="chat-msg bot">思考中…</div> : null}
-            <div ref={bottomRef} />
           </div>
 
           {selectedText ? (
