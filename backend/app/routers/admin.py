@@ -524,6 +524,7 @@ async def admin_upload_template(
         from app.services.doc_engine.engine import attach_manifest_to_template
         from app.services.doc_engine.parser import parse_template_manifest
         is_history = kind == "history"
+        # 格式/结构识别对所有模板类型统一执行；is_history 仅影响替换模式推断
         manifest = parse_template_manifest(data, is_history=is_history)
         ph_meta = attach_manifest_to_template(ph_meta, manifest)
     except Exception as e:

@@ -260,8 +260,9 @@ async def detect_placeholder_candidates(
         "5. 金额用 bid_amount；电话 phone；邮编 postcode；法人 legal_name\n"
         "6. 若原文更适合资质材料插入位，bind_type 设为 qual 并给出 key=qual_<id>（若目录无则 bind_type=field）\n"
         "7. 若需立项时临场决策填写，bind_type=runtime，key=runtime_custom 或建议新 key\n"
-        "8. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason, bind_type, value_type(日期/工期/金额/文本)\n"
-        "9. 只返回 JSON，不要 markdown；最多 30 项"
+        "8. 识别待填空白：冒号/标签后的下划线或空行（如「委托期限：____」「竞标人名称：」）、签字区「（签字）」、盖章「（盖单位章）」、日期占位「年 月 日」、表格空单元格\n"
+        "9. 返回 JSON 数组，每项含 key, field_name, original_text, confidence(0-1), reason, bind_type, value_type(日期/工期/金额/文本)\n"
+        "10. 只返回 JSON，不要 markdown；最多 30 项"
     )
     raw = await chat_completion([
         {"role": "system", "content": "你是标书模板工程化助手，只输出合法 JSON 数组。"},

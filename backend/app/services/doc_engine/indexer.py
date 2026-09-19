@@ -8,7 +8,7 @@ from typing import Any
 import aspose.words as aw
 
 from app.services.aspose_runtime import ensure_license
-from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE
+from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE, _prepare_doc_for_preview, is_field_code_text
 
 LOC_PARA = re.compile(r"^p:(\d+)$")
 LOC_TABLE = re.compile(r"^tbl:(\d+):r(\d+):c(\d+)$")
@@ -37,6 +37,7 @@ def _heading_level(style_name: str) -> int:
 def build_document_index(docx_bytes: bytes) -> dict[str, Any]:
     """构建全文索引，供替换/审阅定位。"""
     doc = _load(docx_bytes)
+    _prepare_doc_for_preview(doc)
     paragraphs: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
@@ -45,7 +46,7 @@ def build_document_index(docx_bytes: bytes) -> dict[str, Any]:
     for para in doc.get_child_nodes(aw.NodeType.PARAGRAPH, True):
         p = para.as_paragraph()
         text = (p.get_text() or "").strip()
-        if not text:
+        if not text or is_field_code_text(text):
             continue
         style = _para_style(p)
         loc = f"p:{p_idx}"

@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../../App'
 import { api } from '../../api/client'
 import AdminDetailHeader from '../../components/admin/AdminDetailHeader'
-import SelectableDocPreview from '../../components/admin/SelectableDocPreview'
+import SelectableDocPreview, { findMappingForSelection } from '../../components/admin/SelectableDocPreview'
 import FormatInfoSummary from '../../components/admin/FormatInfoSummary'
 import MappingResourcePicker from '../../components/admin/MappingResourcePicker'
 import CreateFieldInlineModal from '../../components/admin/CreateFieldInlineModal'
@@ -48,6 +48,8 @@ export default function TemplateEngineerPage() {
   const [resourceCatalog, setResourceCatalog] = useState({ fields: [], qualifications: [], runtime: [] })
   const [mappingStats, setMappingStats] = useState(null)
   const [selectedText, setSelectedText] = useState('')
+  const [selectedMappingId, setSelectedMappingId] = useState('')
+  const mappingCardRefs = useRef({})
   const [manualPick, setManualPick] = useState({ key: 'project_name', bind_type: 'field' })
   const [tplName, setTplName] = useState('')
   const [formatInfo, setFormatInfo] = useState(null)
@@ -138,6 +140,36 @@ export default function TemplateEngineerPage() {
       refreshPreview(mappings)
     }
   }, [mappings, step, refreshPreview])
+
+  const selectMapping = useCallback((mapping) => {
+    if (!mapping) return
+    setSelectedMappingId(mapping.id)
+    setSelectedText(mapping.original_text || '')
+  }, [])
+
+  const handlePreviewSelectText = useCallback((text) => {
+    setSelectedText(text)
+    const match = findMappingForSelection(mappings, text)
+    if (match) setSelectedMappingId(match.id)
+  }, [mappings])
+
+  const handlePlaceholderClick = useCallback((key) => {
+    const match = mappings.find((m) => m.key === key)
+    if (match) selectMapping(match)
+  }, [mappings, selectMapping])
+
+  useEffect(() => {
+    if (!selectedMappingId) return
+    const el = mappingCardRefs.current[selectedMappingId]
+    if (el?.scrollIntoView) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [selectedMappingId, mappings.length])
+
+  const activePlaceholderKey = useMemo(() => {
+    const m = mappings.find((x) => x.id === selectedMappingId)
+    return m?.key || ''
+  }, [mappings, selectedMappingId])
 
   const updateMapping = (mid, patch) => {
     setMappings((list) => list.map((m) => (m.id === mid ? { ...m, ...patch } : m)))
@@ -338,7 +370,11 @@ export default function TemplateEngineerPage() {
                 paragraphs={paragraphs}
                 mappings={mappings}
                 selectedText={selectedText}
-                onSelectText={setSelectedText}
+                selectedMappingId={selectedMappingId}
+                activePlaceholderKey={activePlaceholderKey}
+                onSelectText={handlePreviewSelectText}
+                onSelectMapping={setSelectedMappingId}
+                onPlaceholderClick={handlePlaceholderClick}
               />
             )}
           </div>
@@ -376,9 +412,19 @@ export default function TemplateEngineerPage() {
               {mappings.map((m) => (
                 <div
                   key={m.id}
-                  className={`mapping-edit-item status-${m.match_status || 'matched'} ${m.action === 'keep' ? 'reverted' : ''}`}
+                  ref={(el) => { mappingCardRefs.current[m.id] = el }}
+                  className={`mapping-edit-item status-${m.match_status || 'matched'} ${m.action === 'keep' ? 'reverted' : ''} ${selectedMappingId === m.id ? 'mapping-edit-item-active' : ''}`}
+                  onClick={() => selectMapping(m)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      selectMapping(m)
+                    }
+                  }}
                 >
-                  <label className="row mapping-edit-head">
+                  <label className="row mapping-edit-head" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={!!m.approved && m.action !== 'keep'}
@@ -389,13 +435,15 @@ export default function TemplateEngineerPage() {
                       <span className={`match-badge ${m.match_status}`}>{STATUS_LABELS[m.match_status] || m.match_status}</span>
                     ) : null}
                   </label>
-                  <MappingResourcePicker
-                    value={m.key}
-                    bindType={m.bind_type}
-                    qualificationId={m.qualification_id}
-                    catalogItems={catalogItems}
-                    onChange={(pick) => updateMapping(m.id, pick)}
-                  />
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <MappingResourcePicker
+                      value={m.key}
+                      bindType={m.bind_type}
+                      qualificationId={m.qualification_id}
+                      catalogItems={catalogItems}
+                      onChange={(pick) => updateMapping(m.id, pick)}
+                    />
+                  </div>
                   <div className="mapping-original">{m.original_text}</div>
                   {m.reason ? <div className="mapping-reason muted">{m.reason}</div> : null}
                   {m.match_status === 'unresolved' && m.needs_field_creation ? (
@@ -407,7 +455,7 @@ export default function TemplateEngineerPage() {
                       现场创建字段
                     </button>
                   ) : null}
-                  <div className="mapping-edit-actions">
+                  <div className="mapping-edit-actions" onClick={(e) => e.stopPropagation()}>
                     <button type="button" className="ghost tiny" onClick={() => revertMapping(m.id)}>恢复原文</button>
                     <button type="button" className="ghost tiny" onClick={() => removeMapping(m.id)}>删除</button>
                   </div>
