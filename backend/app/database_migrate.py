@@ -40,3 +40,21 @@ def ensure_schema():
             except Exception as e:
                 # 兼容非 PG 或已存在
                 print(f"[migrate] skip: {e}")
+    _backfill_field_company_mappings()
+
+
+def _backfill_field_company_mappings():
+    """为旧库 field_defs 补齐企业档案映射，使向导信息录入可自动预填。"""
+    try:
+        from app.database import SessionLocal
+        from app.services.field_defaults import backfill_field_company_mappings
+
+        db = SessionLocal()
+        try:
+            n = backfill_field_company_mappings(db)
+            if n:
+                print(f"[migrate] backfilled company mappings for {n} field_defs")
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[migrate] field company mapping backfill skip: {e}")

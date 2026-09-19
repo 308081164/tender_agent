@@ -81,7 +81,7 @@ export default function WizardPage() {
   useEffect(() => {
     if (!project?.id || activeStep !== 2 || !fieldDefs.length) return
     const merged = mergeFieldDefaults(fields, fieldDefs)
-    const changed = fieldDefs.some((f) => !fields[f.key] && merged[f.key])
+    const changed = fieldDefs.some((f) => merged[f.key] !== fields[f.key])
     if (changed) setFields(merged)
   }, [project?.id, activeStep, fieldDefs])
 
