@@ -295,11 +295,14 @@ def seed_fields(db: Session, root: Path):
             options_map[str(row.get("字段名称") or "")] = str(
                 row.get("可选值（多个值用中文分号分隔）") or row.get("可选值") or ""
             )
+    from app.services.field_defaults import FIELD_COMPANY_MAP
+
     for row in read_xlsx(fields_path):
         name = str(row.get("字段名称") or "")
         key = str(row.get("字段英文名") or "")
         if not key:
             continue
+        company_field = FIELD_COMPANY_MAP.get(key, "")
         db.add(FieldDef(
             name=name,
             key=key,
@@ -309,6 +312,8 @@ def seed_fields(db: Session, root: Path):
             options=options_map.get(name, ""),
             module=str(row.get("所属模块") or ""),
             validation=str(row.get("校验规则") or ""),
+            is_company_default=bool(company_field),
+            company_field=company_field,
         ))
     db.commit()
     print("[seed] fields ok")

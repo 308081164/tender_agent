@@ -15,6 +15,8 @@ from app.models import (
 from app.services import storage, word, checklist as checklist_svc, ai as ai_svc
 from app.services import settings_svc, chat_assistant, document_agent
 from app.services import pdf_convert
+from app.services.field_defaults import field_effective_default as _field_effective_default
+from app.services.field_defaults import fill_field_defaults as _fill_field_defaults
 
 router = APIRouter()
 
@@ -26,31 +28,6 @@ STEP_NAMES = {
     5: "条目校验",
     6: "导出Word",
 }
-
-
-def _field_effective_default(fd: FieldDef, company) -> str:
-    """字段当前有效默认值：优先企业档案，其次静态 default_value。"""
-    cf = getattr(fd, "company_field", "") or ""
-    if getattr(fd, "is_company_default", False) and company and cf:
-        val = getattr(company, cf, "") or ""
-        if val:
-            return str(val)
-    return fd.default_value or ""
-
-
-def _fill_field_defaults(db: Session, fields: dict | None) -> dict:
-    """用企业档案 / 字段默认值补齐空缺，避免前端局部保存冲掉企业预填。"""
-    from app.models import CompanyProfile
-
-    result = dict(fields or {})
-    company = db.query(CompanyProfile).filter(CompanyProfile.id == 1).first()
-    for fd in db.query(FieldDef).order_by(FieldDef.sort_order).all():
-        if result.get(fd.key):
-            continue
-        val = _field_effective_default(fd, company)
-        if val:
-            result[fd.key] = val
-    return result
 
 
 class ProjectCreate(BaseModel):

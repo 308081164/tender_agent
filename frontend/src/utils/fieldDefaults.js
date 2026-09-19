@@ -21,12 +21,23 @@ export function isVerifyField(fieldDef) {
   return SENSITIVE_MODULES.has(fieldDef.module)
 }
 
+/** 是否应以企业档案有效默认值覆盖当前值 */
+function shouldApplyDefault(current, effective, staticDefault) {
+  if (!effective) return !current
+  if (!current) return true
+  if (staticDefault && current === staticDefault && effective !== staticDefault) return true
+  return false
+}
+
 /** 用字段定义中的有效默认值补齐空缺（不覆盖用户已填内容） */
 export function mergeFieldDefaults(fields, fieldDefs) {
   const next = { ...(fields || {}) }
   for (const f of fieldDefs || []) {
-    if (next[f.key]) continue
-    const val = f.effective_default || f.default_value || ''
+    const effective = f.effective_default || ''
+    const staticDefault = f.default_value || ''
+    const current = next[f.key]
+    if (!shouldApplyDefault(current, effective, staticDefault)) continue
+    const val = effective || staticDefault
     if (val) next[f.key] = val
   }
   return next
