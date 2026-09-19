@@ -6,6 +6,7 @@ import { STEPS } from '../constants'
 import { useProject } from '../hooks/useProject'
 import { highlightText } from '../utils/highlight'
 import { formatTime } from '../utils/format'
+import { isVerifyField, mergeFieldDefaults } from '../utils/fieldDefaults'
 import SnapshotPanel from '../components/SnapshotPanel'
 import PreviewModal from '../components/PreviewModal'
 import Step1TemplatePicker from '../components/Step1TemplatePicker'
@@ -78,6 +79,13 @@ export default function WizardPage() {
   }, [id, project?.status, activeStep, lastSavedAt])
 
   useEffect(() => {
+    if (!project?.id || activeStep !== 2 || !fieldDefs.length) return
+    const merged = mergeFieldDefaults(fields, fieldDefs)
+    const changed = fieldDefs.some((f) => !fields[f.key] && merged[f.key])
+    if (changed) setFields(merged)
+  }, [project?.id, activeStep, fieldDefs])
+
+  useEffect(() => {
     if (!project?.id || activeStep !== 3) return
     api.getWorkflowPlan(project.id)
       .then((plan) => {
@@ -142,11 +150,7 @@ export default function WizardPage() {
   const confirmStep1 = async () => {
     const p = await saveStep({ advance: true })
     if (p) {
-      const next = { ...(p.fields || {}) }
-      for (const f of fieldDefs) {
-        if (f.default_value && !next[f.key]) next[f.key] = f.default_value
-      }
-      setFields(next)
+      setFields(mergeFieldDefaults(p.fields, fieldDefs))
     }
   }
 
@@ -386,35 +390,46 @@ export default function WizardPage() {
             <h2>信息录入</h2>
             <p className="lead">企业默认值已预填。标注「请核实」的字段来自脱敏数据，导出前务必改正。</p>
             <div className="form-grid">
-              {fieldDefs.map((f) => (
-                <div className={`field ${f.field_type === '多行文本' ? 'full' : ''}`} key={f.key}>
-                  <label>
-                    {f.name}{f.required ? ' *' : ''}
-                    {f.desensitized ? <span className="tag-warn"> 请核实</span> : null}
-                  </label>
-                  {(f.field_type === '下拉选项' || f.field_type === '下拉') ? (
-                    <select
-                      value={fields[f.key] || ''}
-                      onChange={(e) => setFields({ ...fields, [f.key]: e.target.value })}
-                    >
-                      <option value="">请选择</option>
-                      {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  ) : f.field_type === '多行文本' ? (
-                    <textarea
-                      value={fields[f.key] || ''}
-                      onChange={(e) => setFields({ ...fields, [f.key]: e.target.value })}
-                    />
-                  ) : (
-                    <input
-                      value={fields[f.key] || ''}
-                      onChange={(e) => setFields({ ...fields, [f.key]: e.target.value })}
-                      placeholder={f.default_value || ''}
-                      className={f.desensitized ? 'desensitized' : undefined}
-                    />
-                  )}
-                </div>
-              ))}
+              {fieldDefs.map((f) => {
+                const verify = isVerifyField(f)
+                const inputClass = verify ? 'desensitized' : undefined
+                const placeholder = f.effective_default || f.default_value || ''
+                return (
+                  <div
+                    className={`field ${f.field_type === '多行文本' ? 'full' : ''} ${verify ? 'verify-field' : ''}`}
+                    key={f.key}
+                  >
+                    <label>
+                      {f.name}{f.required ? ' *' : ''}
+                      {verify ? <span className="tag-warn">请核实</span> : null}
+                    </label>
+                    {(f.field_type === '下拉选项' || f.field_type === '下拉') ? (
+                      <select
+                        className={inputClass}
+                        value={fields[f.key] || ''}
+                        onChange={(e) => setFields({ ...fields, [f.key]: e.target.value })}
+                      >
+                        <option value="">请选择</option>
+                        {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    ) : f.field_type === '多行文本' ? (
+                      <textarea
+                        className={inputClass}
+                        value={fields[f.key] || ''}
+                        onChange={(e) => setFields({ ...fields, [f.key]: e.target.value })}
+                        placeholder={placeholder}
+                      />
+                    ) : (
+                      <input
+                        value={fields[f.key] || ''}
+                        onChange={(e) => setFields({ ...fields, [f.key]: e.target.value })}
+                        placeholder={placeholder}
+                        className={inputClass}
+                      />
+                    )}
+                  </div>
+                )
+              })}
             </div>
             <TableSlotsEditor
               projectId={project.id}

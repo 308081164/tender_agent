@@ -28,6 +28,16 @@ STEP_NAMES = {
 }
 
 
+def _field_effective_default(fd: FieldDef, company) -> str:
+    """字段当前有效默认值：优先企业档案，其次静态 default_value。"""
+    cf = getattr(fd, "company_field", "") or ""
+    if getattr(fd, "is_company_default", False) and company and cf:
+        val = getattr(company, cf, "") or ""
+        if val:
+            return str(val)
+    return fd.default_value or ""
+
+
 def _fill_field_defaults(db: Session, fields: dict | None) -> dict:
     """用企业档案 / 字段默认值补齐空缺，避免前端局部保存冲掉企业预填。"""
     from app.models import CompanyProfile
@@ -37,12 +47,7 @@ def _fill_field_defaults(db: Session, fields: dict | None) -> dict:
     for fd in db.query(FieldDef).order_by(FieldDef.sort_order).all():
         if result.get(fd.key):
             continue
-        val = ""
-        cf = getattr(fd, "company_field", "") or ""
-        if getattr(fd, "is_company_default", False) and company and cf:
-            val = getattr(company, cf, "") or ""
-        if not val:
-            val = fd.default_value or ""
+        val = _field_effective_default(fd, company)
         if val:
             result[fd.key] = val
     return result
@@ -340,6 +345,9 @@ def list_templates(include_disabled: bool = False, db: Session = Depends(get_db)
 
 @router.get("/fields")
 def list_fields(template_code: str | None = None, db: Session = Depends(get_db)):
+    from app.models import CompanyProfile
+
+    company = db.query(CompanyProfile).filter(CompanyProfile.id == 1).first()
     q = db.query(FieldDef)
     if template_code:
         q = q.filter(FieldDef.template_code.in_([template_code, "common"]))
@@ -352,6 +360,7 @@ def list_fields(template_code: str | None = None, db: Session = Depends(get_db))
             "field_type": f.field_type,
             "required": f.required,
             "default_value": f.default_value,
+            "effective_default": _field_effective_default(f, company),
             "options": [o for o in (f.options or "").replace("；", ";").split(";") if o] if f.options else [],
             "module": f.module,
             "validation": f.validation,
@@ -464,7 +473,10 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
-    return project_to_dict(p)
+    data = project_to_dict(p)
+    if (p.current_step or 1) >= 2:
+        data["fields"] = _fill_field_defaults(db, p.fields)
+    return data
 
 
 @router.delete("/projects/{project_id}")
@@ -527,6 +539,12 @@ def save_progress(project_id: int, body: SaveProgressRequest, db: Session = Depe
         p.current_step = min(6, max(p.current_step or 1, base) + 1)
     elif body.current_step is not None and body.current_step > (p.current_step or 1):
         p.current_step = min(6, body.current_step)
+
+    if (p.current_step or 1) >= 2:
+        filled = _fill_field_defaults(db, p.fields or {})
+        if filled != (p.fields or {}):
+            p.fields = filled
+            flag_modified(p, "fields")
 
     p.updated_at = datetime.utcnow()
     db.commit()
