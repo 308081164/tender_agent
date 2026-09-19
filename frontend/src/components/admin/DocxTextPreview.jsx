@@ -4,14 +4,14 @@ import { paragraphPreviewStyle } from './FormatInfoSummary'
 const PLACEHOLDER_RE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g
 const AI_MARKER_RE = /【AI_GENERATED:([^】]+)】/g
 
-function renderHighlightedSegments(text, highlightTexts = []) {
+function renderHighlightedSegments(text, highlightTexts = [], opts = {}) {
   if (!text) return text
   const highlights = (highlightTexts || [])
     .filter(Boolean)
     .sort((a, b) => b.length - a.length)
 
   if (!highlights.length) {
-    return renderTokenizedText(text)
+    return renderTokenizedText(text, opts)
   }
 
   const parts = []
@@ -25,11 +25,11 @@ function renderHighlightedSegments(text, highlightTexts = []) {
       }
     }
     if (!nearest) {
-      parts.push(...flattenTokenParts(text.slice(cursor)))
+      parts.push(...flattenTokenParts(text.slice(cursor), opts))
       break
     }
     if (nearest.index > cursor) {
-      parts.push(...flattenTokenParts(text.slice(cursor, nearest.index)))
+      parts.push(...flattenTokenParts(text.slice(cursor, nearest.index), opts))
     }
     parts.push(
       <mark key={`hl-${nearest.index}`} className="detected-token" title="待替换原文">
@@ -41,7 +41,32 @@ function renderHighlightedSegments(text, highlightTexts = []) {
   return parts.length ? parts : text
 }
 
-function flattenTokenParts(segment) {
+function placeholderMark(match, index, { activePlaceholderKey, onPlaceholderClick } = {}) {
+  const key = match[1]
+  const active = activePlaceholderKey && key === activePlaceholderKey
+  const className = `placeholder-token${active ? ' placeholder-token-active' : ''}${onPlaceholderClick ? ' placeholder-token-clickable' : ''}`
+  const mark = (
+    <mark
+      key={`ph-${index}`}
+      className={className}
+      title={`占位符：${key}`}
+      role={onPlaceholderClick ? 'button' : undefined}
+      tabIndex={onPlaceholderClick ? 0 : undefined}
+      onClick={onPlaceholderClick ? (e) => { e.stopPropagation(); onPlaceholderClick(key) } : undefined}
+      onKeyDown={onPlaceholderClick ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onPlaceholderClick(key)
+        }
+      } : undefined}
+    >
+      {match[0]}
+    </mark>
+  )
+  return mark
+}
+
+function flattenTokenParts(segment, opts = {}) {
   if (!segment) return []
   const parts = []
   let last = 0
@@ -50,11 +75,7 @@ function flattenTokenParts(segment) {
   while ((match = re.exec(segment)) !== null) {
     if (match.index > last) parts.push(segment.slice(last, match.index))
     if (match[0].startsWith('{{')) {
-      parts.push(
-        <mark key={`ph-${match.index}`} className="placeholder-token" title={`占位符：${match[1]}`}>
-          {match[0]}
-        </mark>,
-      )
+      parts.push(placeholderMark(match, match.index, opts))
     } else {
       parts.push(
         <mark key={`ai-${match.index}`} className="ai-marker-token" title={`AI 章节：${match[1]}`}>
@@ -68,7 +89,7 @@ function flattenTokenParts(segment) {
   return parts
 }
 
-function renderTokenizedText(text) {
+function renderTokenizedText(text, opts = {}) {
   const parts = []
   let last = 0
   let match
@@ -76,11 +97,7 @@ function renderTokenizedText(text) {
   while ((match = re.exec(text)) !== null) {
     if (match.index > last) parts.push(text.slice(last, match.index))
     if (match[0].startsWith('{{')) {
-      parts.push(
-        <mark key={`ph-${match.index}`} className="placeholder-token" title={`占位符：${match[1]}`}>
-          {match[0]}
-        </mark>,
-      )
+      parts.push(placeholderMark(match, match.index, opts))
     } else {
       parts.push(
         <mark key={`ai-${match.index}`} className="ai-marker-token" title={`AI 章节：${match[1]}`}>
@@ -94,9 +111,54 @@ function renderTokenizedText(text) {
   return parts.length ? parts : text
 }
 
-export function renderPlaceholderText(text, highlightTexts) {
-  if (highlightTexts?.length) return renderHighlightedSegments(text, highlightTexts)
-  return renderTokenizedText(text)
+export function renderPlaceholderText(text, highlightTexts, opts = {}) {
+  if (highlightTexts?.length) return renderHighlightedSegments(text, highlightTexts, opts)
+  return renderTokenizedText(text, opts)
+}
+
+export function renderPreviewBlock(p, i, {
+  highlightTexts = [],
+  activePlaceholderKey = '',
+  onPlaceholderClick,
+} = {}) {
+  const style = paragraphPreviewStyle(p)
+  const changed = p.changed || (p.display_text && p.display_text !== p.text)
+  const renderOpts = { activePlaceholderKey, onPlaceholderClick }
+
+  if (p.is_table && (p.display_table_rows || p.table_rows)) {
+    const rows = p.display_table_rows || p.table_rows || []
+    return (
+      <table key={i} className={`preview-table ${changed ? 'mapping-changed' : ''}`}>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri}>
+              {row.map((cell, ci) => (
+                <td key={ci}>
+                  {renderPlaceholderText(cell, highlightTexts, renderOpts)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
+
+  const content = renderPlaceholderText(p.display_text ?? p.text, highlightTexts, renderOpts)
+  return p.is_heading ? (
+    <div
+      key={i}
+      className={`preview-h level-${Math.min(p.level || 1, 3)} ${changed ? 'mapping-changed' : ''}`}
+      style={style}
+      title={p.style || undefined}
+    >
+      {content}
+    </div>
+  ) : (
+    <p key={i} className={`preview-p ${changed ? 'mapping-changed' : ''}`} style={style} title={p.style || undefined}>
+      {content}
+    </p>
+  )
 }
 
 export default function DocxTextPreview({
@@ -109,24 +171,7 @@ export default function DocxTextPreview({
   }
   return (
     <div className="preview-doc preview-text admin-template-text">
-      {paragraphs.map((p, i) => {
-        const style = paragraphPreviewStyle(p)
-        const content = renderPlaceholderText(p.display_text ?? p.text, highlightTexts)
-        return p.is_heading ? (
-          <div
-            key={i}
-            className={`preview-h level-${Math.min(p.level || 1, 3)}`}
-            style={style}
-            title={p.style || undefined}
-          >
-            {content}
-          </div>
-        ) : (
-          <p key={i} className="preview-p" style={style} title={p.style || undefined}>
-            {content}
-          </p>
-        )
-      })}
+      {paragraphs.map((p, i) => renderPreviewBlock(p, i, { highlightTexts }))}
       {truncated ? <p className="muted preview-truncated">内容较长，此处仅展示前 800 段；完整版请下载 DOCX。</p> : null}
     </div>
   )

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.services import ai, word
 from app.services.mapping_resources import build_mapping_resource_catalog
+from app.services.word import is_field_code_text
 
 # 规则兜底：仅在语义明确时使用，避免 tender_no 泛化匹配
 RULE_HINTS: list[tuple[str, list[str]]] = [
@@ -23,20 +24,21 @@ RULE_HINTS: list[tuple[str, list[str]]] = [
     ("postcode", [r"(?<!\d)\d{6}(?!\d)"]),
 ]
 
-JUNK_PATTERNS = [
-    re.compile(p, re.I)
-    for p in [
-        r"PAGE\s*\\",
-        r"\\\*",
-        r"\\[a-z]+\s",
-        r"HYPERLINK",
-        r"TOC\s",
-        r"PAGEREF",
-        r"SEQ\s",
-        r"^\s*\d+\s*$",
-        r"^\s*[\{\}\\]+\s*$",
-    ]
+# 空白待填区域识别：下划线、冒号后空白、签字/盖章、日期占位等
+BLANK_FILL_PATTERNS: list[tuple[str, str, str, float]] = [
+    # (key, label, regex, confidence)
+    ("runtime_sign", "签字区", r"（签字）", 0.85),
+    ("runtime_seal", "盖章区", r"（盖单位章）", 0.85),
+    ("sign_date", "签署日期", r"年\s*月\s*日", 0.8),
+    ("runtime_blank", "待填空白", r"[\u4e00-\u9fff]{2,16}[：:][\s_—－\-·．.]{1,60}", 0.75),
+    ("runtime_blank", "待填空白", r"[\u4e00-\u9fff]{2,16}[：:]\s*$", 0.7),
+    ("runtime_blank", "下划线空白", r"_{3,}", 0.7),
+    ("runtime_blank", "破折号空白", r"[—－\-]{3,}", 0.65),
 ]
+
+FORM_LABEL_RE = re.compile(
+    r"^[\u4e00-\u9fff]{2,14}(?:[（(][\u4e00-\u9fff]{2,8}[）)])?\s*[：:]?\s*$"
+)
 
 
 def _field_catalog(field_defs: list[dict]) -> list[dict]:
@@ -63,9 +65,66 @@ def _is_junk_text(text: str) -> bool:
         return True
     if "{{" in t or "}}" in t:
         return True
-    if "\\" in t and ("PAGE" in t.upper() or "TOC" in t.upper()):
-        return True
-    return any(p.search(t) for p in JUNK_PATTERNS)
+    return is_field_code_text(t)
+
+
+def _blank_fill_candidates(paragraphs: list[dict], catalog: list[dict]) -> list[dict]:
+    """识别非 {{placeholder}} 的待填区域：冒号后空白、签字、日期占位、表单标签等。"""
+    keys = {c["key"] for c in catalog}
+    found: list[dict] = []
+    seen_text: set[str] = set()
+
+    def _push(key: str, label: str, original: str, confidence: float, reason: str) -> None:
+        ot = (original or "").strip()
+        if _is_junk_text(ot) or ot in seen_text or len(ot) < 2:
+            return
+        seen_text.add(ot)
+        bind_key = key if key in keys else "runtime_custom"
+        found.append({
+            "key": bind_key,
+            "field_name": label,
+            "original_text": ot,
+            "confidence": confidence,
+            "reason": reason,
+            "source": "blank_fill",
+            "bind_type": "runtime" if bind_key not in keys else "field",
+        })
+
+    for para in paragraphs:
+        text = (para.get("text") or "").strip()
+        if not text:
+            continue
+        for key, label, pat, conf in BLANK_FILL_PATTERNS:
+            for m in re.finditer(pat, text):
+                _push(key, label, m.group(0).strip(), conf, "空白待填识别")
+
+    # 表格单元格：空单元格或仅含下划线
+    for para in paragraphs:
+        if not (para.get("location") or "").startswith("tbl:"):
+            continue
+        text = (para.get("text") or "").strip()
+        if not text or text in seen_text:
+            continue
+        if re.fullmatch(r"[\s_—－\-·．.]+", text):
+            loc = para.get("location") or ""
+            _push("runtime_custom", "表格待填", text or "____", 0.65, f"表格空白单元格 {loc}")
+
+    # 表单标签行：标签独占一行，下一行极短或为空
+    plain_paras = [p for p in paragraphs if (p.get("location") or "").startswith("p:")]
+    for i, para in enumerate(plain_paras):
+        text = (para.get("text") or "").strip()
+        if not FORM_LABEL_RE.match(text):
+            continue
+        nxt = plain_paras[i + 1] if i + 1 < len(plain_paras) else None
+        nxt_text = (nxt.get("text") or "").strip() if nxt else ""
+        if nxt_text and len(nxt_text) > 40:
+            continue
+        # 将「标签 + 下一行空白」作为组合原文，便于精确替换
+        combined = f"{text}\n{nxt_text}".strip() if nxt_text else text
+        if combined not in seen_text:
+            _push("runtime_custom", text.rstrip("：:"), combined, 0.68, "表单标签待填区")
+
+    return found
 
 
 def _rule_candidates(text: str, catalog: list[dict]) -> list[dict]:
@@ -155,7 +214,13 @@ async def detect_placeholder_candidates(
 
     llm_items = await ai.detect_placeholder_candidates(text, catalog, db=db)
     rule_items = _rule_candidates(text, catalog)
-    merged = _merge_candidates([*llm_items, *rule_items])
+    try:
+        from app.services.doc_engine.indexer import build_document_index
+        index_paras = build_document_index(docx_bytes).get("paragraphs") or []
+    except Exception:
+        index_paras = paragraphs
+    blank_items = _blank_fill_candidates(index_paras, catalog)
+    merged = _merge_candidates([*llm_items, *rule_items, *blank_items])
 
     # 过滤已在文档中的占位符对应原文
     filtered = []

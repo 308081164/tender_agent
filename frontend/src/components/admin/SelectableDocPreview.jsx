@@ -1,12 +1,34 @@
 import React, { useMemo } from 'react'
-import { renderPlaceholderText } from './DocxTextPreview'
-import { paragraphPreviewStyle } from './FormatInfoSummary'
+import { renderPreviewBlock } from './DocxTextPreview'
+
+export function findMappingForSelection(mappings, text) {
+  const t = (text || '').trim()
+  if (!t || !mappings?.length) return null
+
+  const exact = mappings.find((m) => m.original_text === t)
+  if (exact) return exact
+
+  const phMatch = t.match(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/)
+  if (phMatch) {
+    const byKey = mappings.find((m) => m.key === phMatch[1])
+    if (byKey) return byKey
+  }
+
+  const contains = mappings.find(
+    (m) => m.original_text && (t.includes(m.original_text) || m.original_text.includes(t)),
+  )
+  return contains || null
+}
 
 export default function SelectableDocPreview({
   paragraphs = [],
   mappings = [],
   onSelectText,
   selectedText = '',
+  selectedMappingId = '',
+  activePlaceholderKey = '',
+  onSelectMapping,
+  onPlaceholderClick,
 }) {
   const highlightTexts = useMemo(
     () => mappings
@@ -22,32 +44,23 @@ export default function SelectableDocPreview({
     if (text.length >= 2) onSelectText?.(text)
   }
 
+  const handlePlaceholderClick = (key) => {
+    onPlaceholderClick?.(key)
+    const mapping = mappings.find((m) => m.key === key)
+    if (mapping) onSelectMapping?.(mapping.id)
+  }
+
   if (!paragraphs.length) {
     return <div className="admin-empty">暂无正文，请先执行智能识别</div>
   }
 
   return (
     <div className="selectable-doc-preview" onMouseUp={handleMouseUp}>
-      {paragraphs.map((p, i) => {
-        const text = p.display_text ?? p.text
-        const changed = p.changed || (p.display_text && p.display_text !== p.text)
-        const style = paragraphPreviewStyle(p)
-        const content = renderPlaceholderText(text, highlightTexts)
-        return p.is_heading ? (
-          <div
-            key={i}
-            className={`preview-h level-${Math.min(p.level || 1, 3)} ${changed ? 'mapping-changed' : ''}`}
-            style={style}
-            title={p.style || undefined}
-          >
-            {content}
-          </div>
-        ) : (
-          <p key={i} className={`preview-p ${changed ? 'mapping-changed' : ''}`} style={style} title={p.style || undefined}>
-            {content}
-          </p>
-        )
-      })}
+      {paragraphs.map((p, i) => renderPreviewBlock(p, i, {
+        highlightTexts,
+        activePlaceholderKey,
+        onPlaceholderClick: handlePlaceholderClick,
+      }))}
       {selectedText ? (
         <div className="selection-toolbar">
           已选中：「{selectedText.slice(0, 80)}{selectedText.length > 80 ? '…' : ''}」

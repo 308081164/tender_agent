@@ -14,6 +14,23 @@ from app.services.aspose_runtime import ensure_license
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 AI_MARKER_RE = re.compile(r"【AI_GENERATED:([^】]+)】")
 
+# Word 域代码 / 目录域残留（预览时应过滤或更新域后再提取）
+FIELD_CODE_PATTERNS = [
+    re.compile(p, re.I)
+    for p in [
+        r"PAGE\s*\\",
+        r"\\\*",
+        r"\\[a-z]+\s",
+        r"HYPERLINK",
+        r"TOC\s",
+        r"PAGEREF",
+        r"SEQ\s",
+        r"MERGEFORMAT",
+        r"^\s*\d+\s*$",
+        r"^\s*[\{\}\\]+\s*$",
+    ]
+]
+
 
 def _load_document(docx_bytes: bytes) -> aw.Document:
     ensure_license()
@@ -56,6 +73,29 @@ def _points(value) -> float | None:
         return round(pts, 1) if pts else None
     except Exception:
         return None
+
+
+def is_field_code_text(text: str) -> bool:
+    """判断段落文本是否为 Word 域代码残留（TOC/HYPERLINK/PAGE 等）。"""
+    t = (text or "").strip()
+    if len(t) < 2:
+        return True
+    if "\\" in t and any(
+        token in t.upper() for token in ("PAGE", "TOC", "HYPERLINK", "PAGEREF", "MERGEFORMAT", "SEQ ")
+    ):
+        return True
+    return any(p.search(t) for p in FIELD_CODE_PATTERNS)
+
+
+def _prepare_doc_for_preview(doc: aw.Document) -> None:
+    """更新域与版式，使目录/页码等显示为渲染结果而非域代码。"""
+    for fn_name in ("update_fields", "update_page_layout"):
+        try:
+            fn = getattr(doc, fn_name, None)
+            if callable(fn):
+                fn()
+        except Exception:
+            pass
 
 
 def _clean_display_text(text: str) -> str:
@@ -205,42 +245,98 @@ def extract_structure(docx_bytes: bytes) -> dict:
     return {"headings": headings, "paragraphs": paragraphs[:200]}
 
 
+def _table_preview_rows(table: aw.Table) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row in table.rows:
+        cells: list[str] = []
+        for cell in row.cells:
+            cell_text = _clean_display_text(cell.get_text() or "")
+            cells.append(cell_text)
+        if any(cells):
+            rows.append(cells)
+    return rows
+
+
+def _append_preview_paragraph(
+    paragraphs: list[dict],
+    headings: list[dict],
+    heading_formats: dict[int, dict],
+    body_format_samples: list[dict],
+    para: aw.Paragraph,
+    idx: int,
+) -> bool:
+    style = _paragraph_style_name(para)
+    raw_text = para.get_text() or ""
+    text = _clean_display_text(raw_text)
+    if not text or re.fullmatch(r"[\s\W_]+", text) or is_field_code_text(text):
+        return False
+    fmt = _paragraph_run_format(para)
+    is_heading = style.startswith("Heading") or style.startswith("标题")
+    level = _heading_level(style) if is_heading else 0
+    if is_heading:
+        headings.append({"level": level, "text": text, **fmt})
+        heading_formats[level] = fmt
+    elif len(body_format_samples) < 5:
+        body_format_samples.append(fmt)
+    paragraphs.append({
+        "index": idx,
+        "text": text,
+        "style": style,
+        "is_heading": is_heading,
+        "level": level,
+        **fmt,
+    })
+    return True
+
+
 def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
     doc = _load_document(docx_bytes)
+    _prepare_doc_for_preview(doc)
     headings = []
     paragraphs = []
     heading_formats: dict[int, dict] = {}
     body_format_samples: list[dict] = []
-    for idx, para in enumerate(_iter_paragraphs(doc)):
-        style = _paragraph_style_name(para)
-        raw_text = para.get_text() or ""
-        text = _clean_display_text(raw_text)
-        if not text or re.fullmatch(r"[\s\W_]+", text):
-            continue
-        fmt = _paragraph_run_format(para)
-        is_heading = style.startswith("Heading") or style.startswith("标题")
-        level = _heading_level(style) if is_heading else 0
-        if is_heading:
-            headings.append({"level": level, "text": text, **fmt})
-            heading_formats[level] = fmt
-        else:
-            if len(body_format_samples) < 5:
-                body_format_samples.append(fmt)
-        paragraphs.append({
-            "index": idx,
-            "text": text,
-            "style": style,
-            "is_heading": is_heading,
-            "level": level,
-            **fmt,
-        })
-        if len(paragraphs) >= max_paragraphs:
-            break
+    para_idx = 0
+    truncated = False
+
+    for section in doc.sections:
+        body = section.body
+        for child in body.get_child_nodes(aw.NodeType.ANY, False):
+            if truncated:
+                break
+            if child.node_type == aw.NodeType.PARAGRAPH:
+                para = child.as_paragraph()
+                if _append_preview_paragraph(
+                    paragraphs, headings, heading_formats, body_format_samples, para, para_idx,
+                ):
+                    para_idx += 1
+                    if len(paragraphs) >= max_paragraphs:
+                        truncated = True
+                        break
+            elif child.node_type == aw.NodeType.TABLE:
+                table = child.as_table()
+                rows = _table_preview_rows(table)
+                if not rows:
+                    continue
+                paragraphs.append({
+                    "index": para_idx,
+                    "text": "",
+                    "style": "Table",
+                    "is_heading": False,
+                    "is_table": True,
+                    "table_rows": rows,
+                    "level": 0,
+                })
+                para_idx += 1
+                if len(paragraphs) >= max_paragraphs:
+                    truncated = True
+                    break
+
     default_body = body_format_samples[0] if body_format_samples else {}
     return {
         "headings": headings,
         "paragraphs": paragraphs,
-        "truncated": len(paragraphs) >= max_paragraphs,
+        "truncated": truncated,
         "format_info": {
             "default_body": default_body,
             "heading_styles": [
@@ -476,6 +572,23 @@ def replace_text_snippet(docx_bytes: bytes, old_text: str, new_text: str, *, hig
     return out.getvalue()
 
 
+def _apply_mappings_to_text(text: str, approved: list[dict]) -> tuple[str, list[str]]:
+    display = text
+    applied_keys: list[str] = []
+    for m in approved:
+        original = m.get("original_text") or ""
+        key = m.get("key") or ""
+        if original and original in display:
+            if m.get("bind_type") == "qual":
+                qid = m.get("qualification_id") or key
+                placeholder = f"【QUAL_SLOT:{qid}】"
+            else:
+                placeholder = f"{{{{{key}}}}}"
+            display = display.replace(original, placeholder)
+            applied_keys.append(key)
+    return display, applied_keys
+
+
 def simulate_mapping_preview(paragraphs: list[dict], mappings: list[dict]) -> list[dict]:
     """在前端/后端预览映射效果，不修改实际文档。"""
     approved = [
@@ -486,23 +599,30 @@ def simulate_mapping_preview(paragraphs: list[dict], mappings: list[dict]) -> li
     approved.sort(key=lambda x: len(x.get("original_text") or ""), reverse=True)
     result = []
     for p in paragraphs:
-        text = p.get("text") or ""
-        display = text
-        applied_keys: list[str] = []
-        for m in approved:
-            original = m.get("original_text") or ""
-            key = m.get("key") or ""
-            if original and original in display:
-                if m.get("bind_type") == "qual":
-                    qid = m.get("qualification_id") or key
-                    placeholder = f"【QUAL_SLOT:{qid}】"
-                else:
-                    placeholder = f"{{{{{key}}}}}"
-                display = display.replace(original, placeholder)
-                applied_keys.append(key)
         item = dict(p)
-        item["display_text"] = display
-        item["applied_keys"] = applied_keys
-        item["changed"] = display != text
+        if p.get("is_table") and p.get("table_rows"):
+            rows = p.get("table_rows") or []
+            display_rows = []
+            all_keys: list[str] = []
+            changed = False
+            for row in rows:
+                new_row = []
+                for cell in row:
+                    display, keys = _apply_mappings_to_text(cell or "", approved)
+                    new_row.append(display)
+                    all_keys.extend(keys)
+                    if display != cell:
+                        changed = True
+                display_rows.append(new_row)
+            item["table_rows"] = rows
+            item["display_table_rows"] = display_rows
+            item["applied_keys"] = all_keys
+            item["changed"] = changed
+        else:
+            text = p.get("text") or ""
+            display, applied_keys = _apply_mappings_to_text(text, approved)
+            item["display_text"] = display
+            item["applied_keys"] = applied_keys
+            item["changed"] = display != text
         result.append(item)
     return result

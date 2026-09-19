@@ -77,8 +77,8 @@ def parse_template_manifest(
             "required": False,
         })
 
-    # 4) 空白/结构模板：标题下空段或极短段 → ai_section 候选
-    if not is_history and len([b for b in blocks if b["type"] == "ai_section"]) < 2:
+    # 4) 标题下空段或极短段 → ai_section 候选（空白模板与完整标书统一识别）
+    if len([b for b in blocks if b["type"] == "ai_section"]) < 2:
         paras = index["paragraphs"]
         for i, para in enumerate(paras):
             if not para.get("is_heading"):
