@@ -15,7 +15,7 @@
 
 ## GitHub Releases
 
-https://github.com/308081164/tender_agent/releases/tag/desktop-v1.1.0.70.84
+https://github.com/308081164/tender_agent/releases/tag/desktop-v1.1.0.71.85
 
 > 说明：`*.exe` 体积超过 Git 单文件限制，仓库内 `release/` 在本地打包后会包含安装包；远程仓库提交版本元数据，完整安装包请从 GitHub Releases 下载。
 
