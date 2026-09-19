@@ -1,13 +1,13 @@
 {
-  "version": "1.1.0.70",
-  "display_version": "v1.1.0.70",
-  "built_at": "2026-09-18T10:02:45Z",
+  "version": "1.1.0.71",
+  "display_version": "v1.1.0.71",
+  "built_at": "2026-09-19T03:53:50Z",
   "deepseek_default_model": "deepseek-v4-pro",
   "doc_engine": "v2",
   "artifacts": {
-    "windows_installer": "TenderAgentSetup-v1.1.0.70.exe",
-    "user_manual": "tender-agent-manual-v1.1.0.70.md",
-    "docs_zip": "tender-agent-release-v1.1.0.70.zip",
-    "test_materials_zip": "tender-agent-test-materials-v1.1.0.70.zip"
+    "windows_installer": "TenderAgentSetup-v1.1.0.71.exe",
+    "user_manual": "tender-agent-manual-v1.1.0.71.md",
+    "docs_zip": "tender-agent-release-v1.1.0.71.zip",
+    "test_materials_zip": "tender-agent-test-materials-v1.1.0.71.zip"
   }
 }
