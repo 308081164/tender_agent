@@ -576,6 +576,25 @@ class SensitiveConfirmIn(BaseModel):
     field_keys: list[str]
 
 
+class WritingRequirementsIn(BaseModel):
+    requirements: str = ""
+
+
+class GuidedIntakeIn(BaseModel):
+    answered: dict[str, str] = {}
+
+
+class ApplyAttachmentPatchIn(BaseModel):
+    attachment_id: str
+    keys: list[str] | None = None
+    confirm_sensitive: bool = False
+
+
+class ComposeProjectIn(BaseModel):
+    requirements: str = ""
+    reference_snippets: list[str] = []
+
+
 @router.patch("/projects/{project_id}/fields/confirm-sensitive")
 def confirm_sensitive_fields(
     project_id: int,
@@ -979,25 +998,6 @@ def validate_project(project_id: int, db: Session = Depends(get_db)):
     db.commit()
     save_snapshot(db, p, 5)
     return result
-
-
-class WritingRequirementsIn(BaseModel):
-    requirements: str = ""
-
-
-class GuidedIntakeIn(BaseModel):
-    answered: dict[str, str] = {}
-
-
-class ApplyAttachmentPatchIn(BaseModel):
-    attachment_id: str
-    keys: list[str] | None = None
-    confirm_sensitive: bool = False
-
-
-class ComposeProjectIn(BaseModel):
-    requirements: str = ""
-    reference_snippets: list[str] = []
 
 
 @router.post("/projects/{project_id}/doc-review")
