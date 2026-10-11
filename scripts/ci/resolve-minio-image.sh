@@ -10,7 +10,7 @@ log() {
 
 if [[ -n "${MINIO_IMAGE:-}" ]]; then
   log "==> MinIO: using MINIO_IMAGE=$MINIO_IMAGE"
-  docker pull "$MINIO_IMAGE"
+  docker pull -q "$MINIO_IMAGE" >&2
   printf '%s\n' "$MINIO_IMAGE"
   exit 0
 fi
@@ -24,7 +24,7 @@ candidates=(
 
 for img in "${candidates[@]}"; do
   log "==> MinIO: trying ${img}"
-  if docker pull "$img"; then
+  if docker pull -q "$img" >&2; then
     log "==> MinIO: selected ${img}"
     if [[ -n "${GITHUB_ENV:-}" && -w "${GITHUB_ENV}" ]]; then
       echo "MINIO_IMAGE=${img}" >> "$GITHUB_ENV"
