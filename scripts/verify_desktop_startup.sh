@@ -90,6 +90,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> [1/6] 启动基础设施 (PostgreSQL + MinIO)"
+export MINIO_IMAGE
+MINIO_IMAGE="$(bash "$ROOT/scripts/ci/resolve-minio-image.sh")"
+export MINIO_IMAGE
 if compose up -d --wait db minio 2>/dev/null; then
   echo "docker compose --wait: services healthy"
 else
