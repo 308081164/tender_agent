@@ -572,6 +572,10 @@ def get_draft_preview_job(project_id: int, job_id: str):
     }
 
 
+class SensitiveConfirmIn(BaseModel):
+    field_keys: list[str]
+
+
 @router.patch("/projects/{project_id}/fields/confirm-sensitive")
 def confirm_sensitive_fields(
     project_id: int,
@@ -983,10 +987,6 @@ class WritingRequirementsIn(BaseModel):
 
 class GuidedIntakeIn(BaseModel):
     answered: dict[str, str] = {}
-
-
-class SensitiveConfirmIn(BaseModel):
-    field_keys: list[str]
 
 
 class ApplyAttachmentPatchIn(BaseModel):
