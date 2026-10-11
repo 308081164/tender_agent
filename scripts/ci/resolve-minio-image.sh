@@ -4,23 +4,28 @@ set -euo pipefail
 
 TAG="${MINIO_TAG:-RELEASE.2024-12-18T13-15-44Z}"
 
+log() {
+  echo "$@" >&2
+}
+
 if [[ -n "${MINIO_IMAGE:-}" ]]; then
-  echo "==> MinIO: using MINIO_IMAGE=$MINIO_IMAGE"
+  log "==> MinIO: using MINIO_IMAGE=$MINIO_IMAGE"
   docker pull "$MINIO_IMAGE"
+  printf '%s\n' "$MINIO_IMAGE"
   exit 0
 fi
 
 candidates=(
-  "mirror.gcr.io/minio/minio:${TAG}"
+  "ghcr.io/coollabsio/minio:${TAG}"
   "quay.io/minio/minio:${TAG}"
   "minio/minio:${TAG}"
+  "public.ecr.aws/bitnami/minio:latest"
 )
 
 for img in "${candidates[@]}"; do
-  echo "==> MinIO: trying ${img}"
+  log "==> MinIO: trying ${img}"
   if docker pull "$img"; then
-    export MINIO_IMAGE="$img"
-    echo "==> MinIO: selected ${img}"
+    log "==> MinIO: selected ${img}"
     if [[ -n "${GITHUB_ENV:-}" && -w "${GITHUB_ENV}" ]]; then
       echo "MINIO_IMAGE=${img}" >> "$GITHUB_ENV"
     fi
@@ -29,5 +34,5 @@ for img in "${candidates[@]}"; do
   fi
 done
 
-echo "ERROR: could not pull MinIO from any configured registry mirror" >&2
+log "ERROR: could not pull MinIO from any configured registry mirror"
 exit 1
