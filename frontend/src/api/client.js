@@ -58,6 +58,28 @@ export const api = {
   checklist: () => request('/checklist'),
   projects: () => request('/projects'),
   getProject: (id) => request(`/projects/${id}`),
+  getProjectContext: (id) => request(`/projects/${id}/context`),
+  ensureProjectSession: (id) => request(`/projects/${id}/sessions`, { method: 'POST' }),
+  renderProjectDraft: (id) => request(`/projects/${id}/render`, { method: 'POST' }),
+  projectDraftPreviewUrl: (id, token = '') =>
+    `${BASE}/projects/${id}/draft-preview.pdf${token ? `?t=${encodeURIComponent(token)}` : ''}`,
+  confirmSensitiveFields: (id, field_keys) =>
+    request(`/projects/${id}/fields/confirm-sensitive`, {
+      method: 'PATCH',
+      body: JSON.stringify({ field_keys }),
+    }),
+  uploadProjectAttachment: async (projectId, file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/projects/${projectId}/attachments`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await readErrorDetail(res))
+    return res.json()
+  },
+  applyAttachmentPatch: (projectId, attachment_id, keys) =>
+    request(`/projects/${projectId}/attachments/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ attachment_id, keys }),
+    }),
   createProject: (body) => request('/projects', { method: 'POST', body: JSON.stringify(body) }),
   deleteProject: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
   confirmStep1: (id, body) => request(`/projects/${id}/step1`, { method: 'POST', body: JSON.stringify(body) }),

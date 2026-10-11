@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import { STEPS } from '../constants'
@@ -452,6 +452,7 @@ export default function WizardPage() {
             <div className="actions">
               <button className="secondary" onClick={() => goStep(1)}>返回上一步</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
+              <Link className="button secondary linkish" to={`/projects/${project.id}/workspace`}>进入创作工作台</Link>
               <button onClick={confirmFields} disabled={loading}>保存并进入 AI 生成</button>
             </div>
           </>

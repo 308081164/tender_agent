@@ -174,22 +174,27 @@ def _parse_options(raw: Any) -> list[str]:
     return []
 
 
-def required_fields_for_template(db: Session) -> list[dict[str, Any]]:
-    """对话内收集的关键字段：必填优先，补充常用项。"""
-    defs = db.query(FieldDef).order_by(FieldDef.sort_order.asc()).all()
+def required_fields_for_template(db: Session, template_id: int | None = None) -> list[dict[str, Any]]:
+    """对话内收集的关键字段：必填优先，补充常用项（含 verify / effective_default）。"""
+    from app.services.project_context import field_defs_enriched_for_template
+
+    enriched = field_defs_enriched_for_template(db, template_id)
     picked: list[dict[str, Any]] = []
-    for f in defs:
-        if f.required:
+    for f in enriched:
+        if f.get("required") or f.get("key") in ("project_name", "tender_no", "tenderer", "duration"):
             picked.append({
-                "key": f.key,
-                "name": f.name,
-                "field_type": f.field_type,
-                "default": f.default_value or "",
-                "options": _parse_options(f.options),
-                "required": True,
+                "key": f["key"],
+                "name": f["name"],
+                "field_type": f.get("field_type") or "文本",
+                "default": f.get("effective_default") or f.get("default") or "",
+                "options": f.get("options") or [],
+                "required": bool(f.get("required")) or f["key"] == "project_name",
+                "verify": bool(f.get("verify")),
+                "desensitized": bool(f.get("desensitized")),
             })
+    seen = {f["key"] for f in picked}
     for key in ("project_name", "tender_no", "tenderer", "duration"):
-        if any(f["key"] == key for f in picked):
+        if key in seen:
             continue
         picked.append({
             "key": key,
@@ -199,5 +204,46 @@ def required_fields_for_template(db: Session) -> list[dict[str, Any]]:
             "default": "",
             "options": [],
             "required": key == "project_name",
+            "verify": key == "duration",
         })
     return picked[:8]
+
+
+def get_project_context(db: Session, project_id: int) -> dict[str, Any]:
+    from app.services.project_context import build_project_context
+
+    return build_project_context(db, project_id)
+
+
+def get_missing_critical_fields(db: Session, project_id: int) -> dict[str, Any]:
+    ctx = get_project_context(db, project_id)
+    cl = ctx.get("field_checklist") or {}
+    return {
+        "missing_required": cl.get("missing_required") or [],
+        "needs_verify": cl.get("needs_verify") or [],
+        "empty_chapters": (ctx.get("chapters") or {}).get("empty_keys") or [],
+    }
+
+
+async def list_missing_intake_questions(db: Session, project_id: int) -> dict[str, Any]:
+    from app.models import TenderProject
+    from app.services.project_workflow import guided_intake_questions
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p or not p.template_id:
+        return {"questions": [], "field_cards": []}
+    critical = get_missing_critical_fields(db, project_id)
+    missing = critical.get("missing_required") or []
+    if missing:
+        fields = required_fields_for_template(db, p.template_id)
+        by_key = {f["key"]: f for f in fields}
+        card_fields = [by_key[m["key"]] for m in missing[:3] if m["key"] in by_key]
+        if not card_fields:
+            card_fields = [
+                {"key": m["key"], "name": m.get("name", m["key"]), "required": True, "default": ""}
+                for m in missing[:3]
+            ]
+        return {"questions": [], "field_cards": card_fields}
+    answered = (p.fields or {}).get("_guided_answers") or {}
+    intake = await guided_intake_questions(db, p.template_id, p.fields or {}, answered=answered)
+    return {"questions": intake.get("questions") or [], "field_cards": []}

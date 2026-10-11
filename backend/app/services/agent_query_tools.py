@@ -172,7 +172,7 @@ def build_system_snapshot(db: Session, workspace: dict | None = None) -> dict[st
     tpl_stats = count_templates(db)
     proj_stats = count_projects(db)
     company = get_company_summary(db)
-    return {
+    snap = {
         "company_name": company.get("full_name") or company.get("short_name") or "",
         "template_total": tpl_stats["total"],
         "template_enabled": tpl_stats["enabled"],
@@ -181,7 +181,24 @@ def build_system_snapshot(db: Session, workspace: dict | None = None) -> dict[st
         "workspace_has_doc": bool(ws.get("draft_object_key") or ws.get("template_object_key")),
         "workspace_filename": ws.get("filename") or "",
         "awaiting_file_intent": bool(ws.get("awaiting_file_intent")),
+        "project_id": ws.get("project_id"),
     }
+    pid = ws.get("project_id")
+    if pid:
+        try:
+            from app.services.project_context import build_project_context
+
+            ctx = build_project_context(db, int(pid))
+            cl = ctx.get("field_checklist") or {}
+            snap["project_context"] = {
+                "template_name": (ctx.get("template") or {}).get("name"),
+                "mode": (ctx.get("template") or {}).get("mode"),
+                "missing_required_count": len(cl.get("missing_required") or []),
+                "needs_verify_count": len(cl.get("needs_verify") or []),
+            }
+        except Exception:
+            pass
+    return snap
 
 
 def parse_bulk_replace(text: str) -> tuple[str, str] | None:

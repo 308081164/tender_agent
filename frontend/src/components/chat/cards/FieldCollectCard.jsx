@@ -5,7 +5,7 @@ export default function FieldCollectCard({ card, message, acting, onAction }) {
   const { fields = [], template_name, confirm_action, cancel_action } = card.payload || {}
   const [values, setValues] = useState(() => {
     const init = {}
-    for (const f of fields) init[f.key] = f.default || ''
+    for (const f of fields) init[f.key] = f.default || f.effective_default || ''
     return init
   })
   const active = card.state === 'active'
@@ -31,7 +31,9 @@ export default function FieldCollectCard({ card, message, acting, onAction }) {
       <div className="field-collect-grid">
         {fields.map((f) => (
           <div className="field" key={f.key}>
-            <label>{f.name}{f.required ? ' *' : ''}</label>
+            <label className={f.verify ? 'verify-field' : ''}>
+              {f.name}{f.required ? ' *' : ''}{f.verify ? '（请核实）' : ''}
+            </label>
             {f.options?.length ? (
               <select
                 value={values[f.key] || ''}

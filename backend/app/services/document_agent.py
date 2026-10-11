@@ -119,6 +119,7 @@ async def edit_document_fragment(
     paragraph_index: int | None = None,
     db: Session | None = None,
     company_context: str = "",
+    reference_snippets: list[str] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     """根据用户指令修改文档片段（多轮对话场景）。"""
     context_text = selected_text
@@ -129,12 +130,15 @@ async def edit_document_fragment(
         if match:
             context_text = match.get("text") or ""
 
+    ref = ""
+    if reference_snippets:
+        ref = "\n\n参照段落：\n" + "\n---\n".join(s[:2000] for s in reference_snippets if s)
     prompt = (
         "你是标书编辑助手。根据修改指令输出修订后的文本。\n"
         "要求：保持正式文风，仅修改必要内容，不要添加解释。\n\n"
         f"企业背景：{(company_context or '')[:1500]}\n\n"
         f"原文：\n{context_text}\n\n"
-        f"修改指令：{instruction}\n\n"
+        f"修改指令：{instruction}{ref}\n\n"
         "请只输出修订后的正文，不要 markdown，不要前后说明。"
     )
     revised = await ai.chat_completion([

@@ -1,9 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { api } from './api/client'
 import FloatingChat from './components/FloatingChat'
+import CreateProjectHubModal from './components/project/CreateProjectHubModal'
 import Toast from './components/Toast'
-import AdminConfirmDialog from './components/admin/AdminConfirmDialog'
 import { useToast } from './hooks/useToast'
 import { useChatSessions } from './hooks/useChat'
 import { useSettings } from './hooks/useSettings'
@@ -15,9 +15,10 @@ export function useApp() {
 }
 
 export default function App() {
-  const navigate = useNavigate()
   const location = useLocation()
   const hideFloatingChat = location.pathname.startsWith('/chat')
+    || location.pathname.includes('/workspace')
+  const [createHubOpen, setCreateHubOpen] = useState(false)
   const { toast, showToast } = useToast()
   const chat = useChatSessions(showToast)
   const settings = useSettings(showToast)
@@ -28,9 +29,6 @@ export default function App() {
   const [categories, setCategories] = useState([])
   const [projects, setProjects] = useState([])
   const [bootLoading, setBootLoading] = useState(true)
-  const [confirmNewOpen, setConfirmNewOpen] = useState(false)
-  const [creatingProject, setCreatingProject] = useState(false)
-
   const refreshProjects = async () => {
     const list = await api.projects()
     setProjects(list)
@@ -78,22 +76,7 @@ export default function App() {
     })()
   }, [])
 
-  const requestStartNew = () => setConfirmNewOpen(true)
-
-  const confirmStartNew = async () => {
-    setCreatingProject(true)
-    try {
-      const p = await api.createProject({ title: '新建标书' })
-      await refreshProjects()
-      showToast('已创建新标书项目')
-      setConfirmNewOpen(false)
-      navigate(`/projects/${p.id}/step/1`)
-    } catch (e) {
-      showToast(e.message)
-    } finally {
-      setCreatingProject(false)
-    }
-  }
+  const requestStartNew = () => setCreateHubOpen(true)
 
   const ctx = useMemo(() => ({
     showToast,
@@ -116,16 +99,14 @@ export default function App() {
   return (
     <AppContext.Provider value={ctx}>
       <Outlet />
-      {!hideFloatingChat ? <FloatingChat chat={chat} /> : null}
-      <Toast message={toast} />
-      <AdminConfirmDialog
-        open={confirmNewOpen}
-        title="新建标书"
-        message="确认创建一份新的标书项目？创建后将进入六步向导。"
-        confirmLabel={creatingProject ? '创建中…' : '确认创建'}
-        onCancel={() => { if (!creatingProject) setConfirmNewOpen(false) }}
-        onConfirm={confirmStartNew}
+      {!hideFloatingChat ? <FloatingChat chat={chat} projectPath={location.pathname} /> : null}
+      <CreateProjectHubModal
+        open={createHubOpen}
+        templates={templates}
+        onClose={() => setCreateHubOpen(false)}
+        showToast={showToast}
       />
+      <Toast message={toast} />
     </AppContext.Provider>
   )
 }
