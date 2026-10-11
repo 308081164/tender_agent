@@ -86,5 +86,13 @@ if ($installRoot -and (Test-Path (Join-Path $installRoot "runtime\python.exe")))
   Write-Host "SKIP embedded python tests (TENDER_INSTALL_DIR not found)" -ForegroundColor Yellow
 }
 
+$p = Test-Endpoint "创建测试项目" "$Api/projects" "POST" '{"title":"验收项目"}'
+$ctx = Test-Endpoint "项目 context" "$Api/projects/$($p.id)/context"
+if (-not $ctx.field_checklist) { throw "context missing field_checklist" }
+if (-not $ctx.template) { throw "context missing template" }
+$sess = Test-Endpoint "项目会话绑定" "$Api/projects/$($p.id)/sessions" "POST"
+if (-not $sess.session.id) { throw "project session not created" }
+Write-Host "  context API + session bind OK" -ForegroundColor Green
+
 Write-Host ""
 Write-Host "VERIFY_OK: Windows feature smoke passed" -ForegroundColor Green

@@ -1,7 +1,7 @@
 from datetime import datetime
 from urllib.parse import quote
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -304,9 +304,14 @@ def list_templates(include_disabled: bool = False, db: Session = Depends(get_db)
         q = q.filter(Template.enabled.is_(True))
     # 招标文件不作为导出起点
     q = q.filter(Template.kind != "tender_doc")
+    from app.services.project_workflow import resolve_template_mode
+
     items = q.order_by(Template.id.desc()).all()
-    return [
-        {
+    result = []
+    for t in items:
+        ph_list = (t.placeholders or {}).get("list") or []
+        mode_info = resolve_template_mode(t)
+        result.append({
             "id": t.id,
             "name": t.name,
             "description": t.description,
@@ -315,9 +320,11 @@ def list_templates(include_disabled: bool = False, db: Session = Depends(get_db)
             "template_code": getattr(t, "template_code", "common") or "common",
             "kind": getattr(t, "kind", "template") or "template",
             "enabled": getattr(t, "enabled", True),
-        }
-        for t in items
-    ]
+            "placeholder_count": len(ph_list),
+            "workflow_mode": mode_info.get("mode") or "compose",
+            "workflow_label": mode_info.get("label") or "",
+        })
+    return result
 
 
 @router.get("/fields")
@@ -456,6 +463,214 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     return data
 
 
+@router.get("/projects/{project_id}/context")
+def get_project_context(project_id: int, db: Session = Depends(get_db)):
+    from app.services.project_context import build_project_context
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    try:
+        return build_project_context(db, project_id)
+    except ValueError as err:
+        raise HTTPException(404, str(err)) from err
+
+
+@router.post("/projects/{project_id}/sessions")
+def get_or_create_project_chat_session(project_id: int, db: Session = Depends(get_db)):
+    from app.services.project_sessions import get_or_create_project_session
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    s = get_or_create_project_session(db, p)
+    return {"session": session_to_dict(s), "project_id": project_id}
+
+
+@router.post("/projects/{project_id}/render")
+async def render_project_draft(project_id: int, db: Session = Depends(get_db)):
+    from app.services.project_draft import render_project_draft_docx
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    try:
+        _doc, draft_key, meta = await render_project_draft_docx(db, p)
+    except ValueError as err:
+        raise HTTPException(400, str(err)) from err
+    db.refresh(p)
+    return {
+        "draft_object_key": draft_key,
+        "render_meta": meta,
+        "project": project_to_dict(p),
+    }
+
+
+@router.get("/projects/{project_id}/draft-preview.pdf")
+async def draft_preview_pdf(project_id: int, force: bool = False, db: Session = Depends(get_db)):
+    from app.services.project_draft import get_draft_preview_pdf
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    try:
+        pdf_bytes = await get_draft_preview_pdf(db, project_id, force_render=force)
+    except ValueError as err:
+        raise HTTPException(400, str(err)) from err
+    title = (p.fields or {}).get("project_name") or p.title or "draft"
+    pdf_name = f"{title}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{quote(pdf_name)}",
+            "Cache-Control": "private, max-age=60",
+        },
+    )
+
+
+@router.post("/projects/{project_id}/draft-preview/async")
+async def start_draft_preview_async(
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    from app.services import project_draft
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    job_id = project_draft.start_async_preview_job(project_id)
+
+    async def _run():
+        from app.database import SessionLocal
+
+        session = SessionLocal()
+        try:
+            project_draft.set_preview_job(job_id, status="running")
+            await project_draft.get_draft_preview_pdf(session, project_id, force_render=True)
+            project_draft.set_preview_job(job_id, status="done", pdf_ready=True)
+        except Exception as err:
+            project_draft.set_preview_job(job_id, status="failed", error=str(err))
+        finally:
+            session.close()
+
+    background_tasks.add_task(_run)
+    return {"job_id": job_id, "status": "pending"}
+
+
+@router.get("/projects/{project_id}/draft-preview/jobs/{job_id}")
+def get_draft_preview_job(project_id: int, job_id: str):
+    from app.services import project_draft
+
+    job = project_draft.get_preview_job(job_id)
+    if not job or job.get("project_id") != project_id:
+        raise HTTPException(404, "预览任务不存在")
+    return {
+        **job,
+        "preview_url": f"/api/projects/{project_id}/draft-preview.pdf" if job.get("pdf_ready") else None,
+    }
+
+
+class SensitiveConfirmIn(BaseModel):
+    field_keys: list[str]
+
+
+class WritingRequirementsIn(BaseModel):
+    requirements: str = ""
+
+
+class GuidedIntakeIn(BaseModel):
+    answered: dict[str, str] = {}
+
+
+class ApplyAttachmentPatchIn(BaseModel):
+    attachment_id: str
+    keys: list[str] | None = None
+    confirm_sensitive: bool = False
+
+
+class ComposeProjectIn(BaseModel):
+    requirements: str = ""
+    reference_snippets: list[str] = []
+
+
+@router.patch("/projects/{project_id}/fields/confirm-sensitive")
+def confirm_sensitive_fields(
+    project_id: int,
+    body: SensitiveConfirmIn,
+    db: Session = Depends(get_db),
+):
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    fields = dict(p.fields or {})
+    confirmed = dict(fields.get("_sensitive_confirmed") or {})
+    stamp = datetime.utcnow().isoformat()
+    for key in body.field_keys or []:
+        if key:
+            confirmed[key] = stamp
+    fields["_sensitive_confirmed"] = confirmed
+    p.fields = fields
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"confirmed": confirmed, "project": project_to_dict(p)}
+
+
+@router.post("/projects/{project_id}/attachments")
+async def upload_project_attachment(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    from app.services.project_attachments import ingest_attachment
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "文件为空")
+    name = file.filename or "upload.bin"
+    return await ingest_attachment(db, p, name, data, file.content_type or "")
+
+
+@router.post("/projects/{project_id}/attachments/apply")
+def apply_attachment_field_patch(
+    project_id: int,
+    body: ApplyAttachmentPatchIn,
+    db: Session = Depends(get_db),
+):
+    from app.services.field_verify import is_verify_field
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    fields = dict(p.fields or {})
+    attachments = fields.get("_attachments") or []
+    att = next((a for a in attachments if a.get("id") == body.attachment_id), None)
+    if not att:
+        raise HTTPException(404, "附件不存在")
+    applied = []
+    for item in att.get("suggested_field_patch") or []:
+        key = item.get("key")
+        if body.keys and key not in body.keys:
+            continue
+        fd = db.query(FieldDef).filter(FieldDef.key == key).first()
+        if fd and is_verify_field(fd) and not body.confirm_sensitive:
+            continue
+        if item.get("sensitive") and not body.confirm_sensitive:
+            continue
+        fields[key] = item.get("value")
+        applied.append(key)
+    p.fields = _fill_field_defaults(db, fields)
+    flag_modified(p, "fields")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"applied_keys": applied, "project": project_to_dict(p)}
+
+
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db)):
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
@@ -562,10 +777,23 @@ def confirm_step1(project_id: int, body: ProjectCreate, db: Session = Depends(ge
 
 @router.put("/projects/{project_id}/fields")
 def update_fields(project_id: int, body: FieldsUpdate, db: Session = Depends(get_db)):
+    from app.services.field_verify import is_verify_field
+
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
-    p.fields = _fill_field_defaults(db, body.fields)
+    incoming = dict(body.fields or {})
+    old = dict(p.fields or {})
+    confirmed = dict(old.get("_sensitive_confirmed") or {})
+    blocked: list[str] = []
+    for fd in db.query(FieldDef).all():
+        if fd.key not in incoming or incoming.get(fd.key) == old.get(fd.key):
+            continue
+        if is_verify_field(fd) and fd.key not in confirmed:
+            blocked.append(fd.key)
+            incoming[fd.key] = old.get(fd.key)
+    merged = _fill_field_defaults(db, incoming)
+    p.fields = merged
     flag_modified(p, "fields")
     if p.fields.get("project_name"):
         p.title = str(p.fields["project_name"])
@@ -575,7 +803,10 @@ def update_fields(project_id: int, body: FieldsUpdate, db: Session = Depends(get
     db.commit()
     db.refresh(p)
     save_snapshot(db, p, 2 if body.confirm else max(p.current_step, 2))
-    return project_to_dict(p)
+    out = project_to_dict(p)
+    if blocked:
+        out["blocked_sensitive"] = blocked
+    return out
 
 
 def _company_context(db: Session) -> str:
@@ -769,14 +1000,6 @@ def validate_project(project_id: int, db: Session = Depends(get_db)):
     return result
 
 
-class WritingRequirementsIn(BaseModel):
-    requirements: str = ""
-
-
-class GuidedIntakeIn(BaseModel):
-    answered: dict[str, str] = {}
-
-
 @router.post("/projects/{project_id}/doc-review")
 async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
     """文档引擎 v2：LLM+规则全篇审阅（导出前预检）。"""
@@ -855,7 +1078,7 @@ async def project_guided_intake(
 @router.post("/projects/{project_id}/compose")
 async def compose_project(
     project_id: int,
-    body: WritingRequirementsIn,
+    body: ComposeProjectIn,
     db: Session = Depends(get_db),
 ):
     """创作模式：根据编写要求分块生成章节并写入项目。"""
@@ -877,11 +1100,15 @@ async def compose_project(
     from app.services.doc_engine.parser import parse_template_manifest
 
     manifest = get_manifest(tpl.placeholders) or parse_template_manifest(tpl_bytes)
+    req = body.requirements or ""
+    if body.reference_snippets:
+        ref_block = "\n---\n".join(s for s in body.reference_snippets if s and str(s).strip())
+        req = f"{req}\n\n参照段落：\n{ref_block}".strip()
     plan = await build_composition_plan(
-        manifest, fields, body.requirements, _company_context(db), db=db
+        manifest, fields, req, _company_context(db), db=db
     )
     contents, table_rows = await generate_block_contents(
-        plan, fields, body.requirements, _company_context(db), db=db
+        plan, fields, req, _company_context(db), db=db
     )
     if table_rows:
         fields = dict(fields)
@@ -998,6 +1225,18 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     if p.checklist_result and not p.checklist_result.get("can_export", True):
         raise HTTPException(400, detail={"message": "条目校验未通过，无法导出", "result": p.checklist_result})
 
+    from app.services.field_verify import unconfirmed_sensitive_keys
+
+    pending_sensitive = unconfirmed_sensitive_keys(p.fields, db)
+    if pending_sensitive:
+        raise HTTPException(
+            400,
+            detail={
+                "message": "存在未人工确认的敏感字段，无法导出",
+                "needs_confirm": pending_sensitive,
+            },
+        )
+
     tpl = db.query(Template).filter(Template.id == p.template_id).first()
     if getattr(tpl, "kind", "") == "tender_doc":
         raise HTTPException(400, "招标文件仅供参考，不能作为导出起点")
@@ -1086,6 +1325,17 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     p.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(export_row)
+    export_fields = dict(p.fields or {})
+    audit = list(export_fields.get("_export_audit_log") or [])
+    audit.append({
+        "export_id": export_row.id,
+        "at": datetime.utcnow().isoformat(),
+        "sensitive_confirmed": dict(export_fields.get("_sensitive_confirmed") or {}),
+    })
+    export_fields["_export_audit_log"] = audit[-20:]
+    p.fields = export_fields
+    flag_modified(p, "fields")
+    db.commit()
     save_snapshot(db, p, 6)
 
     ascii_name = "tender.docx"
@@ -1409,6 +1659,9 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
             ctx = company.intro if company else ""
             doc_bytes = storage.download_bytes(doc_key)
             ctx_sel = body.context or {}
+            refs = ctx_sel.get("reference_snippets") or []
+            if isinstance(refs, str):
+                refs = [refs]
             new_bytes, revised, edit_meta = await document_agent.edit_document_fragment(
                 doc_bytes,
                 meta.get("instruction") or content,
@@ -1416,6 +1669,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
                 paragraph_index=meta.get("paragraph_index") if meta.get("paragraph_index") is not None else ctx_sel.get("paragraph_index"),
                 db=db,
                 company_context=ctx,
+                reference_snippets=refs,
             )
             new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_edited.docx"
             storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -1429,6 +1683,51 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
             )
             meta["workspace_updated"] = True
             meta["revised_preview"] = revised[:1000]
+
+    pid = ws.get("project_id")
+    if pid:
+        try:
+            from app.services.project_context import build_project_context
+            from app.services import agent_tools
+
+            ctx_pack = build_project_context(db, int(pid))
+            meta["project_context"] = ctx_pack
+            tpl = ctx_pack.get("template") or {}
+            cl = ctx_pack.get("field_checklist") or {}
+            missing_n = len(cl.get("missing_required") or [])
+            verify_n = len(cl.get("needs_verify") or [])
+            if tpl.get("name") and not meta.get("project_context_hint"):
+                hint = f"当前模板：{tpl.get('name')}（{tpl.get('mode')}）"
+                if missing_n or verify_n:
+                    hint += f"；待填 {missing_n} 项，待核实 {verify_n} 项"
+                result["answer"] = ((result.get("answer") or "").strip() + f"\n\n_{hint}_").strip()
+            guided = ws.get("guided_intake", True)
+            ctx_body = body.context or {}
+            if ctx_body.get("guided_intake") is False:
+                guided = False
+            if guided and not meta.get("cards"):
+                intake = await agent_tools.list_missing_intake_questions(db, int(pid))
+                card_fields = intake.get("field_cards") or []
+                if card_fields:
+                    import uuid
+
+                    meta.setdefault("cards", []).append({
+                        "id": uuid.uuid4().hex[:12],
+                        "type": "field_collect",
+                        "title": "待填基础信息",
+                        "state": "active",
+                        "payload": {
+                            "fields": card_fields,
+                            "template_name": tpl.get("name"),
+                            "confirm_action": "confirm_fields",
+                            "cancel_action": "dismiss_card",
+                        },
+                    })
+                elif (intake.get("questions") or []) and len(intake["questions"]) <= 3:
+                    qtext = "\n".join(f"- {q.get('text')}" for q in intake["questions"][:3])
+                    result["answer"] = ((result.get("answer") or "") + f"\n\n为继续完善标书，请补充：\n{qtext}").strip()
+        except Exception:
+            pass
 
     bot_msg = ChatMessage(
         session_id=s.id,

@@ -254,7 +254,42 @@ async def handle_action(
     if action == "confirm_mapping":
         return await _on_confirm_mapping(db, session, pa, payload)
 
+    if action == "confirm_sensitive_fields":
+        return await _on_confirm_sensitive_fields(db, session, payload)
+
     return "", _result("未知操作，请重试。", intent="error"), False
+
+
+async def _on_confirm_sensitive_fields(
+    db: Session, session: ChatSession, payload: dict
+) -> tuple[str, dict, bool]:
+    ws = getattr(session, "workspace", None) or {}
+    project_id = ws.get("project_id")
+    if not project_id:
+        return "", _result("当前会话未绑定标书项目。", intent="error"), False
+    keys = payload.get("field_keys") or []
+    from app.models import TenderProject
+    from datetime import datetime
+
+    p = db.query(TenderProject).filter(TenderProject.id == int(project_id)).first()
+    if not p:
+        return "", _result("项目不存在。", intent="error"), False
+    fields = dict(p.fields or {})
+    confirmed = dict(fields.get("_sensitive_confirmed") or {})
+    stamp = datetime.utcnow().isoformat()
+    for key in keys:
+        if key:
+            confirmed[key] = stamp
+    fields["_sensitive_confirmed"] = confirmed
+    p.fields = fields
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(p, "fields")
+    db.commit()
+    return "确认敏感字段", _result(
+        f"已确认 {len(keys)} 个敏感/核实字段，可继续编辑或导出。",
+        intent="sensitive_confirm",
+    ), False
 
 
 async def _on_select_template(
@@ -270,7 +305,7 @@ async def _on_select_template(
     if not chosen:
         return "", _result("所选模板不可用，请重新选择。", intent="error"), False
 
-    fields = agent_tools.required_fields_for_template(db)
+    fields = agent_tools.required_fields_for_template(db, template_id)
     _set_pending(session, {
         "flow": FLOW_PROJECT_CREATE,
         "stage": "collect_fields",
@@ -299,6 +334,33 @@ async def _on_select_template(
 async def _on_confirm_fields(
     db: Session, session: ChatSession, pa: dict | None, payload: dict
 ) -> tuple[str, dict, bool]:
+    ws = getattr(session, "workspace", None) or {}
+    bound_pid = ws.get("project_id")
+    if bound_pid and (not pa or pa.get("flow") != FLOW_PROJECT_CREATE or pa.get("stage") != "collect_fields"):
+        from app.models import TenderProject
+        from app.services.field_defaults import fill_field_defaults
+        from sqlalchemy.orm.attributes import flag_modified
+
+        p = db.query(TenderProject).filter(TenderProject.id == int(bound_pid)).first()
+        if not p:
+            return "", _result("绑定的项目不存在。", intent="error"), False
+        patch = {str(k): str(v) for k, v in (payload.get("fields") or {}).items()}
+        merged = fill_field_defaults(db, {**(p.fields or {}), **patch})
+        p.fields = merged
+        flag_modified(p, "fields")
+        db.commit()
+        return "保存字段", _result(
+            "已更新项目字段。左侧预览将在保存后刷新。",
+            intent="project_fields",
+            project_id=p.id,
+            actions=[{
+                "type": "link",
+                "label": "打开创作工作台",
+                "url": f"/projects/{p.id}/workspace",
+                "primary": True,
+            }],
+        ), False
+
     if not pa or pa.get("flow") != FLOW_PROJECT_CREATE or pa.get("stage") != "collect_fields":
         return "", _result("该表单已失效，请重新告诉我「帮我写标书」。", intent="error"), False
     template_id = int(pa.get("template_id") or 0)

@@ -1,9 +1,11 @@
 import React from 'react'
+import { Link } from 'react-router-dom'
 import { formatTime } from '../utils/format'
 
 export default function ChatDrawer({
   open,
   onClose,
+  workspaceHref,
   sessions,
   sessionId,
   messages,
@@ -38,6 +40,9 @@ export default function ChatDrawer({
             >
               {showHistory ? '返回对话' : '历史'}
             </button>
+            {workspaceHref ? (
+              <Link className="ghost linkish" to={workspaceHref} onClick={onClose}>创作工作台</Link>
+            ) : null}
             <a className="ghost linkish" href="/chat" onClick={(e) => { e.preventDefault(); onClose(); window.location.href = '/chat' }}>全屏模式</a>
             <button type="button" className="ghost" onClick={onClose} aria-label="关闭">
               ×

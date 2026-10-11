@@ -5,6 +5,7 @@ import FieldCollectCard from './FieldCollectCard'
 import TemplateInfoCard from './TemplateInfoCard'
 import ProjectInfoCard from './ProjectInfoCard'
 import ConfirmCard from './ConfirmCard'
+import SensitiveConfirmCard from './SensitiveConfirmCard'
 import RequirementsCollectCard from './RequirementsCollectCard'
 import DocReviewCard from './DocReviewCard'
 import RevisionCollectCard from './RevisionCollectCard'
@@ -20,6 +21,7 @@ const RENDERERS = {
   template_info: TemplateInfoCard,
   project_info: ProjectInfoCard,
   confirm: ConfirmCard,
+  sensitive_confirm: SensitiveConfirmCard,
 }
 
 export default function ChatCards({ cards = [], message, onAction, actingCardId }) {

@@ -19,6 +19,8 @@ export default function Step1TemplatePicker({ templates, selectedId, onSelect })
 
   const [tab, setTab] = useState('template')
   const [search, setSearch] = useState('')
+  const [modeFilter, setModeFilter] = useState('all')
+  const [codeFilter, setCodeFilter] = useState('')
   const [page, setPage] = useState(1)
 
   useEffect(() => {
@@ -29,19 +31,26 @@ export default function Step1TemplatePicker({ templates, selectedId, onSelect })
 
   useEffect(() => {
     setPage(1)
-  }, [tab, search])
+  }, [tab, search, modeFilter, codeFilter])
 
   const pool = tab === 'history' ? history : engineering
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return pool
-    return pool.filter((t) =>
-      [t.name, t.description, t.template_code]
+    return pool.filter((t) => {
+      if (modeFilter !== 'all' && (t.workflow_mode || 'compose') !== modeFilter) return false
+      if (codeFilter && (t.template_code || 'common') !== codeFilter) return false
+      if (!q) return true
+      return [t.name, t.description, t.template_code]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q))
-    )
-  }, [pool, search])
+    })
+  }, [pool, search, modeFilter, codeFilter])
+
+  const templateCodes = useMemo(() => {
+    const codes = new Set(pool.map((t) => t.template_code || 'common'))
+    return [...codes].sort()
+  }, [pool])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
@@ -74,6 +83,21 @@ export default function Step1TemplatePicker({ templates, selectedId, onSelect })
             placeholder={tab === 'history' ? '搜索历史标书名称…' : '搜索模板名称或编号…'}
           />
         </div>
+        {tab === 'template' ? (
+          <div className="step1-filters">
+            <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value)}>
+              <option value="all">全部模式</option>
+              <option value="replace">占位符替换</option>
+              <option value="compose">AI 创作</option>
+            </select>
+            <select value={codeFilter} onChange={(e) => setCodeFilter(e.target.value)}>
+              <option value="">全部编号</option>
+              {templateCodes.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
       </div>
 
       {filtered.length === 0 ? (
@@ -102,6 +126,12 @@ export default function Step1TemplatePicker({ templates, selectedId, onSelect })
                 </div>
                 <h3>{t.name}</h3>
                 <p>{subtitle(t)}</p>
+                {!isHistory(t) ? (
+                  <p className="card-select-meta muted">
+                    {t.workflow_mode === 'replace' ? 'replace' : 'compose'}
+                    {t.placeholder_count != null ? ` · ${t.placeholder_count} 占位符` : ''}
+                  </p>
+                ) : null}
                 {t.description ? <p className="card-select-desc">{t.description}</p> : null}
               </div>
             ))}
