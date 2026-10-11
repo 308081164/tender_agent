@@ -16,10 +16,10 @@ if [[ -n "${MINIO_IMAGE:-}" ]]; then
 fi
 
 candidates=(
+  "ghcr.io/coollabsio/minio:latest"
   "ghcr.io/coollabsio/minio:${TAG}"
   "quay.io/minio/minio:${TAG}"
   "minio/minio:${TAG}"
-  "public.ecr.aws/bitnami/minio:latest"
 )
 
 for img in "${candidates[@]}"; do

@@ -77,8 +77,26 @@ wait_for_minio() {
     sleep 2
   done
   echo "ERROR: minio did not become ready in time" >&2
-  compose logs minio --tail 40 || true
+  if [[ "${MINIO_VIA_COMPOSE:-0}" == "1" ]]; then
+    compose logs minio --tail 40 || true
+  elif [[ -f "${MINIO_BIN_DIR:-}/minio.log" ]]; then
+    tail -n 40 "${MINIO_BIN_DIR}/minio.log" >&2 || true
+  fi
   return 1
+}
+
+start_minio_binary() {
+  MINIO_BIN_DIR="$ROOT/.desktop-verify-minio"
+  mkdir -p "$MINIO_BIN_DIR/data"
+  if [[ ! -x "$MINIO_BIN_DIR/minio" ]]; then
+    echo "==> MinIO: 下载官方 linux-amd64 二进制"
+    curl -fsSL "https://dl.min.io/server/minio/release/linux-amd64/minio" -o "$MINIO_BIN_DIR/minio"
+    chmod +x "$MINIO_BIN_DIR/minio"
+  fi
+  MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+    "$MINIO_BIN_DIR/minio" server "$MINIO_BIN_DIR/data" --address ":9000" --console-address ":9001" \
+    >"$MINIO_BIN_DIR/minio.log" 2>&1 &
+  MINIO_PID=$!
 }
 
 cleanup() {
@@ -86,17 +104,42 @@ cleanup() {
     kill "$UVICORN_PID" 2>/dev/null || true
     wait "$UVICORN_PID" 2>/dev/null || true
   fi
+  if [[ -n "${MINIO_PID:-}" ]] && kill -0 "$MINIO_PID" 2>/dev/null; then
+    kill "$MINIO_PID" 2>/dev/null || true
+    wait "$MINIO_PID" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
 echo "==> [1/6] 启动基础设施 (PostgreSQL + MinIO)"
-export MINIO_IMAGE
-MINIO_IMAGE="$(bash "$ROOT/scripts/ci/resolve-minio-image.sh")"
-export MINIO_IMAGE
-if compose up -d --wait db minio 2>/dev/null; then
-  echo "docker compose --wait: services healthy"
+MINIO_VIA_COMPOSE=0
+MINIO_IMAGE=""
+set +e
+resolved_minio="$(bash "$ROOT/scripts/ci/resolve-minio-image.sh" 2>/dev/null)"
+resolve_rc=$?
+set -e
+if [[ "$resolve_rc" -eq 0 && -n "$resolved_minio" ]]; then
+  MINIO_IMAGE="$resolved_minio"
+  export MINIO_IMAGE
+  MINIO_VIA_COMPOSE=1
+  echo "==> MinIO: 使用容器镜像 $MINIO_IMAGE"
 else
-  compose up -d db minio
+  echo "==> MinIO: 容器镜像不可用，改用官方二进制"
+  start_minio_binary
+fi
+
+if compose up -d --wait db 2>/dev/null; then
+  echo "docker compose --wait: postgres healthy"
+else
+  compose up -d db
+fi
+
+if [[ "$MINIO_VIA_COMPOSE" == "1" ]]; then
+  if compose up -d --wait minio 2>/dev/null; then
+    echo "docker compose --wait: minio healthy"
+  else
+    compose up -d minio
+  fi
 fi
 
 echo "==> [2/6] 等待数据库就绪"
