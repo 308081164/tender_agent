@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aspose.words as aw
 
-from app.services.aspose_runtime import ensure_license
+from app.services.aspose_runtime import ensure_license, iter_collection
 
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 AI_MARKER_RE = re.compile(r"【AI_GENERATED:([^】]+)】")
@@ -247,9 +247,9 @@ def extract_structure(docx_bytes: bytes) -> dict:
 
 def _table_preview_rows(table: aw.Table) -> list[list[str]]:
     rows: list[list[str]] = []
-    for row in table.rows:
+    for row in iter_collection(table.rows):
         cells: list[str] = []
-        for cell in row.cells:
+        for cell in iter_collection(row.cells):
             cell_text = _clean_display_text(cell.get_text() or "")
             cells.append(cell_text)
         if any(cells):
@@ -299,7 +299,7 @@ def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
     para_idx = 0
     truncated = False
 
-    for section in doc.sections:
+    for section in iter_collection(doc.sections):
         body = section.body
         for child in body.get_child_nodes(aw.NodeType.ANY, False):
             if truncated:

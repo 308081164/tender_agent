@@ -43,6 +43,20 @@ def ensure_license(path: str | None = None) -> None:
     _license_ready = True
 
 
+def iter_collection(collection):
+    """Aspose Python 绑定中 Section/Row/Cell 等集合的 for-in 会产出无类型 Node，需按下标迭代。"""
+    count_attr = getattr(collection, "count", None)
+    if isinstance(count_attr, int):
+        total = count_attr
+    else:
+        try:
+            total = len(collection)
+        except TypeError:
+            total = int(count_attr() if callable(count_attr) else 0)
+    for i in range(total):
+        yield collection[i]
+
+
 def smoke_test() -> dict:
     """生成最小 docx，用于部署后自检。"""
     ensure_license()

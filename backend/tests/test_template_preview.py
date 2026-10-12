@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
+from app.services.aspose_runtime import iter_collection
 from app.services.template_detect import _blank_fill_candidates, _is_junk_text
 from app.services.word import is_field_code_text, simulate_mapping_preview
 
@@ -50,6 +51,95 @@ def test_blank_fill_form_label_pair():
     found = _blank_fill_candidates(paras, catalog)
     assert any("竞标人名称" in x["original_text"] for x in found)
     assert not any(x["original_text"] == "注册地址" for x in found)
+
+
+def test_iter_collection_uses_index_not_python_for_in():
+    """Aspose Section/Row 集合 for-in 产出无 .body/.cells 的 Node，必须按下标迭代。"""
+
+    class FakeCells:
+        def __init__(self, cells):
+            self._cells = cells
+
+        @property
+        def count(self):
+            return len(self._cells)
+
+        def __getitem__(self, i):
+            return self._cells[i]
+
+        def __iter__(self):
+            yield BrokenNode()
+
+    class FakeRow:
+        def __init__(self, texts):
+            self._cells = FakeCells([FakeCell(t) for t in texts])
+
+        @property
+        def cells(self):
+            return self._cells
+
+    class FakeCell:
+        def __init__(self, text):
+            self._text = text
+
+        def get_text(self):
+            return self._text
+
+    class FakeSection:
+        @property
+        def body(self):
+            return "body"
+
+    class FakeSections:
+        def __init__(self):
+            self._items = [FakeSection()]
+
+        @property
+        def count(self):
+            return len(self._items)
+
+        def __getitem__(self, i):
+            return self._items[i]
+
+        def __iter__(self):
+            yield BrokenNode()
+
+    class BrokenNode:
+        pass
+
+    sections = list(iter_collection(FakeSections()))
+    assert sections[0].body == "body"
+    row = FakeRow(["a", "b"])
+    cells = [c.get_text() for c in iter_collection(row.cells)]
+    assert cells == ["a", "b"]
+
+
+def test_extract_preview_railway_blank_docx():
+    """集成：铁路工程空白模板应能 extract_preview（回归 #404509e for-in 迭代）。"""
+    from pathlib import Path
+
+    from app.services import word
+
+    candidates = [
+        Path("/workspace/docs/标书智能体参考资料-和远智能-20260729/02-word标书模板/1-标准投标word模板/铁路工程投标模板2-空白.docx"),
+        Path("/workspace/sample_data/02_Word标书模板/标准投标Word模板/铁路工程投标模板1-工程化.docx"),
+    ]
+    doc_path = next((p for p in candidates if p.is_file()), None)
+    if not doc_path:
+        return
+    lic = os.environ.get("ASPOSE_LICENSE_PATH", "").strip()
+    if not lic or not Path(lic).is_file():
+        return
+    try:
+        from app.services.aspose_runtime import ensure_license
+
+        ensure_license()
+    except Exception:
+        return
+    data = doc_path.read_bytes()
+    preview = word.extract_preview(data, max_paragraphs=80)
+    assert preview.get("paragraphs")
+    assert any(p.get("text") or p.get("is_table") for p in preview["paragraphs"])
 
 
 def test_simulate_mapping_preview_table_cells():
