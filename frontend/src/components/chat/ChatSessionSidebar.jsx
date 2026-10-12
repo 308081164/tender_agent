@@ -8,6 +8,8 @@ export default function ChatSessionSidebar({
   sessionId,
   onSelectSession,
   onNewChat,
+  creatingChat = false,
+  chatBusy = false,
 }) {
   return (
     <>
@@ -26,7 +28,9 @@ export default function ChatSessionSidebar({
           </button>
         </header>
         <div className="chat-history-sidebar-actions">
-          <button type="button" onClick={onNewChat}>+ 新对话</button>
+          <button type="button" onClick={onNewChat} disabled={creatingChat || chatBusy}>
+            {creatingChat ? '创建中…' : '+ 新对话'}
+          </button>
         </div>
         <div className="chat-history-sidebar-list">
           {sessions.length === 0 ? (

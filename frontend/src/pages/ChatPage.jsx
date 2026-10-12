@@ -20,6 +20,7 @@ export default function ChatPage() {
   const [selectedText, setSelectedText] = useState('')
   const [showSessions, setShowSessions] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
+  const [creatingChat, setCreatingChat] = useState(false)
   const fileRef = useRef(null)
   const messagesRef = useRef(null)
 
@@ -111,13 +112,22 @@ export default function ChatPage() {
   }
 
   const newChat = async () => {
-    const s = await api.createChatSession('新对话')
-    setSessionId(s.id)
-    setMessages([])
-    setWorkspace({})
-    setParagraphs([])
-    await refreshSessions()
-    setShowSessions(false)
+    if (creatingChat || loading) return
+    setCreatingChat(true)
+    try {
+      const s = await api.createChatSession('新对话')
+      setSessionId(s.id)
+      setMessages([])
+      setWorkspace({})
+      setParagraphs([])
+      setSelectedText('')
+      setSessions((list) => [s, ...list.filter((x) => x.id !== s.id)])
+      setShowSessions(false)
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setCreatingChat(false)
+    }
   }
 
   const uploadFile = async (file) => {
@@ -206,7 +216,9 @@ export default function ChatPage() {
         <strong>文档 Agent 工作区</strong>
         <div className="chat-workspace-top-actions">
           <button type="button" className="ghost" onClick={() => setShowSessions(true)}>历史对话</button>
-          <button type="button" onClick={newChat}>新对话</button>
+          <button type="button" onClick={newChat} disabled={creatingChat || loading}>
+            {creatingChat ? '创建中…' : '新对话'}
+          </button>
         </div>
       </header>
 
@@ -217,6 +229,8 @@ export default function ChatPage() {
         sessionId={sessionId}
         onSelectSession={loadSession}
         onNewChat={newChat}
+        creatingChat={creatingChat}
+        chatBusy={loading}
       />
 
       <div className="chat-workspace-split">

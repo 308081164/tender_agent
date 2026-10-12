@@ -273,6 +273,14 @@ def system_environment_check(db: Session = Depends(get_db)):
     return run_system_check(db)
 
 
+@router.get("/system/logs/recent")
+def system_recent_logs(max_lines: int = 400):
+    """只读 tail 应用日志（桌面 data 目录 / 开发 data 目录）。"""
+    from app.services.recent_logs import get_recent_logs
+
+    return get_recent_logs(max_lines=max_lines)
+
+
 @router.get("/settings")
 def get_settings_api(db: Session = Depends(get_db)):
     row = settings_svc.get_or_create_setting(db)

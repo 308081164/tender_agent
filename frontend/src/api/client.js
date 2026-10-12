@@ -49,6 +49,8 @@ async function fetchBlob(path, options = {}) {
 export const api = {
   health: () => request('/health'),
   systemCheck: () => request('/system/check'),
+  recentLogs: (maxLines = 400) =>
+    request(`/system/logs/recent${buildQuery({ max_lines: maxLines })}`),
   steps: () => request('/meta/steps'),
   templates: () => request('/templates'),
   fields: () => request('/fields'),
