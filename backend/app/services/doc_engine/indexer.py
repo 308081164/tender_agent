@@ -7,7 +7,7 @@ from typing import Any
 
 import aspose.words as aw
 
-from app.services.aspose_runtime import ensure_license
+from app.services.aspose_runtime import ensure_license, iter_collection
 from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE, _prepare_doc_for_preview, is_field_code_text
 
 LOC_PARA = re.compile(r"^p:(\d+)$")
@@ -68,9 +68,9 @@ def build_document_index(docx_bytes: bytes) -> dict[str, Any]:
     for tbl_node in doc.get_child_nodes(aw.NodeType.TABLE, True):
         tbl = tbl_node.as_table()
         rows_data = []
-        for r, row in enumerate(tbl.rows):
+        for r, row in enumerate(iter_collection(tbl.rows)):
             cells = []
-            for c, cell in enumerate(row.cells):
+            for c, cell in enumerate(iter_collection(row.cells)):
                 cell_text = (cell.get_text() or "").strip()
                 loc = f"tbl:{t_idx}:r{r}:c{c}"
                 cells.append({
