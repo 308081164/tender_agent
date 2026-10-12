@@ -328,7 +328,30 @@ textarea.desensitized {
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: 14px 16px; margin-bottom: 12px; background: var(--surface);
 }
+.chapter.chapter-configured {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
 .chapter-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.chapter-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.check-status-badge {
+  display: inline-flex; align-items: center; font-size: 11px; font-weight: 750;
+  padding: 2px 8px; border-radius: 999px; vertical-align: middle;
+}
+.check-status-badge.status-ok { background: #ecfdf5; color: #047857; }
+.check-status-badge.status-warn { background: #fffbeb; color: #b45309; }
+.check-status-badge.status-error { background: #fef2f2; color: #b91c1c; }
+.check-status-badge.status-info { background: #eff6ff; color: #1d4ed8; }
+.env-check-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
+.env-check-list { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
+.env-check-list li { margin-bottom: 8px; }
+.log-viewer-modal { width: min(960px, 100%); max-height: min(90vh, 920px); }
+.log-viewer-body { flex: 1; min-height: 200px; }
+.log-viewer-pre {
+  margin: 0; padding: 12px 14px; font-size: 12px; line-height: 1.45;
+  background: #0f172a; color: #e2e8f0; border-radius: 12px;
+  overflow: auto; max-height: min(68vh, 640px); white-space: pre-wrap; word-break: break-word;
+}
 .chapter h4 { margin: 0; }
 .badge {
   display: inline-flex; align-items: center; gap: 6px;

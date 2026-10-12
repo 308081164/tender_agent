@@ -2,8 +2,20 @@ import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
+import LogViewerModal from '../components/LogViewerModal'
 
 const STATUS_LABEL = { ok: '正常', warn: '警告', error: '异常', info: '可选' }
+const OVERALL_STATUS_LABEL = { green: '正常', yellow: '警告', red: '异常' }
+
+function EnvStatusBadge({ status }) {
+  const css =
+    status === 'green' ? 'ok'
+      : status === 'yellow' ? 'warn'
+        : status === 'red' ? 'error'
+          : status
+  const label = STATUS_LABEL[status] || OVERALL_STATUS_LABEL[status] || status
+  return <span className={`check-status-badge status-${css}`}>{label}</span>
+}
 
 export default function SettingsPage() {
   const navigate = useNavigate()
@@ -14,6 +26,7 @@ export default function SettingsPage() {
   } = settings
   const [envCheck, setEnvCheck] = useState(null)
   const [checking, setChecking] = useState(false)
+  const [logModalOpen, setLogModalOpen] = useState(false)
 
   useEffect(() => {
     loadSettings().catch((e) => showToast(e.message))
@@ -24,7 +37,8 @@ export default function SettingsPage() {
     try {
       const res = await api.systemCheck()
       setEnvCheck(res)
-      showToast(`环境自检完成：${res.status}`)
+      const label = OVERALL_STATUS_LABEL[res.status] || res.status
+      showToast(`环境自检完成：${label}`)
     } catch (e) {
       showToast(e.message)
     } finally {
@@ -51,7 +65,7 @@ export default function SettingsPage() {
         </select>
       </div>
 
-      <div className="chapter">
+      <div className={`chapter${settingsInfo?.deepseek_api_key_set ? ' chapter-configured' : ''}`}>
         <div className="chapter-head">
           <h4>DeepSeek</h4>
           <span className="badge">
@@ -102,7 +116,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="chapter">
+      <div className={`chapter${settingsInfo?.qwen_api_key_set ? ' chapter-configured' : ''}`}>
         <div className="chapter-head">
           <h4>通义千问</h4>
           <span className="badge">
@@ -153,24 +167,33 @@ export default function SettingsPage() {
       <div className="chapter">
         <div className="chapter-head">
           <h4>运行环境自检</h4>
-          <button type="button" className="ghost" onClick={runEnvCheck} disabled={checking}>
-            {checking ? '检测中…' : '立即检测'}
-          </button>
+          <div className="chapter-head-actions">
+            <button type="button" className="ghost" onClick={() => setLogModalOpen(true)}>
+              查看日志
+            </button>
+            <button type="button" className="ghost" onClick={runEnvCheck} disabled={checking}>
+              {checking ? '检测中…' : '立即检测'}
+            </button>
+          </div>
         </div>
         <p className="lead" style={{ marginBottom: 10 }}>
           检测 Aspose 文档引擎、OCR、文档引擎 v2、AI API、OnlyOffice 等组件是否就绪。
         </p>
         {envCheck ? (
           <div className="card-block" style={{ fontSize: 13 }}>
-            <p>总体状态：<strong>{envCheck.status}</strong>
+            <p className="env-check-summary">
+              总体状态：
+              <EnvStatusBadge status={envCheck.status} />
               {' · '}正常 {envCheck.summary?.ok || 0}
               {' · '}警告 {envCheck.summary?.warn || 0}
               {' · '}异常 {envCheck.summary?.error || 0}
             </p>
-            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+            <ul className="env-check-list">
               {(envCheck.checks || []).map((c) => (
-                <li key={c.id} style={{ marginBottom: 6 }}>
-                  <strong>{c.name}</strong> — {STATUS_LABEL[c.status] || c.status}
+                <li key={c.id}>
+                  <strong>{c.name}</strong>
+                  {' '}
+                  <EnvStatusBadge status={c.status} />
                   {c.detail && typeof c.detail === 'string' ? `: ${c.detail}` : null}
                   {c.id === 'ocr' && c.detail?.tesseract_available === false ? (
                     <span className="muted">（将使用文件名/分类兜底匹配）</span>
@@ -188,6 +211,12 @@ export default function SettingsPage() {
         <button className="secondary" onClick={() => navigate('/')}>返回</button>
         <button onClick={saveSettings} disabled={loading || bootLoading}>保存设置</button>
       </div>
+
+      <LogViewerModal
+        open={logModalOpen}
+        onClose={() => setLogModalOpen(false)}
+        showToast={showToast}
+      />
     </div>
   )
 }
