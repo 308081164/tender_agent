@@ -541,6 +541,79 @@ def get_or_create_project_chat_session(project_id: int, db: Session = Depends(ge
     return {"session": session_to_dict(s), "project_id": project_id}
 
 
+class WorkspaceOpenIn(BaseModel):
+    guided_intake: bool | None = None
+
+
+@router.post("/projects/{project_id}/workspace/open")
+async def open_project_workspace(
+    project_id: int,
+    body: WorkspaceOpenIn | None = None,
+    db: Session = Depends(get_db),
+):
+    """进入创作工作台：绑定会话并注入主动开场 assistant 消息（幂等）。"""
+    from app.services.project_sessions import get_or_create_project_session
+    from app.services import project_workspace_agent
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    s = get_or_create_project_session(db, p)
+    guided = body.guided_intake if body and body.guided_intake is not None else None
+    msg = await project_workspace_agent.ensure_workspace_opening_message(
+        db, s, p, guided=guided,
+    )
+    if msg:
+        db.refresh(s)
+    return {
+        "session": session_to_dict(s),
+        "project_id": project_id,
+        "assistant_message": message_to_dict(msg) if msg else None,
+        "created": bool(msg),
+    }
+
+
+class WorkspaceFollowupIn(BaseModel):
+    guided_intake: bool = True
+
+
+@router.post("/projects/{project_id}/workspace/followup")
+async def project_workspace_followup(
+    project_id: int,
+    body: WorkspaceFollowupIn,
+    db: Session = Depends(get_db),
+):
+    """字段保存后主动追问下一缺项（引导补全开启时）。"""
+    from app.services.project_sessions import find_bound_session
+    from app.services import project_workspace_agent
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not body.guided_intake:
+        return {"assistant_message": None, "created": False}
+    s = find_bound_session(db, project_id)
+    if not s:
+        raise HTTPException(404, "请先打开创作工作台以创建项目会话")
+    msg = await project_workspace_agent.append_workspace_followup_message(
+        db, s, p, guided=True,
+    )
+    return {
+        "assistant_message": message_to_dict(msg) if msg else None,
+        "created": bool(msg),
+    }
+
+
+@router.get("/projects/{project_id}/draft-preview/status")
+async def draft_preview_status(project_id: int, db: Session = Depends(get_db)):
+    from app.services.project_draft import get_draft_preview_status
+
+    try:
+        return await get_draft_preview_status(db, project_id)
+    except ValueError as err:
+        raise HTTPException(404, str(err)) from err
+
+
 @router.post("/projects/{project_id}/render")
 async def render_project_draft(project_id: int, db: Session = Depends(get_db)):
     from app.services.project_draft import render_project_draft_docx
@@ -567,18 +640,22 @@ async def draft_preview_pdf(project_id: int, force: bool = False, db: Session = 
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
+    from app.services import pdf_convert
+
     try:
         pdf_bytes = await get_draft_preview_pdf(db, project_id, force_render=force)
     except ValueError as err:
         raise HTTPException(400, str(err)) from err
     title = (p.fields or {}).get("project_name") or p.title or "draft"
     pdf_name = f"{title}.pdf"
+    engine = pdf_convert.get_pdf_engine() or "unknown"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{quote(pdf_name)}",
             "Cache-Control": "private, max-age=60",
+            "X-PDF-Engine": engine,
         },
     )
 
@@ -1750,7 +1827,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
     if pid:
         try:
             from app.services.project_context import build_project_context
-            from app.services import agent_tools
+            from app.services import agent_tools, project_workspace_agent
 
             ctx_pack = build_project_context(db, int(pid))
             meta["project_context"] = ctx_pack
@@ -1768,28 +1845,22 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
             if ctx_body.get("guided_intake") is False:
                 guided = False
             if guided and not meta.get("cards"):
-                intake = await agent_tools.list_missing_intake_questions(db, int(pid))
-                card_fields = intake.get("field_cards") or []
-                if card_fields:
-                    import uuid
+                guided_meta = await project_workspace_agent.build_guided_intake_metadata(
+                    db, int(pid), guided=True,
+                )
+                for card in guided_meta.get("cards") or []:
+                    meta.setdefault("cards", []).append(card)
+                follow = guided_meta.get("guided_followup_text")
+                if follow and not meta.get("cards"):
+                    result["answer"] = ((result.get("answer") or "") + f"\n\n{follow}").strip()
+            if guided and not meta.get("cards"):
+                tail = await project_workspace_agent.build_workspace_followup(db, int(pid), guided=True)
+                if tail and tail not in (result.get("answer") or ""):
+                    result["answer"] = ((result.get("answer") or "").strip() + f"\n\n{tail}").strip()
+        except Exception as err:
+            import logging
 
-                    meta.setdefault("cards", []).append({
-                        "id": uuid.uuid4().hex[:12],
-                        "type": "field_collect",
-                        "title": "待填基础信息",
-                        "state": "active",
-                        "payload": {
-                            "fields": card_fields,
-                            "template_name": tpl.get("name"),
-                            "confirm_action": "confirm_fields",
-                            "cancel_action": "dismiss_card",
-                        },
-                    })
-                elif (intake.get("questions") or []) and len(intake["questions"]) <= 3:
-                    qtext = "\n".join(f"- {q.get('text')}" for q in intake["questions"][:3])
-                    result["answer"] = ((result.get("answer") or "") + f"\n\n为继续完善标书，请补充：\n{qtext}").strip()
-        except Exception:
-            pass
+            logging.getLogger(__name__).warning("project chat context enrich failed: %s", err)
 
     bot_msg = ChatMessage(
         session_id=s.id,

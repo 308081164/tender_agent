@@ -62,6 +62,23 @@ export const api = {
   getProject: (id) => request(`/projects/${id}`),
   getProjectContext: (id) => request(`/projects/${id}/context`),
   ensureProjectSession: (id) => request(`/projects/${id}/sessions`, { method: 'POST' }),
+  openProjectWorkspace: (id, guidedIntake) =>
+    request(`/projects/${id}/workspace/open`, {
+      method: 'POST',
+      body: JSON.stringify(
+        guidedIntake === undefined ? {} : { guided_intake: guidedIntake },
+      ),
+    }),
+  projectWorkspaceFollowup: (id, guidedIntake = true) =>
+    request(`/projects/${id}/workspace/followup`, {
+      method: 'POST',
+      body: JSON.stringify({ guided_intake: guidedIntake }),
+    }),
+  getDraftPreviewStatus: (id) => request(`/projects/${id}/draft-preview/status`),
+  startDraftPreviewAsync: (id) =>
+    request(`/projects/${id}/draft-preview/async`, { method: 'POST' }),
+  getDraftPreviewJob: (id, jobId) =>
+    request(`/projects/${id}/draft-preview/jobs/${jobId}`),
   renderProjectDraft: (id) => request(`/projects/${id}/render`, { method: 'POST' }),
   projectDraftPreviewUrl: (id, token = '') =>
     `${BASE}/projects/${id}/draft-preview.pdf${token ? `?t=${encodeURIComponent(token)}` : ''}`,
