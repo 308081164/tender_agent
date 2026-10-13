@@ -7,14 +7,34 @@ from functools import lru_cache
 _license_ready = False
 
 
+def _license_candidates() -> list[str]:
+    from app.config import BACKEND_ROOT, INSTALL_DIR, get_settings
+
+    settings_path = get_settings().aspose_license_path
+    env_path = os.environ.get("ASPOSE_LICENSE_PATH", "").strip()
+    bundled = [
+        env_path,
+        settings_path,
+        str(INSTALL_DIR / "aspose" / "Aspose.License.txt"),
+        str(BACKEND_ROOT.parent / "docs" / "Aspose.Words for Python  Developer OEM证书" / "Word究极工具" / "aspose-words" / "Aspose.License.txt"),
+        "/aspose/Aspose.License.txt",
+    ]
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in bundled:
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
 @lru_cache
 def license_path() -> str:
-    env_path = os.environ.get("ASPOSE_LICENSE_PATH", "").strip()
-    if env_path:
-        return env_path
-    from app.config import get_settings
-
-    return get_settings().aspose_license_path
+    for candidate in _license_candidates():
+        if os.path.isfile(candidate):
+            return candidate
+    return _license_candidates()[0] if _license_candidates() else ""
 
 
 def _load_aspose():

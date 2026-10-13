@@ -1,6 +1,7 @@
 """Word 模板解析、占位符替换、智能替换与资质嵌入（Aspose.Words）。"""
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 import unicodedata
@@ -172,11 +173,17 @@ def _document_text(doc: aw.Document) -> str:
 
 
 def can_convert_pdf() -> bool:
-    """Aspose.Words 已集成，可用于 DOCX→PDF（无需 LibreOffice）。"""
+    """Aspose 可用且授权文件可加载时返回 True。"""
     try:
         import aspose.words as aw  # noqa: F401
-        return True
     except ImportError:
+        return False
+    try:
+        from app.services.aspose_runtime import license_path
+
+        lp = license_path()
+        return bool(lp and os.path.isfile(lp))
+    except Exception:
         return False
 
 

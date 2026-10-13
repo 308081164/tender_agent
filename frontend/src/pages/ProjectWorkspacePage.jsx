@@ -34,17 +34,22 @@ export default function ProjectWorkspacePage() {
   useEffect(() => {
     ;(async () => {
       try {
-        const [p, sess, feat] = await Promise.all([
+        const [p, feat] = await Promise.all([
           api.getProject(projectId),
-          api.ensureProjectSession(projectId),
           api.getChatFeatures(),
         ])
         setProject(p)
         setFeatures(feat)
-        setSessionId(sess.session.id)
-        setWorkspace(sess.session.workspace || {})
-        const full = await api.getChatSession(sess.session.id)
-        setMessages(full.messages || [])
+        const opened = await api.openProjectWorkspace(projectId, true)
+        setSessionId(opened.session.id)
+        setWorkspace(opened.session.workspace || {})
+        const full = await api.getChatSession(opened.session.id)
+        let msgs = full.messages || []
+        if (opened.assistant_message) {
+          const hasOpening = msgs.some((m) => m.metadata?.kind === 'workspace_opening')
+          if (!hasOpening) msgs = [...msgs, opened.assistant_message]
+        }
+        setMessages(msgs)
       } catch (e) {
         showToast(e.message)
       }
@@ -175,9 +180,13 @@ export default function ProjectWorkspacePage() {
             projectId={projectId}
             sessionId={sessionId}
             workspace={workspace}
+            context={context}
             onlyOfficeEnabled={!!features.onlyoffice?.enabled}
             refreshToken={previewToken}
-            onPreviewError={(msg) => showToast(msg)}
+            showToast={showToast}
+            onPreviewError={(msg) => showToast(msg || '预览失败')}
+            onFieldsSaved={refreshContext}
+            onAgentFollowup={(msg) => setMessages((m) => [...m, msg])}
           />
         </section>
 
