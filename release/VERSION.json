@@ -1,13 +1,13 @@
 {
-  "version": "1.2.0",
-  "display_version": "v1.2.0",
+  "version": "1.2.1",
+  "display_version": "v1.2.1",
   "product": "标书智能体 Desktop",
   "release_date": "2026-10-13",
-  "baseline_note": "自 1.2.0 起为产品基线；CI main 构建号为 1.2.0.<run_number>，正式发版打 tag desktop-v1.2.0",
+  "baseline_note": "含 #43 创作工作台路由与 #42 资质库七大分类空态；正式发版 tag desktop-v1.2.1",
   "artifacts": {
-    "windows_installer": "TenderAgentSetup-v1.2.0.exe",
-    "user_manual": "tender-agent-manual-v1.2.0.md",
-    "docs_zip": "tender-agent-release-v1.2.0.zip",
-    "test_materials_zip": "tender-agent-test-materials-v1.2.0.zip"
+    "windows_installer": "TenderAgentSetup-v1.2.1.exe",
+    "user_manual": "tender-agent-manual-v1.2.1.md",
+    "docs_zip": "tender-agent-release-v1.2.1.zip",
+    "test_materials_zip": "tender-agent-test-materials-v1.2.1.zip"
   }
 }
