@@ -1,5 +1,5 @@
 # 下载 Windows 版 ONLYOFFICE Docs Community，并整理成桌面安装包可启动的 sidecar。
-# 不把二进制提交进 git。构建机需要 7-Zip 与约 3 GB 临时磁盘。
+# 不把二进制提交进 git。安装包是 Inno Setup 6.7，脚本会下载 innounp 来解包，并需要约 3 GB 临时磁盘。
 param(
   [Parameter(Mandatory = $true)]
   [string]$DestinationDir
@@ -14,19 +14,9 @@ $ErlangUrl = "https://github.com/erlang/otp/releases/download/OTP-26.2.5/otp_win
 $RabbitUrl = "https://github.com/rabbitmq/rabbitmq-server/releases/download/v3.13.7/rabbitmq-server-windows-3.13.7.zip"
 $ErlangVersion = "26.2.5"
 $RabbitVersion = "3.13.7"
-
-function Get-7Zip {
-  $candidates = @(
-    (Join-Path ${env:ProgramFiles} "7-Zip\7z.exe"),
-    (Join-Path ${env:ProgramFiles(x86)} "7-Zip\7z.exe")
-  )
-  foreach ($path in $candidates) {
-    if (Test-Path -LiteralPath $path) { return $path }
-  }
-  $cmd = Get-Command 7z -ErrorAction SilentlyContinue
-  if ($cmd) { return $cmd.Source }
-  return $null
-}
+# innounp 2.71.1（commit 6fb49264）支持 Inno Setup 2.0.7–7.1.0。当前 Community 安装包是 6.7.0。
+$InnounpUrl = "https://raw.githubusercontent.com/jrathlev/InnoUnpacker-Windows-GUI/6fb49264aacf512a093e7b4fc6fb3dd266dad31a/innounp-2/bin/innounp-2.zip"
+$InnounpSha256 = "F2F037FDBC63DE31248EFAE9CCB294398D160DC0CBAD5F36D14C2F159E17BBF5"
 
 function Download-File([string]$Url, [string]$Destination) {
   if ((Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 1MB)) {
@@ -65,9 +55,30 @@ function Relative-To([string]$Root, [string]$Path) {
   return $pathFull.Substring($rootFull.Length).TrimStart('\').Replace('\', '/')
 }
 
-$seven = Get-7Zip
-if (-not $seven) {
-  throw "7-Zip is required to extract the OnlyOffice installer. Install it from https://www.7-zip.org/"
+function Ensure-Innounp([string]$WorkDir) {
+  $zip = Join-Path $WorkDir "innounp-2.zip"
+  Download-File -Url $InnounpUrl -Destination $zip
+  $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+  if ($got -ne $InnounpSha256) {
+    throw "innounp-2.zip sha256 mismatch: $got"
+  }
+  $dest = Join-Path $WorkDir "innounp"
+  if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+  Expand-Archive -Path $zip -DestinationPath $dest -Force
+  $exe = Join-Path $dest "innounp.exe"
+  if (-not (Test-Path -LiteralPath $exe)) { throw "innounp.exe missing after extract" }
+  return $exe
+}
+
+function Find-DocRoot([System.IO.FileInfo]$NginxExe) {
+  $dir = $NginxExe.Directory
+  while ($null -ne $dir) {
+    $hasServer = Test-Path -LiteralPath (Join-Path $dir.FullName "server")
+    $hasNginx = Test-Path -LiteralPath (Join-Path $dir.FullName "nginx")
+    if ($hasServer -and $hasNginx) { return $dir.FullName }
+    $dir = $dir.Parent
+  }
+  return $NginxExe.Directory.Parent.FullName
 }
 
 New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
@@ -82,9 +93,24 @@ Write-Host "  documentserver sha256: $hash"
 $extract = Join-Path $work "documentserver-extract"
 if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $extract | Out-Null
-Write-Host "  extracting Document Server installer"
-& $seven x $exePath "-o$extract" -y | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "7z could not extract onlyoffice-documentserver.exe" }
+$innounp = Ensure-Innounp $work
+Write-Host "  extracting Document Server installer with innounp"
+$innounpLog = Join-Path $work "innounp.log"
+$prevNative = $PSNativeCommandUseErrorActionPreference
+$PSNativeCommandUseErrorActionPreference = $false
+try {
+  # -d must be glued to the directory. cmd keeps $LASTEXITCODE equal to innounp's exit code.
+  & cmd.exe /c "`"$innounp`" -x -b -y -q -d`"$extract`" `"$exePath`" > `"$innounpLog`" 2>&1"
+  $innounpExit = $LASTEXITCODE
+} finally {
+  if ($null -ne $prevNative) { $PSNativeCommandUseErrorActionPreference = $prevNative }
+}
+if ($innounpExit -ne 0) {
+  if (Test-Path -LiteralPath $innounpLog) {
+    Get-Content -LiteralPath $innounpLog -Tail 50 | ForEach-Object { Write-Host $_ }
+  }
+  throw "innounp could not extract onlyoffice-documentserver.exe (exit $innounpExit)"
+}
 
 $nginx = Find-First $extract "nginx.exe" "*nginx*"
 if (-not $nginx) { $nginx = Find-First $extract "nginx.exe" $null }
@@ -103,8 +129,8 @@ if (-not $nginx -or -not $docJs -or -not $converterJs -or -not $schema -or -not 
   throw "OnlyOffice installer layout is missing nginx, DocService, FileConverter, schema, config, or node.exe. Refusing to ship an incomplete editor."
 }
 
-# Install root is the directory that contains both nginx\ and server\ (or the nginx parent's parent).
-$docRoot = $nginx.Directory.Parent.FullName
+# Install root is the directory that contains both nginx\ and server\.
+$docRoot = Find-DocRoot $nginx
 $serverMarker = Join-Path $docRoot "server"
 if (-not (Test-Path -LiteralPath $serverMarker)) {
   $docRoot = $docJs.Directory.Parent.Parent.Parent.FullName
