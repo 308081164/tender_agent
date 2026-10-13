@@ -50,7 +50,7 @@ export default function SettingsPage() {
     <div className="panel">
       <h2>系统设置</h2>
       <p className="lead">
-        配置 DeepSeek / 通义千问 API Key。留空保存不会覆盖已有 Key；未配置时 AI 生成将回退到本地模板引擎。
+        配置 DeepSeek / 通义千问 / Kimi（月之暗面）API Key。留空保存不会覆盖已有 Key；未配置时 AI 生成将回退到本地模板引擎。
       </p>
 
       <div className="field" style={{ marginBottom: 18, maxWidth: 360 }}>
@@ -59,9 +59,10 @@ export default function SettingsPage() {
           value={settingsForm.preferred_provider}
           onChange={(e) => setSettingsForm({ ...settingsForm, preferred_provider: e.target.value })}
         >
-          <option value="auto">自动（先 DeepSeek，失败再用千问）</option>
+          <option value="auto">自动（DeepSeek → 千问 → Kimi）</option>
           <option value="deepseek">仅 DeepSeek</option>
           <option value="qwen">仅通义千问</option>
+          <option value="kimi">仅 Kimi</option>
         </select>
       </div>
 
@@ -158,6 +159,57 @@ export default function SettingsPage() {
             className="secondary"
             onClick={() => clearKey('qwen')}
             disabled={loading || !settingsInfo?.qwen_api_key_set}
+          >
+            清除 Key
+          </button>
+        </div>
+      </div>
+
+      <div className={`chapter${settingsInfo?.kimi_api_key_set ? ' chapter-configured' : ''}`}>
+        <div className="chapter-head">
+          <h4>Kimi（月之暗面）</h4>
+          <span className="badge">
+            {settingsInfo?.kimi_api_key_set
+              ? `已配置 ${settingsInfo.kimi_api_key_masked}`
+              : '未配置'}
+          </span>
+        </div>
+        <div className="form-grid">
+          <div className="field full">
+            <label>API Key（输入新值以更新）</label>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={settingsInfo?.kimi_api_key_set ? '已配置，留空则保持不变' : 'sk-...'}
+              value={settingsForm.kimi_api_key}
+              onChange={(e) => setSettingsForm({ ...settingsForm, kimi_api_key: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>Base URL</label>
+            <input
+              value={settingsForm.kimi_base_url}
+              onChange={(e) => setSettingsForm({ ...settingsForm, kimi_base_url: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>模型</label>
+            <input
+              value={settingsForm.kimi_model}
+              onChange={(e) => setSettingsForm({ ...settingsForm, kimi_model: e.target.value })}
+              placeholder="moonshot-v1-8k"
+            />
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              常用 <code>moonshot-v1-8k</code>、<code>moonshot-v1-32k</code>；长文档可用 <code>moonshot-v1-128k</code>
+            </div>
+          </div>
+        </div>
+        <div className="actions">
+          <button className="ghost" onClick={() => testKey('kimi')} disabled={loading}>测试连接</button>
+          <button
+            className="secondary"
+            onClick={() => clearKey('kimi')}
+            disabled={loading || !settingsInfo?.kimi_api_key_set}
           >
             清除 Key
           </button>

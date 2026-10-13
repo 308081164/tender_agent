@@ -59,8 +59,9 @@ def _check_ai(db: Session | None) -> dict[str, Any]:
     cfg = settings_svc.resolve_ai_config(db) if db else {}
     ds = bool(cfg.get("deepseek_api_key"))
     qw = bool(cfg.get("qwen_api_key"))
+    km = bool(cfg.get("kimi_api_key"))
     model = cfg.get("deepseek_model") or settings_svc.DEEPSEEK_DEFAULT_MODEL
-    if ds or qw:
+    if ds or qw or km:
         return {
             "id": "ai",
             "name": "AI 模型 API",
@@ -68,7 +69,9 @@ def _check_ai(db: Session | None) -> dict[str, Any]:
             "detail": {
                 "deepseek_configured": ds,
                 "qwen_configured": qw,
+                "kimi_configured": km,
                 "deepseek_model": model,
+                "kimi_model": cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL,
                 "preferred_provider": cfg.get("preferred_provider") or "auto",
             },
         }
@@ -76,7 +79,7 @@ def _check_ai(db: Session | None) -> dict[str, Any]:
         "id": "ai",
         "name": "AI 模型 API",
         "status": "warn",
-        "detail": "未配置 DeepSeek / 通义千问 Key，智能创作将回退本地模板引擎",
+        "detail": "未配置 DeepSeek / 通义千问 / Kimi Key，智能创作将回退本地模板引擎",
     }
 
 

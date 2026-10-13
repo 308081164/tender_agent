@@ -28,6 +28,9 @@ ALTERS = [
     # DeepSeek V4 Pro 默认模型升级（保留用户自定义的其他模型名）
     "UPDATE system_settings SET deepseek_model = 'deepseek-v4-pro' "
     "WHERE deepseek_model IS NULL OR deepseek_model IN ('', 'deepseek-chat', 'deepseek-reasoner')",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_api_key TEXT DEFAULT ''",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_base_url VARCHAR(300) DEFAULT 'https://api.moonshot.cn/v1'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_model VARCHAR(100) DEFAULT 'moonshot-v1-8k'",
 ]
 
 

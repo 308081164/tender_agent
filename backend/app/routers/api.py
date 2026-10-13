@@ -43,13 +43,17 @@ class SettingsUpdate(BaseModel):
     qwen_api_key: str | None = None
     qwen_base_url: str | None = None
     qwen_model: str | None = None
+    kimi_api_key: str | None = None
+    kimi_base_url: str | None = None
+    kimi_model: str | None = None
     preferred_provider: str | None = None
     clear_deepseek_api_key: bool = False
     clear_qwen_api_key: bool = False
+    clear_kimi_api_key: bool = False
 
 
 class TestProviderRequest(BaseModel):
-    provider: str  # deepseek | qwen
+    provider: str  # deepseek | qwen | kimi
 
 
 
@@ -295,8 +299,8 @@ def update_settings_api(body: SettingsUpdate, db: Session = Depends(get_db)):
 
 @router.post("/settings/test")
 async def test_settings_api(body: TestProviderRequest, db: Session = Depends(get_db)):
-    if body.provider not in ("deepseek", "qwen"):
-        raise HTTPException(400, "provider 仅支持 deepseek 或 qwen")
+    if body.provider not in ("deepseek", "qwen", "kimi"):
+        raise HTTPException(400, "provider 仅支持 deepseek、qwen 或 kimi")
     return await ai_svc.test_provider(body.provider, db=db)
 
 

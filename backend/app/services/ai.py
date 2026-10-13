@@ -1,4 +1,4 @@
-"""AI 服务：支持 DeepSeek / 通义千问，无 Key 时使用本地模板生成"""
+"""AI 服务：支持 DeepSeek / 通义千问 / Kimi（月之暗面），无 Key 时使用本地模板生成"""
 from __future__ import annotations
 import httpx
 from sqlalchemy.orm import Session
@@ -53,8 +53,10 @@ async def chat_completion(
         order = ["deepseek"]
     elif use_provider == "qwen":
         order = ["qwen"]
+    elif use_provider == "kimi":
+        order = ["kimi"]
     else:
-        order = ["deepseek", "qwen"]
+        order = ["deepseek", "qwen", "kimi"]
 
     for name in order:
         if name == "deepseek" and cfg.get("deepseek_api_key"):
@@ -79,6 +81,18 @@ async def chat_completion(
                 )
             except Exception:
                 if use_provider == "qwen":
+                    return ""
+                continue
+        if name == "kimi" and cfg.get("kimi_api_key"):
+            try:
+                return await _openai_compat(
+                    cfg["kimi_base_url"],
+                    cfg["kimi_api_key"],
+                    cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL,
+                    messages,
+                )
+            except Exception:
+                if use_provider == "kimi":
                     return ""
                 continue
     return ""
@@ -366,4 +380,17 @@ async def test_provider(provider: str, db: Session | None = None) -> dict:
             return {"ok": True, "message": "通义千问连接成功", "sample": (text or "")[:80]}
         except Exception as e:
             return {"ok": False, "message": f"通义千问连接失败：{e}"}
+    if provider == "kimi":
+        if not cfg.get("kimi_api_key"):
+            return {"ok": False, "message": "未配置 Kimi API Key"}
+        try:
+            text = await _openai_compat(
+                cfg["kimi_base_url"],
+                cfg["kimi_api_key"],
+                cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL,
+                [{"role": "user", "content": "请只回复：ok"}],
+            )
+            return {"ok": True, "message": "Kimi 连接成功", "sample": (text or "")[:80]}
+        except Exception as e:
+            return {"ok": False, "message": f"Kimi 连接失败：{e}"}
     return {"ok": False, "message": "未知供应商"}
