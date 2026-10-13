@@ -2,7 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 const DEFAULT_PORT = 18766;
 const WINDOW_TITLE = "标书智能体";
@@ -441,16 +441,36 @@ function readBackendPidFromState() {
   }
 }
 
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function killBackendTree() {
   const pid = backendProc?.pid || (backendOwned ? readBackendPidFromState() : null);
   if (!pid) {
     return;
   }
-  log(`killing backend tree pid=${pid}`);
-  spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+  log(`stopping backend tree pid=${pid} (graceful then force)`);
+  spawnSync("taskkill", ["/PID", String(pid)], {
     windowsHide: true,
     stdio: "ignore",
   });
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline && pidAlive(pid)) {
+    /* sync wait ~100ms slices during graceful shutdown */
+    spawnSync("ping", ["127.0.0.1", "-n", "2"], { windowsHide: true, stdio: "ignore" });
+  }
+  if (pidAlive(pid)) {
+    spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+  }
   backendProc = null;
   backendOwned = false;
 }

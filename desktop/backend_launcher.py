@@ -204,6 +204,34 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
+def _graceful_kill_process_tree(pid: int, timeout: float = 7.0) -> None:
+    """Try graceful termination before force-killing the process tree."""
+    if pid <= 0:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_subprocess_flags(),
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.25)
+    _kill_process_tree(pid)
+
+
 def _subprocess_flags() -> int:
     if sys.platform != "win32":
         return 0
@@ -573,6 +601,11 @@ def _ensure_postgres_database(
         psql = _postgres_bin(install_dir, "psql.exe")
     if not psql.is_file():
         return
+    create_sql = (
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'tender_agent') "
+        "THEN CREATE DATABASE tender_agent; END IF; END $$;"
+    )
     subprocess.run(
         [
             str(psql),
@@ -585,7 +618,7 @@ def _ensure_postgres_database(
             "-d",
             "postgres",
             "-c",
-            "CREATE DATABASE tender_agent;",
+            create_sql,
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1152,6 +1185,46 @@ def _stop_postgres(
     data_dir: Path, install_dir: Path, port: int | None = None
 ) -> None:
     global _PG_PROC
+    pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
+    pgdata = data_dir / "pgdata"
+    if port is None:
+        port = _read_pg_port_from_state(data_dir) or _ACTIVE_PG_PORT
+
+    if pg_ctl.is_file() and pgdata.is_dir():
+        _log("stopping postgres via pg_ctl")
+        env = _postgres_env(install_dir, pgdata, port)
+        stopped = False
+        for mode in ("smart", "fast"):
+            try:
+                result = subprocess.run(
+                    [str(pg_ctl), "-D", str(pgdata), "-m", mode, "-w", "stop"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                    creationflags=_subprocess_flags(),
+                    timeout=45,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                _log(f"pg_ctl stop {mode} timed out")
+                continue
+            if result.returncode == 0:
+                _log(f"pg_ctl stop {mode} succeeded")
+                stopped = True
+                break
+            _log(f"pg_ctl stop {mode} failed code={result.returncode}")
+        if not stopped and _PG_PROC is not None and _PG_PROC.poll() is None:
+            _log(f"pg_ctl stop failed; killing postgres pid={_PG_PROC.pid}")
+            _kill_process_tree(_PG_PROC.pid)
+            try:
+                _PG_PROC.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        _PG_PROC = None
+        if port:
+            _wait_for_port_close("127.0.0.1", port, 15)
+        return
+
     if _PG_PROC is not None and _PG_PROC.poll() is None:
         _log(f"stopping postgres pid={_PG_PROC.pid}")
         _kill_process_tree(_PG_PROC.pid)
@@ -1160,21 +1233,6 @@ def _stop_postgres(
         except subprocess.TimeoutExpired:
             pass
         _PG_PROC = None
-        return
-
-    pg_ctl = _postgres_bin(install_dir, "pg_ctl.exe")
-    pgdata = data_dir / "pgdata"
-    if port is None:
-        port = _read_pg_port_from_state(data_dir) or _ACTIVE_PG_PORT
-    if pg_ctl.is_file() and pgdata.is_dir():
-        subprocess.Popen(
-            [str(pg_ctl), "-D", str(pgdata), "stop", "fast"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=_postgres_env(install_dir, pgdata, port),
-            creationflags=_subprocess_flags(),
-        )
-        _wait_for_port_close("127.0.0.1", port or PG_PORT_DEFAULT, 15)
 
 
 def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
@@ -1185,9 +1243,10 @@ def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
     _log("shutdown")
 
     if _BACKEND_PROC is not None and _BACKEND_PROC.poll() is None:
-        _kill_process_tree(_BACKEND_PROC.pid)
+        _log(f"stopping backend pid={_BACKEND_PROC.pid}")
+        _graceful_kill_process_tree(_BACKEND_PROC.pid, timeout=7.0)
         try:
-            _BACKEND_PROC.wait(timeout=5)
+            _BACKEND_PROC.wait(timeout=3)
         except subprocess.TimeoutExpired:
             pass
     elif data_dir is not None:
@@ -1195,16 +1254,19 @@ def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
         if state:
             backend_pid = int(state.get("pid") or 0) or None
             if backend_pid and _pid_alive(backend_pid):
-                _kill_process_tree(backend_pid)
+                _log(f"stopping backend from state pid={backend_pid}")
+                _graceful_kill_process_tree(backend_pid, timeout=7.0)
 
     if _MINIO_PROC is not None and _MINIO_PROC.poll() is None:
-        _kill_process_tree(_MINIO_PROC.pid)
+        _log(f"stopping minio pid={_MINIO_PROC.pid}")
+        _graceful_kill_process_tree(_MINIO_PROC.pid, timeout=5.0)
     elif data_dir is not None:
         state = _read_json(data_dir, MINIO_STATE_FILE)
         if state:
             pid = int(state.get("pid") or 0)
             if pid and _pid_alive(pid):
-                _kill_process_tree(pid)
+                _log(f"stopping minio from state pid={pid}")
+                _graceful_kill_process_tree(pid, timeout=5.0)
 
     if install_dir is not None and data_dir is not None:
         _stop_postgres(data_dir, install_dir)
