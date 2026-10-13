@@ -12,6 +12,7 @@ from app.services import agent_flows, agent_query_tools, ai
 INTENT_LABELS = [
     "meta",
     "teach",
+    "import_qual_folder",
     "query_company",
     "query_template_stats",
     "list_templates",
@@ -73,6 +74,12 @@ def _keyword_route(text: str) -> tuple[str, dict[str, Any], float]:
     bulk = agent_query_tools.parse_bulk_replace(q)
     if bulk:
         return "bulk_replace", {"old_text": bulk[0], "new_text": bulk[1]}, 0.9
+
+    from app.services.agent_qual_folder import extract_folder_path_from_text, is_qual_folder_intent
+
+    if is_qual_folder_intent(q):
+        path = extract_folder_path_from_text(q) or ""
+        return "import_qual_folder", {"folder_path": path}, 0.93
 
     return "general", {}, 0.0
 
@@ -383,6 +390,36 @@ async def process_with_semantic_router(
                 "needs_workspace_bulk_replace": True,
                 "old_text": old_t,
                 "new_text": new_t,
+            },
+        }
+
+    if intent == "import_qual_folder" and confidence >= 0.55:
+        from app.services.agent_qual_folder import extract_folder_path_from_text
+
+        folder = str(params.get("folder_path") or extract_folder_path_from_text(text) or "").strip()
+        if not folder:
+            return {
+                "answer": (
+                    "请提供 **本机资质文件夹路径**（桌面版可用输入框旁「📁」选择文件夹）。\n\n"
+                    "示例：`请扫描资质文件夹 C:\\Users\\我\\Desktop\\公司资质`"
+                ),
+                "mode": "action",
+                "metadata": {
+                    "intent": "import_qual_folder",
+                    "actions": [
+                        {"type": "link", "label": "企业档案", "url": "/admin/company", "primary": True},
+                        {"type": "link", "label": "资质库", "url": "/admin/qualifications"},
+                    ],
+                },
+            }
+        if session is not None:
+            return await agent_flows.start_qual_folder_import(db, session, folder)
+        return {
+            "answer": "资质文件夹导入需要在 Agent 对话会话中进行，请打开「文档工作区」或浮窗助手后重试。",
+            "mode": "action",
+            "metadata": {
+                "intent": "import_qual_folder",
+                "actions": [{"type": "link", "label": "打开文档 Agent", "url": "/chat", "primary": True}],
             },
         }
 

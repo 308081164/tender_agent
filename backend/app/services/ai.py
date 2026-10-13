@@ -98,15 +98,67 @@ async def chat_completion(
     return ""
 
 
-async def _openai_compat(base_url: str, api_key: str, model: str, messages: list[dict]) -> str:
+async def _openai_compat(
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    *,
+    vision: bool = False,
+) -> str:
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": model, "messages": messages, "temperature": 0.4}
-    async with httpx.AsyncClient(timeout=60) as client:
+    payload: dict = {"model": model, "messages": messages, "temperature": 0.4}
+    if vision:
+        payload["temperature"] = 0.2
+    async with httpx.AsyncClient(timeout=90 if vision else 60) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+
+async def chat_completion_vision(
+    messages: list[dict],
+    *,
+    image_data_urls: list[str] | None = None,
+    db: Session | None = None,
+) -> str:
+    """多模态对话：传入 base64 data URL 图片时尝试 vision 模型，失败则回退纯文本。"""
+    imgs = [u for u in (image_data_urls or []) if u]
+    if not imgs:
+        return await chat_completion(messages, db=db)
+
+    cfg = settings_svc.resolve_ai_config(db)
+    vision_model = (cfg.get("vision_model") or cfg.get("qwen_vl_model") or "").strip()
+    use_qwen = bool(cfg.get("qwen_api_key")) and (
+        vision_model or "vl" in (cfg.get("qwen_model") or "").lower()
+    )
+    if not use_qwen:
+        return await chat_completion(messages, db=db)
+
+    user_content: list[dict] = []
+    for m in messages:
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            user_content.append({"type": "text", "text": m["content"]})
+            break
+    for url in imgs[:3]:
+        user_content.append({"type": "image_url", "image_url": {"url": url}})
+
+    vision_messages = [m for m in messages if m.get("role") != "user"]
+    vision_messages.append({"role": "user", "content": user_content})
+
+    model = vision_model or cfg.get("qwen_model") or "qwen-vl-plus"
+    try:
+        return await _openai_compat(
+            cfg["qwen_base_url"],
+            cfg["qwen_api_key"],
+            model,
+            vision_messages,
+            vision=True,
+        )
+    except Exception:
+        return await chat_completion(messages, db=db)
 
 
 def local_chapter_text(chapter_key: str, fields: dict) -> str:

@@ -41,6 +41,8 @@ export default function FloatingChat({ chat, projectPath = '' }) {
         setShowHistory={chat.setShowHistory}
         onNewChat={chat.newChat}
         onSelectSession={chat.loadSession}
+        onCardAction={chat.handleCardAction}
+        actingCardId={chat.actingCardId}
       />
     </>
   )

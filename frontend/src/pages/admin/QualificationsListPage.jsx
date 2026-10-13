@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import { useAdminList } from '../../hooks/useAdminList'
 import AdminPageHeader from '../../components/admin/AdminPageHeader'
@@ -17,6 +17,8 @@ const STATUS_FILTERS = [
 
 export default function QualificationsListPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const focusId = searchParams.get('focus') || ''
   const [categories, setCategories] = useState([])
 
   useEffect(() => {
@@ -32,6 +34,21 @@ export default function QualificationsListPage() {
   } = useAdminList(fetchFn, {
     initialFilters: { category: '', status: '', sortBy: '', sortDir: 'asc' },
   })
+
+  useEffect(() => {
+    if (!focusId || loading) return
+    const el = document.getElementById(`qual-row-${focusId}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('admin-row-focus')
+      const t = window.setTimeout(() => el.classList.remove('admin-row-focus'), 4000)
+      return () => window.clearTimeout(t)
+    }
+    const id = Number(focusId)
+    if (Number.isFinite(id) && id > 0) {
+      navigate(`/admin/qualifications/${id}`, { replace: true })
+    }
+  }, [focusId, items, loading, navigate])
 
   const toggleSort = (field) => {
     setFilters((prev) => {
@@ -110,7 +127,11 @@ export default function QualificationsListPage() {
             </thead>
             <tbody>
               {items.map((q) => (
-                <tr key={q.id} className={q.expired ? 'row-expired' : q.expiring ? 'row-expiring' : ''}>
+                <tr
+                  key={q.id}
+                  id={`qual-row-${q.id}`}
+                  className={q.expired ? 'row-expired' : q.expiring ? 'row-expiring' : ''}
+                >
                   <td>{q.category}</td>
                   <td>{q.name}</td>
                   <td>{q.is_long_term ? '长期' : (q.valid_to || '—')}</td>

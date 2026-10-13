@@ -1,5 +1,5 @@
-import React, { useCallback } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import React, { useCallback, useEffect } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import { useAdminList } from '../../hooks/useAdminList'
 import AdminPageHeader from '../../components/admin/AdminPageHeader'
@@ -10,6 +10,8 @@ import { TEMPLATE_CODES } from '../../constants/admin'
 
 export default function FieldsListPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const focusKey = searchParams.get('focus') || ''
   const fetchFn = useCallback(({ page, pageSize, q, template_code }) =>
     api.adminFields({ page, pageSize, q, template_code }), [])
 
@@ -17,6 +19,16 @@ export default function FieldsListPage() {
     items, total, page, setPage, pageSize, search, setSearch,
     filters, setFilters, loading, totalPages,
   } = useAdminList(fetchFn)
+
+  useEffect(() => {
+    if (!focusKey || loading) return
+    const el = document.getElementById(`field-row-${focusKey}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('admin-row-focus')
+    const t = window.setTimeout(() => el.classList.remove('admin-row-focus'), 4000)
+    return () => window.clearTimeout(t)
+  }, [focusKey, items, loading])
 
   return (
     <>
@@ -52,7 +64,7 @@ export default function FieldsListPage() {
             </thead>
             <tbody>
               {items.map((f) => (
-                <tr key={f.id}>
+                <tr key={f.id} id={`field-row-${f.key}`}>
                   <td>{f.name}{f.desensitized ? <span className="tag-warn"> 请核实</span> : null}</td>
                   <td><code>{f.key}</code></td>
                   <td>{f.field_type}</td>

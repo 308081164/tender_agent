@@ -9,6 +9,7 @@ export function useChatSessions(showToast) {
   const [chatInput, setChatInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [actingCardId, setActingCardId] = useState(null)
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listChatSessions()
@@ -63,6 +64,35 @@ export function useChatSessions(showToast) {
     }
   }, [refreshSessions, showToast])
 
+  const handleCardAction = useCallback(async (message, card, action, payload) => {
+    if (actingCardId || loading) return
+    setActingCardId(card.id)
+    try {
+      const id = await ensureSession()
+      const res = await api.sendChatAction(id, {
+        message_id: message.id,
+        card_id: card.id,
+        action,
+        payload: payload || {},
+      })
+      setMessages((list) => {
+        const next = list.map((m) => (
+          m.id && res.acted_message && m.id === res.acted_message.id ? res.acted_message : m
+        ))
+        if (res.user_message) next.push(res.user_message)
+        if (res.assistant_message) next.push(res.assistant_message)
+        return next
+      })
+      if (res.session) {
+        setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
+      }
+    } catch (e) {
+      showToast?.(e.message)
+    } finally {
+      setActingCardId(null)
+    }
+  }, [actingCardId, loading, ensureSession, showToast])
+
   const askChat = useCallback(async () => {
     const q = chatInput.trim()
     if (!q || loading) return
@@ -115,5 +145,7 @@ export function useChatSessions(showToast) {
     loadSession,
     askChat,
     refreshSessions,
+    handleCardAction,
+    actingCardId,
   }
 }
