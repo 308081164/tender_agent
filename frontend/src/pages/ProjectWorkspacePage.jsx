@@ -70,13 +70,22 @@ export default function ProjectWorkspacePage() {
     setInput('')
     setLoading(true)
     const optimisticId = `tmp-${Date.now()}`
-    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: q }])
+    const assistantId = `tmp-bot-${Date.now()}`
+    setMessages((m) => [
+      ...m,
+      { id: optimisticId, role: 'user', content: q },
+      { id: assistantId, role: 'assistant', content: '' },
+    ])
     try {
       const ctx = { project_id: projectId, guided_intake: guidedIntake }
       if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
-      const res = await api.sendChatMessage(sessionId, q, ctx)
+      const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok) => {
+        setMessages((m) => m.map((x) => (
+          x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
+        )))
+      })
       setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
+        ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
         res.user_message,
         res.assistant_message,
       ])

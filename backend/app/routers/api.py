@@ -1,9 +1,10 @@
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
+import json
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -1707,37 +1708,15 @@ def list_chat_messages(session_id: int, db: Session = Depends(get_db)):
     return [message_to_dict(m) for m in (s.messages or [])]
 
 
-@router.post("/chat/sessions/{session_id}/messages")
-async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
-    s = get_session_or_404(db, session_id)
-    content = (body.content or "").strip()
-    if not content:
-        raise HTTPException(400, "消息不能为空")
-
-    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
-    db.add(user_msg)
-    db.flush()
-
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in (s.messages or [])
-        if m.id != user_msg.id
-    ]
-    faqs = db.query(FAQItem).all()
-    items = [
-        {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
-        for f in faqs
-    ]
-    result = await chat_assistant.process_chat_message(
-        content,
-        db,
-        history=history,
-        faq_items=items,
-        workspace=getattr(s, "workspace", None) or {},
-        context=body.context or {},
-        session=s,
-    )
-
+async def _finalize_chat_message_turn(
+    session_id: int,
+    s: ChatSession,
+    user_msg: ChatMessage,
+    content: str,
+    body: "ChatMessageCreate",
+    result: dict,
+    db: Session,
+) -> dict:
     meta = dict(result.get("metadata") or {})
     ws = dict(getattr(s, "workspace", None) or {})
 
@@ -1889,6 +1868,118 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         "mode": result.get("mode"),
         "metadata": meta,
     }
+
+
+@router.post("/chat/sessions/{session_id}/messages")
+async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "消息不能为空")
+
+    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    db.add(user_msg)
+    db.flush()
+
+    history = [
+        {"role": m.role, "content": m.content}
+        for m in (s.messages or [])
+        if m.id != user_msg.id
+    ]
+    faqs = db.query(FAQItem).all()
+    items = [
+        {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
+        for f in faqs
+    ]
+    result = await chat_assistant.process_chat_message(
+        content,
+        db,
+        history=history,
+        faq_items=items,
+        workspace=getattr(s, "workspace", None) or {},
+        context=body.context or {},
+        session=s,
+    )
+    return await _finalize_chat_message_turn(session_id, s, user_msg, content, body, result, db)
+
+
+@router.post("/chat/sessions/{session_id}/messages/stream")
+async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "消息不能为空")
+
+    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    db.add(user_msg)
+    db.commit()
+    user_msg_id = user_msg.id
+    db_bind = db.get_bind()
+
+    async def event_stream():
+        stream_db = Session(bind=db_bind)
+        try:
+            s_live = stream_db.query(ChatSession).filter(ChatSession.id == session_id).first()
+            user_live = stream_db.query(ChatMessage).filter(ChatMessage.id == user_msg_id).first()
+            if not s_live or not user_live:
+                return
+            history = [
+                {"role": m.role, "content": m.content}
+                for m in (s_live.messages or [])
+                if m.id != user_live.id
+            ]
+            faqs = stream_db.query(FAQItem).all()
+            items = [
+                {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
+                for f in faqs
+            ]
+            ws = getattr(s_live, "workspace", None) or {}
+            ctx = body.context or {}
+
+            result = await chat_assistant.process_chat_message(
+                content,
+                stream_db,
+                history=history,
+                faq_items=items,
+                workspace=ws,
+                context=ctx,
+                session=s_live,
+                stream=True,
+            )
+            stream_msgs = result.pop("stream_messages", None)
+            if stream_msgs:
+                pieces: list[str] = []
+                async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
+                    pieces.append(tok)
+                    yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
+                result["answer"] = "".join(pieces)
+            else:
+                result = await chat_assistant.process_chat_message(
+                    content,
+                    stream_db,
+                    history=history,
+                    faq_items=items,
+                    workspace=ws,
+                    context=ctx,
+                    session=s_live,
+                    stream=False,
+                )
+                ans = result.get("answer") or ""
+                if ans:
+                    yield f"data: {json.dumps({'type': 'token', 'text': ans}, ensure_ascii=False)}\n\n"
+
+            payload = await _finalize_chat_message_turn(
+                session_id, s_live, user_live, content, body, result, stream_db,
+            )
+            yield f"data: {json.dumps({'type': 'done', 'payload': payload}, ensure_ascii=False)}\n\n"
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class ChatActionRequest(BaseModel):

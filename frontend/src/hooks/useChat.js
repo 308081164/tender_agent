@@ -10,6 +10,8 @@ export function useChatSessions(showToast) {
   const [loading, setLoading] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
+  const [chatContext, setChatContext] = useState(null)
+  const [boundProjectId, setBoundProjectId] = useState(null)
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listChatSessions()
@@ -147,19 +149,46 @@ export function useChatSessions(showToast) {
     }
   }, [loading, ensureSession, mergeUploadResponse, showToast])
 
+  const bindProjectSession = useCallback(async (projectId) => {
+    if (!projectId) {
+      setBoundProjectId(null)
+      setChatContext(null)
+      return null
+    }
+    setBoundProjectId(projectId)
+    setChatContext({ project_id: projectId, guided_intake: true })
+    try {
+      const sess = await api.ensureProjectSession(projectId)
+      setSessionId(sess.id)
+      await refreshSessions()
+      const data = await api.getChatSession(sess.id)
+      setMessages(data.messages || [])
+      return sess.id
+    } catch (e) {
+      showToast?.(e.message)
+      return null
+    }
+  }, [refreshSessions, showToast])
+
   const askChat = useCallback(async () => {
     const q = chatInput.trim()
     if (!q || loading) return
     setChatInput('')
     setLoading(true)
     const optimisticId = `tmp-${Date.now()}`
+    const assistantId = `tmp-bot-${Date.now()}`
     const optimistic = { id: optimisticId, role: 'user', content: q }
-    setMessages((m) => [...m, optimistic])
+    setMessages((m) => [...m, optimistic, { id: assistantId, role: 'assistant', content: '' }])
     try {
       const id = await ensureSession()
-      const res = await api.sendChatMessage(id, q)
+      const ctx = chatContext || undefined
+      const res = await api.sendChatMessageStream(id, q, ctx, (tok) => {
+        setMessages((m) => m.map((x) => (
+          x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
+        )))
+      })
       setMessages((m) => {
-        const withoutOptimistic = m.filter((x) => x.id !== optimisticId)
+        const withoutOptimistic = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
         return [
           ...withoutOptimistic,
           res.user_message,
@@ -174,14 +203,14 @@ export function useChatSessions(showToast) {
       }
     } catch (e) {
       setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
+        ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
         optimistic,
         { role: 'assistant', content: `提问失败：${e.message}` },
       ])
     } finally {
       setLoading(false)
     }
-  }, [chatInput, loading, ensureSession])
+  }, [chatInput, loading, ensureSession, chatContext])
 
   return {
     open,
@@ -204,5 +233,8 @@ export function useChatSessions(showToast) {
     uploadFiles,
     importFolderPath,
     showToast,
+    bindProjectSession,
+    boundProjectId,
+    chatContext,
   }
 }

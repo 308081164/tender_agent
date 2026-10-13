@@ -231,6 +231,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content, context }),
     }),
+  sendChatMessageStream: async (sessionId, content, context = null, onToken) => {
+    const res = await fetch(`${BASE}/chat/sessions/${sessionId}/messages/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, context }),
+    })
+    if (!res.ok) {
+      throw new Error(await readErrorDetail(res))
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let payload = null
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const parts = buf.split('\n\n')
+      buf = parts.pop() || ''
+      for (const part of parts) {
+        const line = part.trim()
+        if (!line.startsWith('data:')) continue
+        const data = JSON.parse(line.slice(5).trim())
+        if (data.type === 'token' && data.text && onToken) onToken(data.text)
+        if (data.type === 'done') payload = data.payload
+      }
+    }
+    if (!payload) throw new Error('流式响应未完成')
+    return payload
+  },
   getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),
   sendChatAction: (sessionId, body) =>
     request(`/chat/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(body) }),

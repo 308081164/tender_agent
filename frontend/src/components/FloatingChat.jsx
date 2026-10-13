@@ -46,6 +46,7 @@ export default function FloatingChat({ chat, projectPath = '' }) {
         onUploadFiles={chat.uploadFiles}
         onImportFolderPath={chat.importFolderPath}
         showToast={chat.showToast}
+        boundProjectId={chat.boundProjectId}
       />
     </>
   )

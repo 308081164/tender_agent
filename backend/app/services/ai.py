@@ -1,5 +1,8 @@
 """AI 服务：支持 DeepSeek / 通义千问 / Kimi（月之暗面），无 Key 时使用本地模板生成"""
 from __future__ import annotations
+import json
+from collections.abc import AsyncIterator
+
 import httpx
 from sqlalchemy.orm import Session
 
@@ -182,6 +185,57 @@ async def _openai_compat(
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+
+async def _openai_compat_stream(
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+) -> AsyncIterator[str]:
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload: dict = {"model": model, "messages": messages, "temperature": 0.4, "stream": True}
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                text = delta.get("content") or ""
+                if text:
+                    yield text
+
+
+async def chat_completion_stream(
+    messages: list[dict],
+    db: Session | None = None,
+    *,
+    task_kind: str = "text",
+) -> AsyncIterator[str]:
+    """流式输出 assistant 文本 token；无 Key 时无 yield。"""
+    cfg = settings_svc.resolve_ai_config(db)
+    kind = (task_kind or "text").strip().lower()
+    order = pick_model(kind, cfg)
+    for slug in order:
+        call = _provider_call(slug, cfg, vision=False)
+        if not call:
+            continue
+        base_url, api_key, model = call
+        try:
+            async for tok in _openai_compat_stream(base_url, api_key, model, messages):
+                yield tok
+            return
+        except Exception:
+            continue
 
 
 async def chat_completion_vision(

@@ -24,17 +24,18 @@ export default function ChatDrawer({
   onUploadFiles,
   onImportFolderPath,
   showToast,
+  boundProjectId = null,
 }) {
   if (!open) return null
 
   return (
     <div className="chat-drawer-root">
       <div className="chat-drawer-mask" onClick={onClose} />
-      <aside className="chat-drawer" role="dialog" aria-label="企业问答">
+      <aside className="chat-drawer" role="dialog" aria-label={boundProjectId ? '标书 Copilot' : '企业问答'}>
         <header className="chat-drawer-head">
           <div>
-            <div className="wizard-kicker">企业问答</div>
-            <h3>智能助手</h3>
+            <div className="wizard-kicker">{boundProjectId ? '标书 Copilot' : '企业问答'}</div>
+            <h3>{boundProjectId ? '项目助手' : '智能助手'}</h3>
           </div>
           <div className="chat-drawer-tools">
             <button type="button" className="ghost" onClick={onNewChat} disabled={loading}>
@@ -77,7 +78,9 @@ export default function ChatDrawer({
             <div className="chat-drawer-messages">
               {messages.length === 0 && (
                 <div className="msg bot">
-                  你好，我是企业问答助手。可询问资质、业绩、人员等问题。支持多轮上下文。
+                  {boundProjectId
+                    ? '你好，我是标书 Copilot，已绑定当前项目。可问模板、缺项与编写要求；支持 📎 上传招标文件与 📁 选择资质文件夹。'
+                    : '你好，我是标书智能体助手。可询问资质、业绩、人员，或打开项目页后在此继续 Copilot 对话。'}
                 </div>
               )}
               {messages.map((m, i) => (
