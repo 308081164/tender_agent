@@ -23,6 +23,7 @@ export default function ProjectDocumentPane({
   context,
   onlyOfficeEnabled,
   refreshToken,
+  highlightTexts = [],
   onPreviewError,
   onFieldsSaved,
   onAgentFollowup,
@@ -159,6 +160,14 @@ export default function ProjectDocumentPane({
         </div>
         {tabs}
       </div>
+      {highlightTexts?.length ? (
+        <div className="review-highlight-strip">
+          <span className="muted tiny">审查高亮：</span>
+          {highlightTexts.map((t) => (
+            <mark className="highlight" key={t}>{t.length > 24 ? `${t.slice(0, 24)}…` : t}</mark>
+          ))}
+        </div>
+      ) : null}
       <div className="doc-workspace-body">
         {mode === 'onlyoffice' && sessionId ? (
           <OnlyOfficeEditor sessionId={sessionId} workspace={workspace} onSaved={() => runPreviewFetch(true)} />

@@ -91,11 +91,9 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
         ...(workspaceDir.trim() ? { workspace_dir: workspaceDir.trim() } : {}),
       })
       if (workspaceDir.trim()) markRecentWorkspace(workspaceDir.trim())
-      await api.confirmStep1(p.id, { template_id: selectedId, title: p.title })
       markRecent(selectedId)
-      await api.ensureProjectSession(p.id)
       onClose()
-      navigate(`/projects/${p.id}/workspace`)
+      navigate(`/projects/${p.id}/step/1`)
     } catch (e) {
       showToast?.(e.message)
     } finally {
@@ -107,7 +105,7 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal panel create-hub-modal" role="dialog" onClick={(e) => e.stopPropagation()}>
         <h3>新建标书</h3>
-        <p className="muted">选择模板后进入创作工作台（左预览、右 Agent）。</p>
+        <p className="muted">选择模板后从「选择起点」开始；完成信息录入后进入创作工作台（左文档、右 Agent）。</p>
         <Step1TemplatePicker templates={sortedTemplates} selectedId={selectedId} onSelect={setSelectedId} />
         <div className="create-hub-workspace" style={{ marginTop: 12 }}>
           <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
@@ -132,7 +130,7 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
         <div className="row-actions" style={{ marginTop: 16 }}>
           <button type="button" className="ghost" onClick={onClose} disabled={busy}>取消</button>
           <button type="button" onClick={start} disabled={busy || !selectedId}>
-            {busy ? '创建中…' : '进入创作工作台'}
+            {busy ? '创建中…' : '开始新建标书'}
           </button>
         </div>
       </div>

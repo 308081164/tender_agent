@@ -25,11 +25,37 @@ router = APIRouter()
 STEP_NAMES = {
     1: "选择起点",
     2: "信息录入",
-    3: "AI审核",
-    4: "插入资质",
-    5: "条目校验",
+    3: "Agent创作",
+    4: "AI审查",
+    5: "AI审查",
     6: "导出Word",
 }
+
+
+def _workspace_phase_name(step: int, status: str | None = None) -> str:
+    if status == "exported":
+        return "导出Word"
+    if step >= 6:
+        return "导出Word"
+    if step >= 4:
+        return "AI审查"
+    if step >= 3:
+        return "Agent创作"
+    return STEP_NAMES.get(step, f"步骤{step}")
+
+
+def _workspace_progress(step: int, status: str | None = None) -> float:
+    if status == "exported":
+        return 1.0
+    if step >= 6:
+        return 0.92
+    if step >= 5:
+        return 0.75
+    if step >= 4:
+        return 0.58
+    if step >= 3:
+        return 0.42
+    return min(max(step, 1), 2) / 2 * 0.35
 
 
 class ProjectCreate(BaseModel):
@@ -118,7 +144,8 @@ class SaveProgressRequest(BaseModel):
 def project_summary(p: TenderProject) -> dict:
     fields = p.fields or {}
     chapters = p.chapters or {}
-    step_name = STEP_NAMES.get(p.current_step, f"步骤{p.current_step}")
+    step = p.current_step or 1
+    step_name = _workspace_phase_name(step, p.status) if step >= 3 else STEP_NAMES.get(step, f"步骤{step}")
     project_name = fields.get("project_name") or p.title or "未命名标书"
     tenderer = fields.get("tenderer") or ""
     bid_amount = fields.get("bid_amount") or ""
@@ -157,7 +184,7 @@ def project_summary(p: TenderProject) -> dict:
         "brief": brief,
         "chapter_count": chapter_count,
         "qual_count": qual_count,
-        "progress": min(max(p.current_step or 1, 1), 6) / 6,
+        "progress": _workspace_progress(step, p.status),
     }
 
 
@@ -1767,6 +1794,48 @@ async def _finalize_chat_message_turn(
                 f"「{old_t}」→「{new_t}」\n\n请在左侧预览确认效果。"
             )
             meta["workspace_updated"] = True
+
+    # 工作区：插入表格
+    if meta.get("needs_workspace_insert_table"):
+        doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+        if doc_key:
+            doc_bytes = storage.download_bytes(doc_key)
+            pidx = int(meta.get("paragraph_index") or (body.context or {}).get("paragraph_index") or 0)
+            rows = int(meta.get("rows") or 3)
+            cols = int(meta.get("cols") or 3)
+            new_bytes, ins_meta = document_agent.insert_table_in_document(
+                doc_bytes, paragraph_index=pidx, rows=rows, cols=cols,
+            )
+            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_table.docx"
+            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ws["draft_object_key"] = new_key
+            ws["version"] = int(ws.get("version") or 0) + 1
+            ws["last_action"] = "insert_table"
+            s.workspace = ws
+            result["answer"] = f"✅ 已插入 {rows}×{cols} 表格（版本 v{ws['version']}），请在左侧预览确认。"
+            meta["workspace_updated"] = True
+            meta["insert_meta"] = ins_meta
+
+    # 工作区：插入图片
+    if meta.get("needs_workspace_insert_image"):
+        doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+        att_key = meta.get("attachment_object_key") or (body.context or {}).get("attachment_object_key")
+        if doc_key and att_key:
+            doc_bytes = storage.download_bytes(doc_key)
+            img_bytes = storage.download_bytes(att_key)
+            pidx = int(meta.get("paragraph_index") or (body.context or {}).get("paragraph_index") or 0)
+            new_bytes, ins_meta = document_agent.insert_image_in_document(
+                doc_bytes, img_bytes, paragraph_index=pidx,
+            )
+            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_image.docx"
+            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ws["draft_object_key"] = new_key
+            ws["version"] = int(ws.get("version") or 0) + 1
+            ws["last_action"] = "insert_image"
+            s.workspace = ws
+            result["answer"] = f"✅ 图片已插入文档（版本 v{ws['version']}）。"
+            meta["workspace_updated"] = True
+            meta["insert_meta"] = ins_meta
 
     # 工作区：局部修改
     if meta.get("needs_workspace_edit"):

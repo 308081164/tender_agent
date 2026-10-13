@@ -91,6 +91,12 @@ INTENT_PATTERNS: list[tuple[str, list[str], float]] = [
     ("open_workspace", [
         "文档工作区", "打开编辑器", "双栏模式", "左边编辑",
     ], 0.7),
+    ("insert_table", [
+        "插入表格", "添加表格", "画表格", "建表格", "表格插入",
+    ], 0.88),
+    ("insert_image", [
+        "插入图片", "添加图片", "放入图片", "插图",
+    ], 0.88),
 ]
 
 
@@ -264,6 +270,67 @@ async def _handle_generate_document(db: Session, text: str, workspace: dict | No
     }
 
 
+def _parse_table_shape(text: str) -> tuple[int, int]:
+    m = re.search(r"(\d+)\s*[x×*]\s*(\d+)", text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"(\d+)\s*行", text)
+    rows = int(m.group(1)) if m else 3
+    m = re.search(r"(\d+)\s*列", text)
+    cols = int(m.group(1)) if m else 3
+    return rows, cols
+
+
+async def _handle_insert_table(text: str, context: dict | None, workspace: dict | None) -> dict[str, Any]:
+    ws = workspace or {}
+    if not ws.get("draft_object_key") and not ws.get("template_object_key"):
+        return {
+            "answer": "请先在左侧打开标书草稿，再告诉我插入位置（可选段落索引）与表格行列数，例如「在第 5 段后插入 4x3 表格」。",
+            "mode": "action",
+            "metadata": {"intent": "insert_table"},
+        }
+    rows, cols = _parse_table_shape(text)
+    ctx = context or {}
+    return {
+        "answer": f"将在文档第 {ctx.get('paragraph_index', 0)} 段附近插入 {rows}×{cols} 表格…",
+        "mode": "action",
+        "metadata": {
+            "intent": "insert_table",
+            "needs_workspace_insert_table": True,
+            "paragraph_index": ctx.get("paragraph_index", 0),
+            "rows": rows,
+            "cols": cols,
+        },
+    }
+
+
+async def _handle_insert_image(text: str, context: dict | None, workspace: dict | None) -> dict[str, Any]:
+    ws = workspace or {}
+    if not ws.get("draft_object_key") and not ws.get("template_object_key"):
+        return {
+            "answer": "请先上传或生成标书 DOCX，再发送「插入图片」并附上 png/jpg 材料（📎）。",
+            "mode": "action",
+            "metadata": {"intent": "insert_image"},
+        }
+    ctx = context or {}
+    if not ctx.get("attachment_object_key") and not ctx.get("image_attachment_id"):
+        return {
+            "answer": "请先通过 📎 上传图片，或说明使用最近上传的图片附件，再发送「在光标处插入图片」。",
+            "mode": "action",
+            "metadata": {"intent": "insert_image"},
+        }
+    return {
+        "answer": "正在将图片插入文档指定位置…",
+        "mode": "action",
+        "metadata": {
+            "intent": "insert_image",
+            "needs_workspace_insert_image": True,
+            "paragraph_index": ctx.get("paragraph_index", 0),
+            "attachment_object_key": ctx.get("attachment_object_key"),
+        },
+    }
+
+
 async def _handle_edit_fragment(text: str, context: dict | None) -> dict[str, Any]:
     ctx = context or {}
     selected = ctx.get("selected_text") or ""
@@ -324,7 +391,12 @@ async def _handle_edit_project(db: Session) -> dict[str, Any]:
             "intent": "edit_project",
             "project_id": project.id,
             "actions": [
-                {"type": "link", "label": "继续编辑标书", "url": f"/projects/{project.id}/step/{step}", "primary": True},
+                {
+                    "type": "link",
+                    "label": "继续编辑标书",
+                    "url": f"/projects/{project.id}/workspace" if step >= 3 else f"/projects/{project.id}/step/{step}",
+                    "primary": True,
+                },
                 {"type": "link", "label": "预览导出", "url": f"/projects/{project.id}/preview"},
             ],
         },
@@ -344,7 +416,7 @@ async def _handle_draft_create(db: Session) -> dict[str, Any]:
                 "project_id": project_id,
                 "actions": [
                     {"type": "link", "label": "填写字段", "url": f"/projects/{project_id}/step/2", "primary": True},
-                    {"type": "link", "label": "AI 生成章节", "url": f"/projects/{project_id}/step/3"},
+                    {"type": "link", "label": "进入创作工作台", "url": f"/projects/{project_id}/workspace"},
                 ],
             },
         }
@@ -358,7 +430,7 @@ async def _handle_draft_create(db: Session) -> dict[str, Any]:
             "intent": "draft_create",
             "project_id": project.id,
             "actions": [
-                {"type": "link", "label": "前往 AI 生成", "url": f"/projects/{project.id}/step/3", "primary": True},
+                {"type": "link", "label": "进入创作工作台", "url": f"/projects/{project.id}/workspace", "primary": True},
                 {"type": "link", "label": "补充项目字段", "url": f"/projects/{project.id}/step/2"},
             ],
         },
@@ -572,6 +644,10 @@ async def process_chat_message(
         return await _handle_generate_document(db, text, workspace)
     if intent == "edit_fragment":
         return await _handle_edit_fragment(text, context)
+    if intent == "insert_table":
+        return await _handle_insert_table(text, context, workspace)
+    if intent == "insert_image":
+        return await _handle_insert_image(text, context, workspace)
     if intent == "open_workspace":
         return await _handle_open_workspace()
     if intent == "create_project":

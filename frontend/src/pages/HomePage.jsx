@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import PreviewModal from '../components/PreviewModal'
 import AdminConfirmDialog from '../components/admin/AdminConfirmDialog'
 import { formatTime } from '../utils/format'
-import { STEPS } from '../constants'
+import { projectContinuePath, WIZARD_STEPS, WORKSPACE_PHASES } from '../utils/projectRouting'
 
 export default function HomePage() {
   const navigate = useNavigate()
@@ -26,8 +26,18 @@ export default function HomePage() {
   }, [projects, homeFilter])
 
   const openProject = (p) => {
-    const step = Math.min(p.current_step || 1, 6)
-    navigate(`/projects/${p.id}/step/${step}`)
+    navigate(projectContinuePath(p))
+  }
+
+  const displayStepName = (p) => {
+    const s = p.summary || {}
+    if (s.step_name) return s.step_name
+    const step = p.current_step || 1
+    if (step <= 2) {
+      return WIZARD_STEPS.find((x) => x.step === step)?.name || `步骤 ${step}`
+    }
+    const phase = WORKSPACE_PHASES.find((ph) => step >= ph.minStep && step <= ph.maxStep)
+    return phase?.name || '创作'
   }
 
   const confirmDelete = async () => {
@@ -120,9 +130,7 @@ export default function HomePage() {
                 {filteredProjects.map((p) => {
                   const s = p.summary || {}
                   const exported = p.status === 'exported'
-                  const stepName = s.step_name
-                    || STEPS.find((x) => x.step === Math.min(p.current_step || 1, 6))?.name
-                    || `步骤 ${p.current_step}/6`
+                  const stepName = displayStepName(p)
                   return (
                     <tr key={p.id} onClick={() => openProject(p)}>
                       <td className="project-title-cell">

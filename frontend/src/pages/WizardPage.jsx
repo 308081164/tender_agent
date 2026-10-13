@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import { STEPS } from '../constants'
+import { projectContinuePath, WIZARD_STEPS } from '../utils/projectRouting'
 import { useProject } from '../hooks/useProject'
 import { highlightText } from '../utils/highlight'
 import { formatTime } from '../utils/format'
@@ -43,7 +44,13 @@ export default function WizardPage() {
 
   const viewStep = Math.min(Math.max(parseInt(stepParam, 10) || 1, 1), 6)
   const currentStep = project?.current_step || 1
-  const activeStep = Math.min(viewStep, 6)
+  const activeStep = Math.min(viewStep, 2)
+
+  useEffect(() => {
+    if (viewStep >= 3) {
+      navigate(`/projects/${id}/workspace`, { replace: true })
+    }
+  }, [viewStep, id, navigate])
 
   useEffect(() => {
     let cancelled = false
@@ -51,7 +58,11 @@ export default function WizardPage() {
       try {
         const p = await loadProject(id)
         if (cancelled) return
-        const maxStep = Math.min(p.current_step || 1, 6)
+        if ((p.current_step || 1) >= 3 || viewStep >= 3) {
+          navigate(`/projects/${id}/workspace`, { replace: true })
+          return
+        }
+        const maxStep = Math.min(p.current_step || 1, 2)
         if (viewStep > maxStep) {
           navigate(`/projects/${id}/step/${maxStep}`, { replace: true })
         }
@@ -65,6 +76,10 @@ export default function WizardPage() {
 
   const goStep = (step) => {
     if (!project) return
+    if (step >= 3) {
+      navigate(`/projects/${id}/workspace`)
+      return
+    }
     if (step > (project.current_step || 1)) {
       showToast('请先完成并保存前面的步骤')
       return
@@ -127,7 +142,7 @@ export default function WizardPage() {
   const handleRollback = async (snapshotId) => {
     const p = await doRollback(snapshotId)
     if (p) {
-      navigate(`/projects/${id}/step/${Math.min(p.current_step || 1, 6)}`)
+      navigate(projectContinuePath(p))
       await refreshProjects()
     }
   }
@@ -141,7 +156,17 @@ export default function WizardPage() {
     if (p) {
       await refreshProjects()
       if (opts.advance) {
-        navigate(`/projects/${id}/step/${Math.min(p.current_step || activeStep + 1, 6)}`)
+        const next = p.current_step || activeStep + 1
+        if (activeStep === 2 || next >= 3) {
+          try {
+            await api.ensureProjectSession(p.id)
+          } catch {
+            /* session optional until first chat */
+          }
+          navigate(`/projects/${p.id}/workspace`)
+        } else {
+          navigate(`/projects/${id}/step/${next}`)
+        }
       }
     }
     return p
@@ -350,7 +375,7 @@ export default function WizardPage() {
         <StepNav project={project} activeStep={activeStep} onGoStep={goStep} />
         <div className="wizard-topbar">
           <div>
-            <div className="wizard-kicker">当前步骤 {step}/6 · {STEPS.find((s) => s.step === step)?.name}</div>
+            <div className="wizard-kicker">当前步骤 {step}/2 · {WIZARD_STEPS.find((s) => s.step === step)?.name}</div>
             <div className="wizard-save-hint">
               {lastSavedAt ? `最近保存：${formatTime(lastSavedAt)}` : '尚未保存本步'}
             </div>
@@ -453,7 +478,7 @@ export default function WizardPage() {
               <button className="secondary" onClick={() => goStep(1)}>返回上一步</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
               <Link className="button secondary linkish" to={`/projects/${project.id}/workspace`}>进入创作工作台</Link>
-              <button onClick={confirmFields} disabled={loading}>保存并进入 AI 生成</button>
+              <button onClick={confirmFields} disabled={loading}>保存并进入创作工作台</button>
             </div>
           </>
         )}

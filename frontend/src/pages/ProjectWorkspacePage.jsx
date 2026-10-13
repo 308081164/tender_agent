@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import BackChevron from '../components/chat/BackChevron'
@@ -8,10 +8,15 @@ import ProjectContextBar from '../components/project/ProjectContextBar'
 import FieldChecklistPanel from '../components/project/FieldChecklistPanel'
 import ProjectDocumentPane from '../components/project/ProjectDocumentPane'
 import WorkspaceDeliveryDrawer from '../components/project/WorkspaceDeliveryDrawer'
+import WorkspaceStepBar from '../components/project/WorkspaceStepBar'
+import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
 import { useProjectContext } from '../hooks/useProjectContext'
+import { stepForWorkspacePhase, workspacePhaseFromStep } from '../utils/projectRouting'
 
 export default function ProjectWorkspacePage() {
   const { id } = useParams()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const projectId = Number(id)
   const { showToast, quals } = useApp()
   const { context, refresh: refreshContext } = useProjectContext(projectId)
@@ -28,8 +33,18 @@ export default function ProjectWorkspacePage() {
   const [features, setFeatures] = useState({ onlyoffice: { enabled: false } })
   const [guidedIntake, setGuidedIntake] = useState(true)
   const [referenceText, setReferenceText] = useState('')
+  const [reviewHighlights, setReviewHighlights] = useState([])
+  const [lastImageAttachmentKey, setLastImageAttachmentKey] = useState(null)
   const fileRef = useRef(null)
   const messagesRef = useRef(null)
+
+  const activePhase = searchParams.get('phase')
+    || (project ? workspacePhaseFromStep(project.current_step, project.status) : 'create')
+
+  const setPhase = useCallback((phaseId) => {
+    setSearchParams({ phase: phaseId }, { replace: true })
+    if (phaseId === 'export') setDeliveryOpen(true)
+  }, [setSearchParams])
 
   useEffect(() => {
     ;(async () => {
@@ -57,6 +72,13 @@ export default function ProjectWorkspacePage() {
   }, [projectId, showToast])
 
   useEffect(() => {
+    if (!project) return
+    if ((project.current_step || 1) < 3) {
+      navigate(`/projects/${projectId}/step/${Math.max(project.current_step || 1, 1)}`, { replace: true })
+    }
+  }, [project, projectId, navigate])
+
+  useEffect(() => {
     const el = messagesRef.current
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
@@ -79,6 +101,7 @@ export default function ProjectWorkspacePage() {
     try {
       const ctx = { project_id: projectId, guided_intake: guidedIntake }
       if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
+      if (lastImageAttachmentKey) ctx.attachment_object_key = lastImageAttachmentKey
       const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok) => {
         setMessages((m) => m.map((x) => (
           x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
@@ -145,6 +168,9 @@ export default function ProjectWorkspacePage() {
     try {
       const res = await api.uploadProjectAttachment(projectId, file)
       showToast(`已上传：${file.name}`)
+      if (/\.(png|jpe?g|gif|webp)$/i.test(file.name) && res.attachment?.object_key) {
+        setLastImageAttachmentKey(res.attachment.object_key)
+      }
       if (res.suggested_field_patch?.length) {
         const safe = res.suggested_field_patch.filter((x) => x.auto_apply)
         if (safe.length) {
@@ -180,10 +206,33 @@ export default function ProjectWorkspacePage() {
         onToggleChecklist={() => setChecklistOpen((v) => !v)}
       />
 
+      <WorkspaceStepBar
+        project={project}
+        activePhase={activePhase}
+        onPhaseClick={(phaseId) => {
+          setPhase(phaseId)
+          api.saveProgress(projectId, { current_step: stepForWorkspacePhase(phaseId), advance: false })
+            .then(setProject)
+            .catch((e) => showToast(e.message))
+        }}
+      />
+
       <div className="chat-workspace-split">
         <section className="chat-workspace-doc">
-          {checklistOpen ? (
+          {checklistOpen && activePhase === 'create' ? (
             <FieldChecklistPanel context={context} onConfirmSensitive={confirmSensitive} />
+          ) : null}
+          {activePhase === 'review' ? (
+            <WorkspaceReviewPanel
+              projectId={projectId}
+              showToast={showToast}
+              onHighlightTexts={setReviewHighlights}
+              onReviewComplete={async () => {
+                const p = await api.getProject(projectId)
+                setProject(p)
+                bumpPreview()
+              }}
+            />
           ) : null}
           <ProjectDocumentPane
             projectId={projectId}
@@ -192,6 +241,7 @@ export default function ProjectWorkspacePage() {
             context={context}
             onlyOfficeEnabled={!!features.onlyoffice?.enabled}
             refreshToken={previewToken}
+            highlightTexts={activePhase === 'review' ? reviewHighlights : []}
             showToast={showToast}
             onPreviewError={(msg) => showToast(msg || '预览失败')}
             onFieldsSaved={refreshContext}
@@ -201,7 +251,7 @@ export default function ProjectWorkspacePage() {
 
         <aside className="chat-workspace-panel">
           <div className="chat-panel-head">
-            <h3>项目 Agent</h3>
+            <h3>{activePhase === 'review' ? '审查助手' : '项目 Agent'}</h3>
             <label className="check-row tiny">
               <input type="checkbox" checked={guidedIntake} onChange={(e) => setGuidedIntake(e.target.checked)} />
               引导补全
