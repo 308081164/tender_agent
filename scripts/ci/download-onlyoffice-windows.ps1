@@ -244,7 +244,10 @@ if ($nodeOut) {
   $manifest.node = (Relative-To $DestinationDir $nodeOut.FullName)
 }
 $manifestPath = Join-Path $DestinationDir "bundle.json"
-$manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+$manifestJson = $manifest | ConvertTo-Json -Depth 4
+# Windows PowerShell 5.1 -Encoding UTF8 writes a BOM that Python json.loads rejects.
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson.TrimEnd() + "`n", $utf8NoBom)
 
 $notice = @"
 ONLYOFFICE Docs Community Edition is licensed under AGPL-3.0.

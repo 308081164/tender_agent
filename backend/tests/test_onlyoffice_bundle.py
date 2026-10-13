@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.onlyoffice_const import ONLYOFFICE_DESKTOP_PORT
 from app.services.onlyoffice_runtime import (
     classify_onlyoffice,
     inspect_bundle,
+    load_manifest,
     probe_health,
     runtime_status,
 )
@@ -46,8 +48,6 @@ def _complete_bundle(root: Path) -> None:
         "rabbitmq": "rabbitmq/sbin/rabbitmq-server.bat",
         "erlang_home": "erlang",
     }
-    import json
-
     (root / "bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
@@ -84,8 +84,6 @@ def test_inspect_native_windows_bundle_without_node(tmp_path: Path):
     _write(tmp_path / "documentserver" / "config" / "default.json", "{}")
     _write(tmp_path / "rabbitmq" / "sbin" / "rabbitmq-server.bat", "@echo off")
     _write(tmp_path / "erlang" / "bin" / "erl.exe")
-    import json
-
     manifest = {
         "nginx": "documentserver/nginx/nginx.exe",
         "docservice": "documentserver/server/DocService/docservice.exe",
@@ -98,6 +96,13 @@ def test_inspect_native_windows_bundle_without_node(tmp_path: Path):
     (tmp_path / "bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
     ok, missing = inspect_bundle(tmp_path)
     assert ok, missing
+
+
+def test_load_manifest_accepts_powershell5_utf8_bom(tmp_path: Path):
+    payload = {"nginx": "nginx/nginx.exe", "docservice": "server/DocService/docservice.exe"}
+    (tmp_path / "bundle.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8"))
+    manifest = load_manifest(tmp_path)
+    assert manifest == payload
 
 
 def test_inspect_bundle_reports_missing_manifest(tmp_path: Path):

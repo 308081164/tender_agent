@@ -31,14 +31,23 @@ def bundle_root(install_dir: Path | None = None) -> Path:
 
 
 def load_manifest(root: Path) -> dict[str, Any] | None:
+    data, _problem = _read_manifest(root)
+    return data
+
+
+def _read_manifest(root: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (manifest, problem). problem is None when the file parses."""
     path = root / BUNDLE_MANIFEST
     if not path.is_file():
-        return None
+        return None, "missing"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+        # Windows PowerShell 5.1 Set-Content -Encoding UTF8 writes a BOM.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        return None, str(exc)
+    if not isinstance(data, dict):
+        return None, "not an object"
+    return data, None
 
 
 def _needs_node(manifest: dict[str, Any]) -> bool:
@@ -52,8 +61,10 @@ def _needs_node(manifest: dict[str, Any]) -> bool:
 def inspect_bundle(root: Path | None = None) -> tuple[bool, list[str]]:
     """Return (complete, missing_keys). missing_keys is empty when complete."""
     bundle = root if root is not None else bundle_root()
-    manifest = load_manifest(bundle)
+    manifest, problem = _read_manifest(bundle)
     if manifest is None:
+        if problem and problem != "missing":
+            return False, [f"{BUNDLE_MANIFEST}: {problem}"]
         return False, [BUNDLE_MANIFEST]
     missing: list[str] = []
     for key in _FILE_KEYS:
