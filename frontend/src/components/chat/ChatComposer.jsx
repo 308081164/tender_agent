@@ -16,6 +16,7 @@ export default function ChatComposer({
   className = '',
   contextBar = null,
   loadingHint = null,
+  innerPrefix = null,
 }) {
   const textareaRef = useAutoResizeTextarea(value, { minRows: 2, maxRows: 12 })
 
@@ -30,6 +31,7 @@ export default function ChatComposer({
       {contextBar}
       <div className="composer-card">
         {loadingHint ? <div className="composer-loading-hint">{loadingHint}</div> : null}
+        {innerPrefix}
         <textarea
           ref={textareaRef}
           className="composer-card-input"

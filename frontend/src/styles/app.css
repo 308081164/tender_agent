@@ -693,6 +693,19 @@ textarea.desensitized {
 }
 .composer-ctx-pill:hover { border-color: #c7d7fe; background: #f8fafc; }
 .composer-ctx-pill.open { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
+.composer-ctx-pill.static { cursor: default; pointer-events: none; }
+.composer-reference-inline {
+  padding: 8px 14px 0; border-bottom: 1px solid #f1f5f9;
+}
+.composer-reference-inline textarea {
+  width: 100%; resize: vertical; min-height: 44px; max-height: 120px;
+  border: 1px dashed #cbd5e1; border-radius: 8px; padding: 8px 10px;
+  font: inherit; font-size: 12px; line-height: 1.45; background: #f8fafc;
+}
+.composer-reference-inline label {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: var(--muted); margin-bottom: 4px;
+}
 .composer-ctx-pill-label { color: var(--muted); flex-shrink: 0; }
 .composer-ctx-pill-value {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

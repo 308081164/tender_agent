@@ -37,6 +37,7 @@ export default function ComposerContextBar({
   onWorkspaceDirChange,
   disabled = false,
   showProjectPicker = false,
+  boundProjectTitle = '',
   projects = [],
   projectId = null,
   onProjectChange,
@@ -129,6 +130,13 @@ export default function ComposerContextBar({
             </button>
           </DropdownPanel>
         </div>
+
+        {!showProjectPicker && boundProjectTitle ? (
+          <div className="composer-ctx-pill static" aria-label="当前标书项目">
+            <span className="composer-ctx-pill-label">标书项目</span>
+            <span className="composer-ctx-pill-value">{boundProjectTitle.slice(0, 28)}</span>
+          </div>
+        ) : null}
 
         {showProjectPicker ? (
           <div className="composer-ctx-pill-wrap">

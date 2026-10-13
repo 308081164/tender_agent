@@ -11,6 +11,7 @@ import WorkspaceDeliveryDrawer from '../components/project/WorkspaceDeliveryDraw
 import WorkspaceStepBar from '../components/project/WorkspaceStepBar'
 import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
 import ChatComposer from '../components/chat/ChatComposer'
+import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
 import ComposerContextBar from '../components/chat/ComposerContextBar'
 import { useProjectContext } from '../hooks/useProjectContext'
 import { stepForWorkspacePhase, workspacePhaseFromStep } from '../utils/projectRouting'
@@ -37,8 +38,11 @@ export default function ProjectWorkspacePage() {
   const [referenceText, setReferenceText] = useState('')
   const [reviewHighlights, setReviewHighlights] = useState([])
   const [lastImageAttachmentKey, setLastImageAttachmentKey] = useState(null)
-  const fileRef = useRef(null)
+  const [referenceOpen, setReferenceOpen] = useState(false)
   const messagesRef = useRef(null)
+
+  const boundProjectTitle =
+    project?.fields?.project_name || project?.title || (projectId ? `项目 #${projectId}` : '')
 
   const activePhase = searchParams.get('phase')
     || (project ? workspacePhaseFromStep(project.current_step, project.status) : 'create')
@@ -181,28 +185,43 @@ export default function ProjectWorkspacePage() {
     }
   }
 
-  const uploadAttachment = async (file) => {
-    if (!file || loading) return
+  const uploadProjectFiles = async (files) => {
+    const list = Array.from(files || []).filter(Boolean)
+    if (!list.length || loading) return
     setLoading(true)
     try {
-      const res = await api.uploadProjectAttachment(projectId, file)
-      showToast(`已上传：${file.name}`)
-      if (/\.(png|jpe?g|gif|webp)$/i.test(file.name) && res.attachment?.object_key) {
-        setLastImageAttachmentKey(res.attachment.object_key)
-      }
-      if (res.suggested_field_patch?.length) {
-        const safe = res.suggested_field_patch.filter((x) => x.auto_apply)
-        if (safe.length) {
-          await api.applyAttachmentPatch(projectId, res.attachment.id, safe.map((x) => x.key))
-          bumpPreview()
-          await refreshContext()
+      for (const file of list) {
+        const res = await api.uploadProjectAttachment(projectId, file)
+        if (/\.(png|jpe?g|gif|webp)$/i.test(file.name) && res.attachment?.object_key) {
+          setLastImageAttachmentKey(res.attachment.object_key)
+        }
+        if (res.suggested_field_patch?.length) {
+          const safe = res.suggested_field_patch.filter((x) => x.auto_apply)
+          if (safe.length) {
+            await api.applyAttachmentPatch(projectId, res.attachment.id, safe.map((x) => x.key))
+          }
         }
       }
+      showToast(list.length === 1 ? `已上传：${list[0].name}` : `已上传 ${list.length} 个文件`)
+      bumpPreview()
+      await refreshContext()
     } catch (e) {
       showToast(e.message)
     } finally {
       setLoading(false)
-      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const importFolderPath = async (folderPath, folderLabel) => {
+    if (!folderPath || loading || !sessionId) return
+    setLoading(true)
+    try {
+      await api.importChatFolder(sessionId, folderPath, folderLabel)
+      showToast('文件夹已导入会话，可在对话中继续处理')
+    } catch (e) {
+      showToast(e.message)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -287,14 +306,6 @@ export default function ProjectWorkspacePage() {
             ))}
             {loading ? <div className="chat-msg bot">思考中…</div> : null}
           </div>
-          <div className="reference-snippet-box">
-            <textarea
-              rows={2}
-              value={referenceText}
-              onChange={(e) => setReferenceText(e.target.value)}
-              placeholder="可选：粘贴参照段落，发送时将带入改写/创作"
-            />
-          </div>
           <ChatComposer
             compact
             value={input}
@@ -309,18 +320,49 @@ export default function ProjectWorkspacePage() {
                 onWorkspaceDirChange={onWorkspaceDirChange}
                 disabled={loading}
                 showProjectPicker={false}
+                boundProjectTitle={boundProjectTitle}
               />
             )}
+            innerPrefix={referenceOpen || referenceText.trim() ? (
+              <div className="composer-reference-inline">
+                <label>
+                  <span>参照段落（发送时带入改写/创作）</span>
+                  <button
+                    type="button"
+                    className="ghost tiny"
+                    onClick={() => { setReferenceOpen(false); setReferenceText('') }}
+                  >
+                    清除
+                  </button>
+                </label>
+                <textarea
+                  rows={2}
+                  value={referenceText}
+                  onChange={(e) => setReferenceText(e.target.value)}
+                  placeholder="可选：粘贴参照段落…"
+                  disabled={loading}
+                />
+              </div>
+            ) : null}
             left={(
               <>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  className="hidden"
-                  accept=".docx,.pdf,.txt,.png,.jpg,.jpeg"
-                  onChange={(e) => uploadAttachment(e.target.files?.[0])}
+                <button
+                  type="button"
+                  className={`ghost tiny${referenceOpen ? ' active' : ''}`}
+                  disabled={loading}
+                  title="参照段落"
+                  onClick={() => setReferenceOpen((v) => !v)}
+                >
+                  参照
+                </button>
+                <ChatAttachmentControls
+                  compact
+                  disabled={loading}
+                  showToast={showToast}
+                  onUploadFiles={uploadProjectFiles}
+                  onImportFolderPath={importFolderPath}
+                  onImportFolderZip={(file) => uploadProjectFiles([file])}
                 />
-                <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传材料">📎</button>
               </>
             )}
           />
