@@ -162,3 +162,24 @@ async def edit_document_fragment(
         raise ValueError("请提供选中文本或段落索引")
 
     return new_bytes, revised, {"mode": mode, "paragraph_index": paragraph_index}
+
+
+def insert_table_in_document(
+    docx_bytes: bytes,
+    *,
+    paragraph_index: int = 0,
+    rows: int = 3,
+    cols: int = 3,
+) -> tuple[bytes, dict[str, Any]]:
+    new_bytes = word.insert_table_at_paragraph(docx_bytes, paragraph_index, rows=rows, cols=cols)
+    return new_bytes, {"mode": "insert_table", "paragraph_index": paragraph_index, "rows": rows, "cols": cols}
+
+
+def insert_image_in_document(
+    docx_bytes: bytes,
+    image_bytes: bytes,
+    *,
+    paragraph_index: int = 0,
+) -> tuple[bytes, dict[str, Any]]:
+    new_bytes = word.insert_image_at_paragraph(docx_bytes, paragraph_index, image_bytes)
+    return new_bytes, {"mode": "insert_image", "paragraph_index": paragraph_index}

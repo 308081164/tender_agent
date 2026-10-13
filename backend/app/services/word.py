@@ -568,6 +568,55 @@ def replace_paragraph_text(docx_bytes: bytes, paragraph_index: int, new_text: st
     return out.getvalue()
 
 
+def insert_table_at_paragraph(
+    docx_bytes: bytes,
+    paragraph_index: int,
+    rows: int = 3,
+    cols: int = 3,
+) -> bytes:
+    """在指定段落后插入表格（MVP：空表 + 表头占位）。"""
+    doc = _load_document(docx_bytes)
+    nodes = doc.get_child_nodes(aw.NodeType.PARAGRAPH, True)
+    if paragraph_index < 0 or paragraph_index >= nodes.count:
+        raise ValueError(f"段落索引越界: {paragraph_index}")
+    builder = aw.DocumentBuilder(doc)
+    builder.move_to_paragraph(paragraph_index, -1)
+    table = builder.start_table()
+    for r in range(max(1, rows)):
+        for c in range(max(1, cols)):
+            builder.insert_cell()
+            builder.write(f"列{c + 1}" if r == 0 else "")
+        builder.end_row()
+    builder.end_table()
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
+def insert_image_at_paragraph(
+    docx_bytes: bytes,
+    paragraph_index: int,
+    image_bytes: bytes,
+    *,
+    width_pt: float = 420,
+) -> bytes:
+    """在指定段落后插入图片。"""
+    if not image_bytes:
+        raise ValueError("图片数据为空")
+    doc = _load_document(docx_bytes)
+    nodes = doc.get_child_nodes(aw.NodeType.PARAGRAPH, True)
+    if paragraph_index < 0 or paragraph_index >= nodes.count:
+        raise ValueError(f"段落索引越界: {paragraph_index}")
+    para = nodes[paragraph_index].as_paragraph()
+    builder = aw.DocumentBuilder(doc)
+    builder.move_to(para)
+    builder.insert_break(aw.BreakType.PARAGRAPH_BREAK)
+    _insert_image_bytes(builder, image_bytes, width_pt=width_pt)
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
 def replace_text_snippet(docx_bytes: bytes, old_text: str, new_text: str, *, highlight: bool = False) -> bytes:
     """替换文档中指定文本片段（用于 Agent 局部修改）。"""
     if not old_text:

@@ -1028,6 +1028,24 @@ textarea.desensitized {
 }
 .create-hub-modal { max-width: 960px; width: min(96vw, 960px); max-height: 90vh; overflow: auto; }
 .step1-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.workspace-phase-bar {
+  margin: 0 16px 8px;
+  max-width: 520px;
+}
+.review-highlight-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #fffbeb;
+}
+.workspace-review-panel {
+  margin: 8px 12px;
+  padding: 12px;
+}
+
 .workspace-delivery-drawer {
   position: fixed; right: 0; top: 0; bottom: 0; width: min(420px, 96vw);
   background: var(--surface); border-left: 1px solid var(--line); z-index: 60;

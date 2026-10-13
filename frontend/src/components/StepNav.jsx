@@ -1,12 +1,12 @@
 import React from 'react'
-import { STEPS } from '../constants'
+import { WIZARD_STEPS } from '../utils/projectRouting'
 
-export default function StepNav({ project, activeStep, onGoStep }) {
-  const currentStep = project?.current_step || 1
+export default function StepNav({ project, activeStep, onGoStep, steps = WIZARD_STEPS }) {
+  const currentStep = Math.min(project?.current_step || 1, steps.length ? steps[steps.length - 1].step : 2)
 
   return (
     <div className="stepbar">
-      {STEPS.map((s) => {
+      {steps.map((s) => {
         const reachable = s.step <= currentStep
         const done = currentStep > s.step
           || (currentStep === 6 && s.step === 6 && project.status === 'exported')
