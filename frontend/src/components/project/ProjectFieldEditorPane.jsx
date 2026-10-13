@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 
 /**
- * 无 OnlyOffice 时的「可编辑」：字段驱动编辑，与左侧清单联动。
+ * 字段驱动编辑，与左侧清单联动。Word 正文在「可编辑」页用内置 OnlyOffice 打开。
  */
 export default function ProjectFieldEditorPane({
   projectId,

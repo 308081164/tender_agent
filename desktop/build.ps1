@@ -139,7 +139,7 @@ function Invoke-PipInstall {
 function Stop-StageLockingProcesses {
   param([string]$StagePath)
   $needle = "tender-agent-installer-stage"
-  foreach ($name in @("python.exe", "pip.exe", "uvicorn.exe", "TenderAgent.exe", "postgres.exe", "minio.exe")) {
+  foreach ($name in @("python.exe", "pip.exe", "uvicorn.exe", "TenderAgent.exe", "postgres.exe", "minio.exe", "nginx.exe", "node.exe", "erl.exe", "epmd.exe", "beam.smp")) {
     Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction SilentlyContinue | ForEach-Object {
       $cmd = $_.CommandLine
       $exe = $_.ExecutablePath
@@ -317,6 +317,13 @@ if (-not (Test-Path (Join-Path $TessDest "tesseract.exe"))) {
 }
 if (-not (Test-Path (Join-Path $TessDest "tessdata\chi_sim.traineddata"))) {
   throw "Tesseract bundle failed: chi_sim.traineddata missing"
+}
+
+Write-Host "==> Bundling OnlyOffice Document Server (required)"
+$OoDest = Join-Path $ToolsDir "onlyoffice"
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\ci\download-onlyoffice-windows.ps1") -DestinationDir $OoDest
+if (-not (Test-Path (Join-Path $OoDest "bundle.json"))) {
+  throw "OnlyOffice bundle failed: bundle.json missing"
 }
 
 Write-Host "==> Copying Aspose license"

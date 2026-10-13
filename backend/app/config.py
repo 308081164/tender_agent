@@ -6,6 +6,8 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.onlyoffice_const import ONLYOFFICE_DESKTOP_JWT, ONLYOFFICE_DESKTOP_PORT
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -88,6 +90,11 @@ def _desktop_defaults() -> dict:
             f"http://127.0.0.1:{DESKTOP_DEFAULT_PORT},"
             f"http://localhost:{DESKTOP_DEFAULT_PORT}"
         ),
+        # Word editing uses the installer sidecar, not a Document Server the user installs.
+        "onlyoffice_enabled": True,
+        "onlyoffice_document_server_url": f"http://127.0.0.1:{ONLYOFFICE_DESKTOP_PORT}",
+        "onlyoffice_jwt_secret": ONLYOFFICE_DESKTOP_JWT,
+        "onlyoffice_internal_url": f"http://127.0.0.1:{DESKTOP_DEFAULT_PORT}",
     }
 
 
@@ -127,7 +134,7 @@ class Settings(BaseSettings):
     def apply_desktop_defaults(cls, data):
         if not isinstance(data, dict):
             return data
-        if IS_DESKTOP:
+        if IS_DESKTOP or _env_bool("TENDER_DESKTOP"):
             for key, value in _desktop_defaults().items():
                 data.setdefault(key, value)
         return data

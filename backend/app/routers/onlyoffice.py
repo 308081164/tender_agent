@@ -37,8 +37,15 @@ def onlyoffice_status():
 
 @router.get("/chat/sessions/{session_id}/onlyoffice/config")
 def get_onlyoffice_editor_config(session_id: int, db: Session = Depends(get_db)):
+    runtime = oo_svc.status_payload()
     if not oo_svc.is_enabled():
-        raise HTTPException(503, "OnlyOffice 未启用，请配置 ONLYOFFICE_ENABLED 并启动 Document Server")
+        raise HTTPException(
+            503,
+            runtime.get("message")
+            or "OnlyOffice 未启用，请配置 ONLYOFFICE_ENABLED 并启动 Document Server",
+        )
+    if (runtime.get("required") or runtime.get("bundled")) and not runtime.get("healthy"):
+        raise HTTPException(503, runtime.get("message") or "内置 OnlyOffice 未就绪")
     s = _get_session_or_404(db, session_id)
     ws = getattr(s, "workspace", None) or {}
     doc_key = ws.get("draft_object_key") or ws.get("template_object_key")

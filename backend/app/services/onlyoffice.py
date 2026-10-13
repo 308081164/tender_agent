@@ -117,10 +117,6 @@ def build_editor_config(
 
 
 def status_payload() -> dict[str, Any]:
-    settings = get_settings()
-    enabled = is_enabled()
-    return {
-        "enabled": enabled,
-        "document_server_url": settings.onlyoffice_document_server_url if enabled else "",
-        "jwt_enabled": bool(settings.onlyoffice_jwt_secret),
-    }
+    from app.services.onlyoffice_runtime import runtime_status
+
+    return runtime_status()

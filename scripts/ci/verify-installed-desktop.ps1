@@ -33,10 +33,12 @@ function Copy-Diagnostics {
     "launcher.log",
     "postgres.log",
     "minio.log",
+    "onlyoffice.log",
     "backend.log",
     "server.json",
     "postgres.json",
-    "minio.json"
+    "minio.json",
+    "onlyoffice.json"
   )) {
     $source = Join-Path $DataDir $name
     if (Test-Path -LiteralPath $source) {
@@ -55,6 +57,7 @@ function Show-Diagnostics {
     "launcher.log",
     "postgres.log",
     "minio.log",
+    "onlyoffice.log",
     "backend.log"
   )) {
     $path = Join-Path $DataDir $name
@@ -82,6 +85,27 @@ function Stop-StateProcess([string]$StateFile) {
     if ($state.pid) { Stop-ExactProcess -ProcessId ([int]$state.pid) }
   } catch {
     Write-SmokeLog "Could not stop process from $StateFile`: $($_.Exception.Message)"
+  }
+}
+
+function Stop-OnlyOfficeBundle([string]$StateFile) {
+  if (-not (Test-Path -LiteralPath $StateFile)) { return }
+  try {
+    $state = Get-Content -Raw -LiteralPath $StateFile | ConvertFrom-Json
+    $ids = @()
+    if ($state.pid) { $ids += [int]$state.pid }
+    if ($state.pids) {
+      foreach ($prop in $state.pids.PSObject.Properties) {
+        $ids += [int]$prop.Value
+      }
+    }
+    foreach ($procId in ($ids | Select-Object -Unique)) {
+      if ($procId -gt 0) {
+        & taskkill.exe /F /T /PID $procId 2>$null | Out-Null
+      }
+    }
+  } catch {
+    Write-SmokeLog "Could not stop OnlyOffice from $StateFile`: $($_.Exception.Message)"
   }
 }
 
@@ -208,6 +232,7 @@ try {
   Stop-StateProcess -StateFile (Join-Path $DataDir "server.json")
   Stop-StateProcess -StateFile (Join-Path $DataDir "launcher.pid")
   Stop-StateProcess -StateFile (Join-Path $DataDir "minio.json")
+  Stop-OnlyOfficeBundle -StateFile (Join-Path $DataDir "onlyoffice.json")
   $postmasterPid = Join-Path $DataDir "pgdata\postmaster.pid"
   if (Test-Path -LiteralPath $postmasterPid) {
     $pidLine = Get-Content -LiteralPath $postmasterPid -TotalCount 1

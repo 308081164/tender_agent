@@ -17,12 +17,16 @@ docker compose up -d --build
 
 ### OnlyOffice 技术验证（免费 Community 版）
 
+开发环境仍用 Docker：
+
 1. 复制 `.env.example` 为 `.env`，按需调整 `ONLYOFFICE_*` 变量
 2. `docker compose up -d` 会同时启动 `onlyoffice` 服务（端口 8080）
 3. 进入 **文档 Agent 工作区**（`/chat`），上传 DOCX 后左侧默认进入 **Word 编辑** 模式
 4. 本机跑后端（`scripts/start_dev.sh`）时，请保持 `ONLYOFFICE_INTERNAL_URL=http://host.docker.internal:8000`，以便 Document Server 能回调保存
 
-> 验证期使用 Community 版即可；商用嵌入产品需购买 OnlyOffice Developer 授权。
+Windows 桌面安装包在 `desktop/build.ps1` 里把 Community Document Server、Erlang 与 RabbitMQ 打进 `tools/onlyoffice`，由启动器在 `127.0.0.1:18080` 拉起。安装后项目工作区的「可编辑」页走这条内置边车，用户不必再单独安装 OnlyOffice。环境自检在边车健康时为「正常」，安装包缺组件时为「异常」。
+
+> Community 版协议为 AGPL-3.0。把 Document Server 再分发进闭源安装包做商用嵌入，需要 OnlyOffice Developer 授权。验证期可以使用 Community 构建；正式对外发售前请换成已授权的发行包。安装包大约增加 1 GB（Document Server 安装程序）以及 Erlang / RabbitMQ。
 
 ## 可选：配置 AI API Key
 
