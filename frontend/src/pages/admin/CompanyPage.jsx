@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useApp } from '../../App'
 import { api } from '../../api/client'
 import AdminPageHeader from '../../components/admin/AdminPageHeader'
@@ -25,12 +26,24 @@ const LONG_FIELDS = [
 
 export default function CompanyPage() {
   const { showToast, refreshBaseData } = useApp()
+  const [searchParams] = useSearchParams()
+  const focusKey = searchParams.get('focus') || ''
   const [company, setCompany] = useState(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     api.getCompany().then(setCompany).catch((e) => showToast(e.message))
   }, [showToast])
+
+  useEffect(() => {
+    if (!focusKey || !company) return
+    const el = document.getElementById(`company-field-${focusKey}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('admin-field-focus')
+    const t = window.setTimeout(() => el.classList.remove('admin-field-focus'), 4000)
+    return () => window.clearTimeout(t)
+  }, [focusKey, company])
 
   const save = async () => {
     setSaving(true)
@@ -55,6 +68,7 @@ export default function CompanyPage() {
       hint={desensitized || DESENSITIZED_COMPANY_KEYS.has(key) ? '请核实' : ''}
     >
       <input
+        id={`company-field-${key}`}
         className={desensitized || DESENSITIZED_COMPANY_KEYS.has(key) ? 'desensitized' : undefined}
         value={company[key] || ''}
         onChange={(e) => setCompany({ ...company, [key]: e.target.value })}

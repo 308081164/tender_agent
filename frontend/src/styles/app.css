@@ -895,6 +895,21 @@ textarea.desensitized {
 .chat-card-hint { color: var(--muted); font-size: 12px; }
 .chat-card-text { margin: 0; font-size: 14px; }
 .chat-card-tools { display: flex; gap: 6px; margin-bottom: 8px; }
+.onboarding-disclaimer {
+  background: #fff7ed; border: 1px solid #fdba74; color: #9a3412;
+  padding: 10px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 10px;
+}
+.onboarding-section { margin-top: 10px; }
+.onboarding-gap-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
+.onboarding-gap-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px; background: var(--surface-2, #f8fafc);
+}
+.onboarding-gap-list .gap-empty { border-left: 3px solid #f97316; }
+.onboarding-gap-list .gap-verify { border-left: 3px solid #eab308; }
+.onboarding-gap-link { font-size: 13px; white-space: nowrap; }
+.onboarding-admin-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.admin-field-focus, .admin-row-focus { outline: 2px solid var(--primary, #2563eb); outline-offset: 2px; }
 
 .tpl-picker-list { display: grid; gap: 8px; }
 .tpl-picker-item {

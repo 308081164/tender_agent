@@ -118,6 +118,7 @@ async def analyze_qualification_file(
     file_type: str,
     *,
     db: Session | None = None,
+    content_hint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ftype = (file_type or "").lower().lstrip(".")
     if not ftype and "." in file_name:
@@ -127,9 +128,22 @@ async def analyze_qualification_file(
     if not text.strip():
         text = f"文件名: {file_name}"
 
+    hint_block = ""
+    if content_hint:
+        doc_label = content_hint.get("doc_type_label") or content_hint.get("doc_type") or ""
+        conf = content_hint.get("confidence")
+        if doc_label:
+            hint_block = (
+                f"\n\n【探索阶段内容分类参考（非路径推断）】"
+                f" doc_type={doc_label}"
+                f"{f' confidence={conf}' if conf is not None else ''}"
+                f"。请以附件正文为准校验分类。"
+            )
     raw = await ai.chat_completion([
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"文件名: {file_name}\n文件类型: {ftype}\n\n附件文本:\n{text[:6000]}"},
+        {"role": "user", "content": (
+            f"文件名: {file_name}\n文件类型: {ftype}{hint_block}\n\n附件文本:\n{text[:6000]}"
+        )},
     ], db=db)
 
     if raw.strip():

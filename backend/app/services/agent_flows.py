@@ -22,6 +22,7 @@ from app.services import agent_tools, document_agent, storage
 
 FLOW_TEMPLATE_CREATE = "template_create"
 FLOW_PROJECT_CREATE = "project_create"
+FLOW_QUAL_FOLDER = "qual_folder_import"
 
 
 def _template_supports_compose(db: Session, template_id: int) -> bool:
@@ -193,6 +194,7 @@ def pending_hint(session: ChatSession) -> dict[str, Any] | None:
         (FLOW_PROJECT_CREATE, "collect_fields"): "编写标书进行中：请在上方卡片填写关键信息并确认，或发送「取消」退出。",
         (FLOW_PROJECT_CREATE, "collect_requirements"): "编写标书进行中：请补充编写要求后确认生成，或发送「取消」退出。",
         (FLOW_PROJECT_CREATE, "revise_document"): "标书已生成：可在上方卡片提交修订指令，或发送「完成」结束。",
+        (FLOW_QUAL_FOLDER, "confirm_scan"): "资质文件夹导入待确认：请点击上方卡片「开始扫描并落库」，或发送「取消」。",
     }
     text = hints.get((pa.get("flow"), pa.get("stage")), "当前有进行中的任务，请使用上方卡片继续，或发送「取消」退出。")
     return _result(text, intent="flow_pending")
@@ -204,6 +206,112 @@ def cancel_flow(db: Session, session: ChatSession) -> dict[str, Any]:
         agent_tools.discard_template_draft(db, int(pa["template_id"]))
     _set_pending(session, None)
     return _result("已取消当前任务。您可以随时上传文档创建模板，或告诉我「帮我写标书」重新开始。", intent="cancel")
+
+
+async def start_qual_folder_import(
+    db: Session, session: ChatSession, folder_path: str
+) -> dict[str, Any]:
+    from app.services.agent_qual_folder import (
+        PathNotAllowedError,
+        normalize_folder_path,
+        scan_qual_folder,
+    )
+
+    try:
+        root = normalize_folder_path(folder_path)
+    except PathNotAllowedError as err:
+        return _result(
+            f"无法使用该路径：{err}\n\n请提供本机 **Desktop / Documents / Downloads** 下的资质文件夹路径，"
+            "或在桌面版使用「选择资质文件夹」按钮。",
+            intent="import_qual_folder",
+            actions=[{"type": "link", "label": "企业档案", "url": "/admin/company"}],
+        )
+
+    preview = scan_qual_folder(root)
+    if preview["file_count"] <= 0:
+        return _result(
+            f"文件夹 `{root}` 内未找到可识别的资质文件（支持 pdf/docx/txt/图片）。\n"
+            "请确认路径正确或更换文件夹后重试。",
+            intent="import_qual_folder",
+        )
+
+    _set_pending(session, {
+        "flow": FLOW_QUAL_FOLDER,
+        "stage": "confirm_scan",
+        "folder_path": str(root),
+        "preview": {
+            "file_count": preview["file_count"],
+            "total_bytes": preview["total_bytes"],
+            "sample": [f["name"] for f in preview["files"][:8]],
+        },
+    })
+    sample = "、".join(preview["files"][i]["name"] for i in range(min(5, len(preview["files"]))))
+    return _result(
+        f"即将扫描并导入资质文件夹：\n`{root}`\n\n"
+        f"共 **{preview['file_count']}** 个文件（约 {preview['total_bytes'] // 1024} KB）。"
+        f"示例：{sample or '—'}\n\n"
+        "确认后将：\n"
+        "1. **递归探索**文件夹内全部材料（不依赖固定子目录名），OCR/多模态提取后 AI 分类\n"
+        "2. 识别资质条目写入资质库，并提取企业档案字段（敏感项若已有值则仅提示）\n"
+        "3. 列出未填项与「系统识别为…」核实建议，并 **强烈建议您人工核对**",
+        cards=[{
+            "id": _card_id(),
+            "type": "confirm",
+            "title": "确认导入资质文件夹",
+            "state": "active",
+            "payload": {
+                "message": "自动落库后请务必在「企业档案 / 资质库」逐项核实。",
+                "confirm_label": "开始扫描并落库",
+                "cancel_label": "取消",
+                "confirm_action": "confirm_qual_folder_import",
+                "cancel_action": "cancel_flow",
+            },
+        }],
+        intent="import_qual_folder",
+    )
+
+
+async def _finish_qual_folder_import(db: Session, session: ChatSession, folder: str) -> dict[str, Any]:
+    result = await agent_tools.import_qual_folder(db, folder)
+    _set_pending(session, None)
+    ob = result.get("onboarding") or {}
+    qn = len(result.get("qualifications_created") or [])
+    cn = len((result.get("company_patch") or {}).get("applied") or [])
+    err_n = len(result.get("errors") or [])
+    answer = (
+        f"✅ 资质文件夹导入完成。\n\n"
+        f"- 新增资质 **{qn}** 条\n"
+        f"- 更新企业档案字段 **{cn}** 项\n"
+        f"- 处理失败 **{err_n}** 个文件\n\n"
+        f"{ob.get('disclaimer') or ''}\n\n"
+        f"当前仍有 **{ob.get('gap_count', 0)}** 项未填、"
+        f"**{ob.get('verify_count', 0)}** 项建议核实。请使用下方卡片跳转管理页核对。"
+    )
+    actions = list(ob.get("admin_links") or [])
+    return _result(
+        answer,
+        cards=[{
+            "id": _card_id(),
+            "type": "onboarding_gaps",
+            "title": "核对清单与未填项",
+            "state": "active",
+            "payload": {
+                "disclaimer": ob.get("disclaimer"),
+                "gaps": ob.get("gaps") or [],
+                "verify_recommended": ob.get("verify_recommended") or [],
+                "import_summary": {
+                    "folder": (result.get("scan") or {}).get("folder"),
+                    "qual_count": qn,
+                    "company_applied": cn,
+                    "suggestions": (result.get("company_patch") or {}).get("suggestions") or [],
+                },
+                "file_insights": ob.get("file_insights") or [],
+            },
+        }],
+        actions=actions,
+        intent="import_qual_folder",
+        tool_data=result,
+    )
 
 
 # ---------------------------------------------------------------- 动作回调
@@ -257,7 +365,22 @@ async def handle_action(
     if action == "confirm_sensitive_fields":
         return await _on_confirm_sensitive_fields(db, session, payload)
 
+    if action == "confirm_qual_folder_import":
+        return await _on_confirm_qual_folder_import(db, session, pa)
+
     return "", _result("未知操作，请重试。", intent="error"), False
+
+
+async def _on_confirm_qual_folder_import(
+    db: Session, session: ChatSession, pa: dict | None
+) -> tuple[str, dict, bool]:
+    if not pa or pa.get("flow") != FLOW_QUAL_FOLDER:
+        return "", _result("导入任务已失效，请重新发送文件夹路径。", intent="error"), False
+    folder = str(pa.get("folder_path") or "")
+    if not folder:
+        return "", _result("缺少文件夹路径。", intent="error"), False
+    result = await _finish_qual_folder_import(db, session, folder)
+    return "确认导入", result, True
 
 
 async def _on_confirm_sensitive_fields(

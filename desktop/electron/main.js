@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -522,6 +522,18 @@ if (!gotLock) {
   app.on("second-instance", () => {
     log("second instance — focusing existing window");
     focusExistingWindow();
+  });
+
+  ipcMain.handle("tender:pick-qual-folder", async () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getFocusedWindow();
+    const result = await dialog.showOpenDialog(win || undefined, {
+      title: "选择资质文件夹",
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || !result.filePaths?.length) {
+      return { canceled: true, path: "" };
+    }
+    return { canceled: false, path: result.filePaths[0] };
   });
 
   app.whenReady().then(bootstrap);

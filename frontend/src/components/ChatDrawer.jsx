@@ -1,6 +1,7 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
 import { formatTime } from '../utils/format'
+import ChatMessageBubble from './chat/ChatMessageBubble'
 
 export default function ChatDrawer({
   open,
@@ -17,6 +18,8 @@ export default function ChatDrawer({
   setShowHistory,
   onNewChat,
   onSelectSession,
+  onCardAction,
+  actingCardId,
 }) {
   if (!open) return null
 
@@ -74,13 +77,12 @@ export default function ChatDrawer({
                 </div>
               )}
               {messages.map((m, i) => (
-                <div
-                  className={`msg ${m.role === 'user' ? 'user' : 'bot'}`}
+                <ChatMessageBubble
                   key={m.id || i}
-                >
-                  {m.content || m.text}
-                  {m.source ? <span className="src">来源：{m.source}</span> : null}
-                </div>
+                  message={m}
+                  onCardAction={onCardAction}
+                  actingCardId={actingCardId}
+                />
               ))}
               {loading && <div className="msg bot">思考中…</div>}
             </div>
