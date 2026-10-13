@@ -557,6 +557,7 @@ async def _handle_general_conversation(
     workspace: dict | None = None,
     context: dict | None = None,
     stream: bool = False,
+    session=None,
 ) -> dict[str, Any]:
     from app.services import agent_runtime
 
@@ -568,6 +569,27 @@ async def _handle_general_conversation(
         workspace=workspace,
         context=context,
     )
+    if session is not None and not stream:
+        from app.services import agent_tool_loop
+
+        try:
+            loop_answer = await agent_tool_loop.run_tool_loop(
+                db=db,
+                session=session,
+                messages=messages,
+                workspace=workspace,
+                context=context,
+            )
+            if loop_answer:
+                return {"answer": loop_answer.strip(), "mode": "ai", "metadata": {
+                    "intent": "general",
+                    "tool_loop": True,
+                    "actions": [
+                        {"type": "link", "label": "文档工作区", "url": "/chat", "primary": True},
+                    ],
+                }}
+        except Exception:
+            pass
     meta = {
         "intent": "general",
         "actions": [
@@ -671,4 +693,5 @@ async def process_chat_message(
         workspace=workspace,
         context=context,
         stream=stream,
+        session=session,
     )

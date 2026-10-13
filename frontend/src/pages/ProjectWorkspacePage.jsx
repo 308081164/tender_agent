@@ -11,6 +11,7 @@ import WorkspaceDeliveryDrawer from '../components/project/WorkspaceDeliveryDraw
 import WorkspaceStepBar from '../components/project/WorkspaceStepBar'
 import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
 import ChatComposer from '../components/chat/ChatComposer'
+import ComposerContextBar from '../components/chat/ComposerContextBar'
 import { useProjectContext } from '../hooks/useProjectContext'
 import { stepForWorkspacePhase, workspacePhaseFromStep } from '../utils/projectRouting'
 
@@ -86,6 +87,23 @@ export default function ProjectWorkspacePage() {
   }, [messages, loading])
 
   const bumpPreview = () => setPreviewToken(Date.now())
+
+  const workspaceDir = (project?.workspace_dir || workspace?.workspace_dir || '').trim()
+
+  const onWorkspaceDirChange = async (dir) => {
+    try {
+      if (dir) {
+        await api.patchProjectWorkspaceDir(projectId, dir)
+        setProject((p) => (p ? { ...p, workspace_dir: dir } : p))
+      }
+      if (sessionId) {
+        const updated = await api.patchChatSessionWorkspace(sessionId, { workspace_dir: dir || '' })
+        setWorkspace(updated.workspace || {})
+      }
+    } catch (e) {
+      showToast(e.message)
+    }
+  }
 
   const send = async (text) => {
     const q = (text ?? input).trim()
@@ -283,7 +301,16 @@ export default function ProjectWorkspacePage() {
             onChange={setInput}
             onSend={() => send()}
             loading={loading}
+            loadingHint={loading ? '思考中…' : null}
             placeholder="修改字段、提问、按参照改写…"
+            contextBar={(
+              <ComposerContextBar
+                workspaceDir={workspaceDir}
+                onWorkspaceDirChange={onWorkspaceDirChange}
+                disabled={loading}
+                showProjectPicker={false}
+              />
+            )}
             left={(
               <>
                 <input

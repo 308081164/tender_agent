@@ -6,9 +6,13 @@ import BackChevron from '../components/chat/BackChevron'
 import ChatMessageBubble from '../components/chat/ChatMessageBubble'
 import ChatSessionSidebar from '../components/chat/ChatSessionSidebar'
 import DocumentWorkspace from '../components/chat/DocumentWorkspace'
-import WorkspaceFileTree from '../components/chat/WorkspaceFileTree'
 import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
 import ChatComposer from '../components/chat/ChatComposer'
+import ComposerContextBar from '../components/chat/ComposerContextBar'
+import DocWorkspaceSidebarToggle from '../components/chat/DocWorkspaceSidebarToggle'
+import WorkspaceTreeSlidePanel from '../components/chat/WorkspaceTreeSlidePanel'
+import { useDocWorkspaceTreeOpen } from '../hooks/useDocWorkspaceTreeOpen'
+import { useWorkspaceFileSelection } from '../hooks/useWorkspaceFileSelection'
 
 export default function ChatPage() {
   const { showToast } = useApp()
@@ -25,12 +29,34 @@ export default function ChatPage() {
   const [actingCardId, setActingCardId] = useState(null)
   const [creatingChat, setCreatingChat] = useState(false)
   const [docPanelOpen, setDocPanelOpen] = useState(true)
-  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState('')
+  const [projects, setProjects] = useState([])
   const messagesRef = useRef(null)
+
+  const {
+    selectedPath: selectedWorkspaceFile,
+    loadedFile,
+    fileLoading,
+    selectFile,
+    clearFile,
+    buildFileContext,
+  } = useWorkspaceFileSelection(sessionId, showToast)
 
   const workspaceDir = (workspace?.workspace_dir || '').trim()
   const showFileTree = !!(workspaceDir || workspace?.project_id)
   const treeRootLabel = workspaceDir || '工程目录'
+  const { treeOpen, toggleTree, setTreeOpen } = useDocWorkspaceTreeOpen({ enabled: showFileTree && docPanelOpen })
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!showFileTree || !docPanelOpen) return
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        toggleTree()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showFileTree, docPanelOpen, toggleTree])
 
   const refreshWorkspace = async (id) => {
     if (!id) return
@@ -57,11 +83,13 @@ export default function ChatPage() {
   useEffect(() => {
     ;(async () => {
       try {
-        const [list, feat] = await Promise.all([
+        const [list, feat, projList] = await Promise.all([
           refreshSessions(),
           api.getChatFeatures(),
+          api.projects().catch(() => []),
         ])
         setFeatures(feat)
+        setProjects(projList || [])
         if (list[0]) await loadSession(list[0].id)
       } catch (e) {
         showToast(e.message)
@@ -93,8 +121,7 @@ export default function ChatPage() {
     setMessages((m) => [...m, optimistic])
     try {
       const id = await ensureSession()
-      const ctx = { selected_text: selectedText }
-      if (selectedWorkspaceFile) ctx.workspace_file = selectedWorkspaceFile
+      const ctx = { selected_text: selectedText, ...buildFileContext() }
       const res = await api.sendChatMessage(id, q, ctx)
       setMessages((m) => [
         ...m.filter((x) => x.id !== optimisticId),
@@ -129,7 +156,7 @@ export default function ChatPage() {
       setWorkspace({})
       setParagraphs([])
       setSelectedText('')
-      setSelectedWorkspaceFile('')
+      clearFile()
       setSessions((list) => [s, ...list.filter((x) => x.id !== s.id)])
       setShowSessions(false)
     } catch (e) {
@@ -197,6 +224,38 @@ export default function ChatPage() {
       ])
     } finally {
       setLoading(false)
+    }
+  }
+
+  const patchSessionWorkspace = async (patch) => {
+    const id = sessionId || (await ensureSession())
+    const updated = await api.patchChatSessionWorkspace(id, patch)
+    setWorkspace(updated.workspace || {})
+    if (!sessionId) setSessionId(id)
+    return updated
+  }
+
+  const onWorkspaceDirChange = async (dir) => {
+    try {
+      await patchSessionWorkspace({ workspace_dir: dir || '' })
+      clearFile()
+      if (sessionId) await refreshWorkspace(sessionId)
+    } catch (e) {
+      showToast(e.message)
+    }
+  }
+
+  const onBindProject = async (pid) => {
+    try {
+      if (!pid) {
+        await patchSessionWorkspace({ project_id: 0 })
+        return
+      }
+      await api.ensureProjectSession(pid)
+      await patchSessionWorkspace({ project_id: pid })
+      if (sessionId) await refreshWorkspace(sessionId)
+    } catch (e) {
+      showToast(e.message)
     }
   }
 
@@ -279,25 +338,45 @@ export default function ChatPage() {
       <div className={`chat-workspace-split${docPanelOpen ? '' : ' doc-collapsed'}`}>
         {docPanelOpen ? (
           <section className="chat-workspace-doc">
-            <div className={`chat-doc-layout${showFileTree ? ' with-tree' : ''}`}>
-              {showFileTree ? (
-                <WorkspaceFileTree
+            <div className="chat-doc-layout">
+              <div className="chat-doc-main">
+                {showFileTree && !treeOpen ? (
+                  <button
+                    type="button"
+                    className="ws-tree-edge-tab"
+                    onClick={() => setTreeOpen(true)}
+                    title="显示工程目录 · Ctrl+B"
+                    aria-label="显示工程目录"
+                  >
+                    目录
+                  </button>
+                ) : null}
+                <DocumentWorkspace
+                  sessionId={sessionId}
+                  workspace={workspace}
+                  paragraphs={paragraphs}
+                  selectedText={selectedText}
+                  onSelectText={setSelectedText}
+                  onParagraphEdit={onParagraphEdit}
+                  onRefresh={() => refreshWorkspace(sessionId)}
+                  onlyOfficeEnabled={!!features.onlyoffice?.enabled}
+                  toolbarLeading={showFileTree ? (
+                    <DocWorkspaceSidebarToggle
+                      active={treeOpen}
+                      onClick={toggleTree}
+                      disabled={!sessionId}
+                    />
+                  ) : null}
+                />
+                <WorkspaceTreeSlidePanel
+                  open={showFileTree && treeOpen}
+                  onClose={() => setTreeOpen(false)}
                   sessionId={sessionId}
                   workspaceRootLabel={treeRootLabel}
                   selectedPath={selectedWorkspaceFile}
-                  onSelectFile={setSelectedWorkspaceFile}
+                  onSelectFile={selectFile}
                 />
-              ) : null}
-              <DocumentWorkspace
-                sessionId={sessionId}
-                workspace={workspace}
-                paragraphs={paragraphs}
-                selectedText={selectedText}
-                onSelectText={setSelectedText}
-                onParagraphEdit={onParagraphEdit}
-                onRefresh={() => refreshWorkspace(sessionId)}
-                onlyOfficeEnabled={!!features.onlyoffice?.enabled}
-              />
+              </div>
             </div>
           </section>
         ) : null}
@@ -340,21 +419,31 @@ export default function ChatPage() {
               <button type="button" className="ghost tiny" onClick={() => setSelectedText('')}>清除</button>
             </div>
           ) : null}
-          {selectedWorkspaceFile ? (
-            <div className="chat-selection-hint">
-              当前工程文件：
-              <em>{selectedWorkspaceFile}</em>
-              <button type="button" className="ghost tiny" onClick={() => setSelectedWorkspaceFile('')}>清除</button>
-            </div>
-          ) : null}
-
           <ChatComposer
             compact
             value={input}
             onChange={setInput}
             onSend={() => send()}
             loading={loading}
+            loadingHint={loading ? '思考中…' : fileLoading ? '正在读取工程文件…' : null}
             placeholder="提问、检索标书、编写/替换指令…"
+            contextBar={(
+              <ComposerContextBar
+                workspaceDir={workspaceDir}
+                onWorkspaceDirChange={onWorkspaceDirChange}
+                disabled={loading}
+                showProjectPicker
+                projects={projects}
+                projectId={workspace?.project_id || null}
+                onProjectChange={onBindProject}
+                currentFile={selectedWorkspaceFile ? {
+                  path: selectedWorkspaceFile,
+                  charCount: loadedFile?.charCount,
+                } : null}
+                onClearFile={clearFile}
+                fileLoading={fileLoading}
+              />
+            )}
             left={(
               <ChatAttachmentControls
                 compact

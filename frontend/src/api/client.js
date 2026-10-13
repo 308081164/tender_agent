@@ -196,6 +196,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
+  patchChatSessionWorkspace: (sessionId, patch) =>
+    request(`/chat/sessions/${sessionId}/workspace`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   writeWorkspaceFile: (sessionId, path, content, encoding = 'utf-8') =>
     request(`/chat/sessions/${sessionId}/workspace/files/write`, {
       method: 'POST',

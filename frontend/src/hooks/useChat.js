@@ -12,6 +12,7 @@ export function useChatSessions(showToast) {
   const [actingCardId, setActingCardId] = useState(null)
   const [chatContext, setChatContext] = useState(null)
   const [boundProjectId, setBoundProjectId] = useState(null)
+  const [workspace, setWorkspace] = useState({})
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listChatSessions()
@@ -23,6 +24,7 @@ export function useChatSessions(showToast) {
     const data = await api.getChatSession(id)
     setSessionId(data.id)
     setMessages(data.messages || [])
+    setWorkspace(data.workspace || {})
     setShowHistory(false)
     return data
   }, [])
@@ -57,6 +59,7 @@ export function useChatSessions(showToast) {
       const s = await api.createChatSession('新对话')
       setSessionId(s.id)
       setMessages([])
+      setWorkspace({})
       setShowHistory(false)
       await refreshSessions()
     } catch (e) {
@@ -196,6 +199,7 @@ export function useChatSessions(showToast) {
         ]
       })
       if (res.session) {
+        setWorkspace(res.session.workspace || {})
         setSessions((list) => {
           const rest = list.filter((s) => s.id !== res.session.id)
           return [res.session, ...rest]
@@ -211,6 +215,18 @@ export function useChatSessions(showToast) {
       setLoading(false)
     }
   }, [chatInput, loading, ensureSession, chatContext])
+
+  const patchWorkspaceDir = useCallback(async (dir) => {
+    try {
+      const id = await ensureSession()
+      const updated = await api.patchChatSessionWorkspace(id, { workspace_dir: dir || '' })
+      setWorkspace(updated.workspace || {})
+      return updated
+    } catch (e) {
+      showToast?.(e.message)
+      return null
+    }
+  }, [ensureSession, showToast])
 
   return {
     open,
@@ -236,5 +252,7 @@ export function useChatSessions(showToast) {
     bindProjectSession,
     boundProjectId,
     chatContext,
+    workspace,
+    patchWorkspaceDir,
   }
 }

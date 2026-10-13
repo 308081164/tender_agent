@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     onlyoffice_jwt_secret: str = "onlyoffice-jwt-secret-change-me"
     # Document Server 容器访问后端的地址（Docker 内用 http://backend:8000，本机后端用 http://host.docker.internal:8000）
     onlyoffice_internal_url: str = "http://backend:8000"
+    agent_tool_loop: bool = False
 
     @model_validator(mode="before")
     @classmethod

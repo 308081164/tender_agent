@@ -24,3 +24,16 @@ def test_build_general_messages_includes_faq_rag_not_shortcut():
 def test_resolve_project_id_from_context():
     assert agent_runtime.resolve_project_id({}, {"project_id": 42}) == 42
     assert agent_runtime.resolve_project_id({"project_id": 7}, {}) == 7
+
+
+def test_context_block_includes_workspace_file_body():
+    block = agent_runtime.build_context_system_block(
+        None,
+        context={
+            "workspace_file": "产出/notes.md",
+            "workspace_file_content": "# Title\nhello",
+        },
+    )
+    assert "产出/notes.md" in block
+    assert "# Title" in block
+    assert "hello" in block

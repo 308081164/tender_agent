@@ -12,6 +12,7 @@ export default function DocumentWorkspace({
   onParagraphEdit,
   onRefresh,
   onlyOfficeEnabled = false,
+  toolbarLeading = null,
 }) {
   const [mode, setMode] = useState('pdf')
   const [editingIndex, setEditingIndex] = useState(null)
@@ -45,7 +46,8 @@ export default function DocumentWorkspace({
   return (
     <div className="doc-workspace">
       <div className="doc-workspace-toolbar">
-        <div>
+        <div className="doc-workspace-toolbar-title">
+          {toolbarLeading}
           <strong>{workspace?.filename || '文档工作区'}</strong>
           {workspace?.version ? <span className="muted"> v{workspace.version}</span> : null}
         </div>
