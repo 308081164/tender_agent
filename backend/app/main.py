@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import IS_DESKTOP, ROOT, get_settings
+from app.database import engine
 from app.database_migrate import ensure_schema
 from app.routers import api, admin, onlyoffice
 from app.seed.load_sample import run_seed
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] seed warning: {e}")
     yield
+    engine.dispose()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
