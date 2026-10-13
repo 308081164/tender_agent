@@ -1,17 +1,13 @@
 {
-  "version": "1.2.2",
-  "display_version": "v1.2.2",
+  "version": "1.2.3",
+  "display_version": "v1.2.3",
   "product": "标书智能体 Desktop",
   "release_date": "2026-10-13",
-<<<<<<< HEAD
-  "baseline_note": "含 #44 文档 Agent 工作区、导航精简、工作目录与多行 Composer；正式发版 tag desktop-v1.2.2",
-=======
-  "baseline_note": "含 #44 文档 Agent 工作区、导航精简、工作目录与多行对话输入；正式发版 tag desktop-v1.2.2",
->>>>>>> e68a478 (chore(release): bump VERSION to 1.2.2 for desktop-v1.2.2)
+  "baseline_note": "含 #45 Postgres 优雅退出、#46 Composer 与工程目录、#47 对话式导出、#48 内置 OnlyOffice；正式发版 tag desktop-v1.2.3",
   "artifacts": {
-    "windows_installer": "TenderAgentSetup-v1.2.2.exe",
-    "user_manual": "tender-agent-manual-v1.2.2.md",
-    "docs_zip": "tender-agent-release-v1.2.2.zip",
-    "test_materials_zip": "tender-agent-test-materials-v1.2.2.zip"
+    "windows_installer": "TenderAgentSetup-v1.2.3.exe",
+    "user_manual": "tender-agent-manual-v1.2.3.md",
+    "docs_zip": "tender-agent-release-v1.2.3.zip",
+    "test_materials_zip": "tender-agent-test-materials-v1.2.3.zip"
   }
 }
