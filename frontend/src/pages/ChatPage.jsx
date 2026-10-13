@@ -6,6 +6,7 @@ import BackChevron from '../components/chat/BackChevron'
 import ChatMessageBubble from '../components/chat/ChatMessageBubble'
 import ChatSessionSidebar from '../components/chat/ChatSessionSidebar'
 import DocumentWorkspace from '../components/chat/DocumentWorkspace'
+import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
 
 export default function ChatPage() {
   const { showToast } = useApp()
@@ -21,7 +22,6 @@ export default function ChatPage() {
   const [showSessions, setShowSessions] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [creatingChat, setCreatingChat] = useState(false)
-  const fileRef = useRef(null)
   const messagesRef = useRef(null)
 
   const refreshWorkspace = async (id) => {
@@ -130,38 +130,64 @@ export default function ChatPage() {
     }
   }
 
-  const uploadFile = async (file) => {
-    if (!file || loading) return
-    const optimisticId = `tmp-file-${Date.now()}`
-    const optimistic = {
-      id: optimisticId,
-      role: 'user',
-      content: `[上传文件] ${file.name}`,
+  const mergeUploadResponse = async (id, res, optimisticId) => {
+    setMessages((m) => [
+      ...m.filter((x) => x.id !== optimisticId),
+      res.user_message,
+      res.assistant_message,
+    ])
+    setWorkspace(res.workspace || res.session?.workspace || {})
+    await refreshWorkspace(id)
+    if (res.session) {
+      setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
     }
-    setMessages((m) => [...m, optimistic])
+  }
+
+  const uploadFiles = async (files) => {
+    const list = Array.from(files || []).filter(Boolean)
+    if (!list.length || loading) return
+    const label =
+      list.length === 1
+        ? `[上传文件] ${list[0].name}`
+        : `[上传 ${list.length} 个文件] ${list.map((f) => f.name).slice(0, 3).join('、')}${list.length > 3 ? '…' : ''}`
+    const optimisticId = `tmp-file-${Date.now()}`
+    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: label }])
     setLoading(true)
     try {
       const id = await ensureSession()
-      const res = await api.uploadChatFile(id, file)
-      setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
-        res.user_message,
-        res.assistant_message,
-      ])
-      setWorkspace(res.workspace || {})
-      await refreshWorkspace(id)
-      if (res.session) {
-        setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
-      }
+      const res =
+        list.length === 1
+          ? await api.uploadChatFile(id, list[0])
+          : await api.uploadChatFilesBatch(id, list)
+      await mergeUploadResponse(id, res, optimisticId)
     } catch (e) {
       setMessages((m) => [
         ...m.filter((x) => x.id !== optimisticId),
-        optimistic,
+        { id: optimisticId, role: 'user', content: label },
         { role: 'assistant', content: `上传失败：${e.message}` },
       ])
     } finally {
       setLoading(false)
-      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const importFolderPath = async (folderPath, folderLabel) => {
+    if (!folderPath || loading) return
+    const optimisticId = `tmp-folder-${Date.now()}`
+    const userLine = `[${folderLabel || '选择文件夹'}] ${folderPath}`
+    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: userLine }])
+    setLoading(true)
+    try {
+      const id = await ensureSession()
+      const res = await api.importChatFolder(id, folderPath, folderLabel)
+      await mergeUploadResponse(id, res, optimisticId)
+    } catch (e) {
+      setMessages((m) => [
+        ...m.filter((x) => x.id !== optimisticId),
+        { role: 'assistant', content: `文件夹导入失败：${e.message}` },
+      ])
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -257,7 +283,7 @@ export default function ChatPage() {
             {messages.length === 0 && !loading ? (
               <div className="chat-empty compact">
                 <p className="muted chat-empty-hint">
-                  可查询企业信息、检索标书、上传 DOCX 生成模板或编写标书，也可询问「如何使用本系统」。
+                  可查询企业信息、检索标书；📎 可上传多个文件或整个资质文件夹，也可询问「如何使用本系统」。
                 </p>
                 <div className="chat-prompt-chips">
                   {(features.suggested_prompts || []).map((p) => (
@@ -287,37 +313,14 @@ export default function ChatPage() {
           ) : null}
 
           <footer className="chat-composer compact">
-            <input
-              ref={fileRef}
-              type="file"
-              className="hidden"
-              accept=".docx"
-              onChange={(e) => uploadFile(e.target.files?.[0])}
-            />
-            <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传 DOCX">📎</button>
-            <button
-              type="button"
-              className="ghost"
+            <ChatAttachmentControls
+              compact
               disabled={loading}
-              title="选择资质文件夹（桌面版）"
-              onClick={async () => {
-                const desktop = window.tenderAgentDesktop
-                if (desktop?.pickQualFolder) {
-                  try {
-                    const res = await desktop.pickQualFolder()
-                    if (!res?.canceled && res.path) {
-                      await send(`请扫描资质文件夹 ${res.path}`)
-                    }
-                  } catch (e) {
-                    showToast(e.message || '无法打开文件夹选择器')
-                  }
-                } else {
-                  showToast('请粘贴本机文件夹路径，例如：请扫描资质文件夹 C:\\Users\\我\\Desktop\\资质')
-                }
-              }}
-            >
-              📁
-            </button>
+              showToast={showToast}
+              onUploadFiles={uploadFiles}
+              onImportFolderPath={importFolderPath}
+              onImportFolderZip={(file) => uploadFiles([file])}
+            />
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}

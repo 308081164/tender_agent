@@ -488,6 +488,12 @@ async def process_chat_message(
             if hint:
                 return hint
 
+    from app.services.agent_qual_folder import detect_local_folder_import
+
+    folder_path, folder_score = detect_local_folder_import(text)
+    if folder_path and folder_score >= 0.85 and session is not None:
+        return await agent_flows.start_qual_folder_import(db, session, folder_path)
+
     from app.services import agent_semantic
 
     semantic_result = await agent_semantic.process_with_semantic_router(

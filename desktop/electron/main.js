@@ -536,6 +536,18 @@ if (!gotLock) {
     return { canceled: false, path: result.filePaths[0] };
   });
 
+  ipcMain.handle("tender:pick-project-workspace", async () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getFocusedWindow();
+    const result = await dialog.showOpenDialog(win || undefined, {
+      title: "选择标书工程目录",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || !result.filePaths?.length) {
+      return { canceled: true, path: "" };
+    }
+    return { canceled: false, path: result.filePaths[0] };
+  });
+
   app.whenReady().then(bootstrap);
 
   app.on("before-quit", () => {

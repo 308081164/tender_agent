@@ -267,6 +267,25 @@ async def import_qual_folder(db: Session, folder: str, *, dry_run: bool = False)
     return await import_qual_folder_pipeline(db, folder, dry_run=dry_run)
 
 
+def read_workspace_file(db: Session, session, relative_path: str) -> dict[str, Any]:
+    from app.services.agent_workspace import read_workspace_file as _read
+
+    return _read(db, session, relative_path)
+
+
+def write_workspace_file(
+    db: Session,
+    session,
+    relative_path: str,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+) -> dict[str, Any]:
+    from app.services.agent_workspace import write_workspace_file as _write
+
+    return _write(db, session, relative_path, content, encoding=encoding)
+
+
 async def list_missing_intake_questions(db: Session, project_id: int) -> dict[str, Any]:
     from app.models import TenderProject
     from app.services.project_workflow import guided_intake_questions

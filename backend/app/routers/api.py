@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
@@ -34,6 +35,11 @@ class ProjectCreate(BaseModel):
     title: str = "未命名标书"
     source_type: str = "template"
     template_id: int | None = None
+    workspace_dir: str | None = None
+
+
+class ProjectWorkspaceUpdate(BaseModel):
+    workspace_dir: str
 
 
 class SettingsUpdate(BaseModel):
@@ -160,6 +166,7 @@ def project_to_dict(p: TenderProject) -> dict:
         "inserted_quals": p.inserted_quals or [],
         "checklist_result": p.checklist_result or {},
         "status": p.status,
+        "workspace_dir": getattr(p, "workspace_dir", None) or "",
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
         "summary": project_summary(p),
@@ -444,6 +451,11 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
         tpl = db.query(Template).filter(Template.id == body.template_id).first()
         if not tpl:
             raise HTTPException(404, "模板不存在")
+    workspace_dir = ""
+    if body.workspace_dir and str(body.workspace_dir).strip():
+        from app.services.agent_workspace import validate_workspace_dir
+
+        workspace_dir = validate_workspace_dir(str(body.workspace_dir).strip())
     project = TenderProject(
         title=body.title,
         source_type=body.source_type,
@@ -452,12 +464,40 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
         fields={},
         chapters={},
         inserted_quals=[],
+        workspace_dir=workspace_dir,
     )
     db.add(project)
     db.commit()
     db.refresh(project)
     save_snapshot(db, project, 1)
     return project_to_dict(project)
+
+
+@router.patch("/projects/{project_id}/workspace-dir")
+def patch_project_workspace_dir(
+    project_id: int, body: ProjectWorkspaceUpdate, db: Session = Depends(get_db),
+):
+    from app.services.agent_workspace import validate_workspace_dir
+    from app.services.project_sessions import find_bound_session
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    try:
+        p.workspace_dir = validate_workspace_dir(body.workspace_dir.strip())
+    except Exception as err:
+        raise HTTPException(400, str(err)) from err
+    p.updated_at = datetime.utcnow()
+    bound = find_bound_session(db, project_id)
+    if bound:
+        ws = dict(bound.workspace or {})
+        ws["workspace_dir"] = p.workspace_dir
+        ws["project_id"] = project_id
+        bound.workspace = ws
+        bound.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(p)
+    return project_to_dict(p)
 
 
 @router.get("/projects/{project_id}")
@@ -1346,6 +1386,14 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     db.commit()
     save_snapshot(db, p, 6)
 
+    try:
+        from app.services.agent_workspace import mirror_bytes_to_project_workspace
+
+        rel = f"产出/{filename}"
+        mirror_bytes_to_project_workspace(p, rel, doc_bytes)
+    except Exception:
+        pass
+
     ascii_name = "tender.docx"
     return Response(
         content=doc_bytes,
@@ -1773,6 +1821,39 @@ class ChatActionRequest(BaseModel):
     payload: dict = {}
 
 
+class ImportFolderBody(BaseModel):
+    folder_path: str
+    label: str = "选择资质文件夹"
+
+
+class WorkspaceFileBody(BaseModel):
+    path: str
+    content: str = ""
+    encoding: str = "utf-8"
+
+
+def _persist_assistant_turn(db: Session, s: ChatSession, user_content: str, result: dict):
+    meta = dict(result.get("metadata") or {})
+    user_msg = ChatMessage(session_id=s.id, role="user", content=user_content)
+    db.add(user_msg)
+    db.flush()
+    bot_msg = ChatMessage(
+        session_id=s.id,
+        role="assistant",
+        content=result.get("answer") or "",
+        source=result.get("source") or "",
+        matched_question=result.get("matched_question") or "",
+        metadata_json=meta,
+    )
+    db.add(bot_msg)
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(bot_msg)
+    db.refresh(s)
+    return user_msg, bot_msg
+
+
 def _resolve_card_state(message: ChatMessage | None, card_id: str, action: str, label: str) -> None:
     """将卡片状态固化为 confirmed/cancelled，防止重复操作。"""
     if not message or not card_id:
@@ -2031,6 +2112,157 @@ async def upload_chat_file(
         "object_key": key,
         "workspace": getattr(s, "workspace", None) or {},
     }
+
+
+@router.post("/chat/sessions/{session_id}/import-folder")
+async def post_chat_import_folder(
+    session_id: int, body: ImportFolderBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_flows
+
+    s = get_session_or_404(db, session_id)
+    folder = (body.folder_path or "").strip()
+    if not folder:
+        raise HTTPException(400, "folder_path 不能为空")
+    result = await agent_flows.start_qual_folder_import(db, s, folder)
+    label = (body.label or "选择资质文件夹").strip()
+    user_msg, bot_msg = _persist_assistant_turn(db, s, f"[{label}] {folder}", result)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": message_to_dict(bot_msg),
+        "metadata": dict(result.get("metadata") or {}),
+    }
+
+
+@router.post("/chat/sessions/{session_id}/upload-batch")
+async def upload_chat_files_batch(
+    session_id: int,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """批量上传附件；多份资质类文件时走文件夹导入确认流程。"""
+    import zipfile
+    from io import BytesIO
+
+    from app.services import agent_flows
+    from app.services.agent_qual_folder import SCAN_EXTENSIONS
+    from app.services.agent_workspace import chat_staging_dir
+
+    s = get_session_or_404(db, session_id)
+    if not files:
+        raise HTTPException(400, "请至少选择一个文件")
+
+    batch_id = datetime.utcnow().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    staging = chat_staging_dir(session_id, batch_id)
+
+    saved_names: list[str] = []
+    for upload in files:
+        data = await upload.read()
+        if not data:
+            continue
+        fname = upload.filename or "upload.bin"
+        if fname.lower().endswith(".zip") and len(files) == 1:
+            with zipfile.ZipFile(BytesIO(data)) as zf:
+                for info in zf.infolist():
+                    if info.is_dir() or info.filename.startswith("__MACOSX"):
+                        continue
+                    base = Path(info.filename).name
+                    if not base or base.startswith("."):
+                        continue
+                    ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
+                    if ext and ext not in SCAN_EXTENSIONS and ext != "zip":
+                        continue
+                    target = staging / base
+                    target.write_bytes(zf.read(info))
+                    saved_names.append(base)
+        else:
+            safe = Path(fname).name
+            (staging / safe).write_bytes(data)
+            saved_names.append(safe)
+
+    if not saved_names:
+        raise HTTPException(400, "未保存任何有效文件")
+
+    docx_only = len(saved_names) == 1 and saved_names[0].lower().endswith(".docx")
+    if docx_only:
+        data = (staging / saved_names[0]).read_bytes()
+        fname = saved_names[0]
+
+        class _BytesUpload:
+            def __init__(self, name: str, payload: bytes):
+                self.filename = name
+                self._payload = payload
+
+            async def read(self):
+                return self._payload
+
+        return await upload_chat_file(session_id, _BytesUpload(fname, data), db)
+
+    qual_count = sum(
+        1 for n in saved_names
+        if (("." in n and n.rsplit(".", 1)[-1].lower() in SCAN_EXTENSIONS) or n.lower().endswith(".docx"))
+    )
+    names_label = "、".join(saved_names[:8]) + ("…" if len(saved_names) > 8 else "")
+    user_label = f"[上传 {len(saved_names)} 个文件] {names_label}"
+
+    if qual_count >= 1:
+        result = await agent_flows.start_qual_folder_import(db, s, str(staging))
+        answer_prefix = f"已接收 **{len(saved_names)}** 个文件并暂存。\n\n"
+        result["answer"] = answer_prefix + (result.get("answer") or "")
+    else:
+        result = {
+            "answer": (
+                f"已接收 **{len(saved_names)}** 个文件：{names_label}\n\n"
+                "当前批次未识别为资质包材料；如需导入资质库，请使用「整个文件夹」或上传 pdf/docx/图片等资质文件。"
+            ),
+            "metadata": {"intent": "file_upload_batch", "staging_dir": str(staging), "files": saved_names},
+        }
+
+    user_msg, bot_msg = _persist_assistant_turn(db, s, user_label, result)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": message_to_dict(bot_msg),
+        "metadata": dict(result.get("metadata") or {}),
+        "workspace": getattr(s, "workspace", None) or {},
+    }
+
+
+@router.post("/chat/sessions/{session_id}/workspace/files/read")
+def read_session_workspace_file(
+    session_id: int, body: WorkspaceFileBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_tools
+    from app.services.agent_qual_folder import PathNotAllowedError
+
+    s = get_session_or_404(db, session_id)
+    try:
+        data = agent_tools.read_workspace_file(db, s, body.path)
+    except PathNotAllowedError as err:
+        raise HTTPException(400, str(err)) from err
+    except FileNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
+    return data
+
+
+@router.post("/chat/sessions/{session_id}/workspace/files/write")
+def write_session_workspace_file(
+    session_id: int, body: WorkspaceFileBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_tools
+    from app.services.agent_qual_folder import PathNotAllowedError
+
+    s = get_session_or_404(db, session_id)
+    if not (body.path or "").strip():
+        raise HTTPException(400, "path 不能为空")
+    try:
+        data = agent_tools.write_workspace_file(
+            db, s, body.path.strip(), body.content or "", encoding=body.encoding or "utf-8",
+        )
+    except PathNotAllowedError as err:
+        raise HTTPException(400, str(err)) from err
+    return data
 
 
 @router.post("/chatbot/ask")

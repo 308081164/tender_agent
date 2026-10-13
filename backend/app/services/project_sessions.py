@@ -22,6 +22,8 @@ def get_or_create_project_session(db: Session, project: TenderProject) -> ChatSe
     if existing:
         ws = dict(existing.workspace or {})
         ws["project_id"] = project.id
+        if getattr(project, "workspace_dir", None):
+            ws["workspace_dir"] = project.workspace_dir
         if project.template_id:
             ws["template_id"] = project.template_id
         draft_key = (project.fields or {}).get("_draft_object_key")
@@ -41,6 +43,8 @@ def get_or_create_project_session(db: Session, project: TenderProject) -> ChatSe
         "template_id": project.template_id,
         "guided_intake": bool((project.fields or {}).get("_guided_intake", True)),
     }
+    if getattr(project, "workspace_dir", None):
+        ws["workspace_dir"] = project.workspace_dir
     draft_key = (project.fields or {}).get("_draft_object_key")
     if draft_key:
         ws["draft_object_key"] = draft_key

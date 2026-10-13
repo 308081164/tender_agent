@@ -4,6 +4,7 @@ import Step1TemplatePicker from '../Step1TemplatePicker'
 import { api } from '../../api/client'
 
 const RECENT_KEY = 'tender_recent_templates'
+const RECENT_WORKSPACE_KEY = 'tender_recent_workspace_dirs'
 
 function markRecent(templateId) {
   try {
@@ -18,7 +19,16 @@ function markRecent(templateId) {
 export default function CreateProjectHubModal({ open, templates, onClose, showToast }) {
   const navigate = useNavigate()
   const [selectedId, setSelectedId] = useState(null)
+  const [workspaceDir, setWorkspaceDir] = useState('')
   const [busy, setBusy] = useState(false)
+
+  const recentWorkspaces = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem(RECENT_WORKSPACE_KEY) || '[]')
+    } catch {
+      return []
+    }
+  }, [open])
 
   const recentIds = useMemo(() => {
     try {
@@ -38,8 +48,36 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
   }, [templates, recentIds])
 
   useEffect(() => {
-    if (!open) setSelectedId(null)
+    if (!open) {
+      setSelectedId(null)
+      setWorkspaceDir('')
+    }
   }, [open])
+
+  const pickWorkspaceDir = async () => {
+    const desktop = window.tenderAgentDesktop
+    if (desktop?.pickProjectWorkspaceDir) {
+      try {
+        const res = await desktop.pickProjectWorkspaceDir()
+        if (!res?.canceled && res.path) setWorkspaceDir(res.path)
+      } catch (e) {
+        showToast?.(e.message || '无法选择目录')
+      }
+    } else {
+      showToast?.('Web 版可在创建后于项目设置中填写工程目录路径')
+    }
+  }
+
+  const markRecentWorkspace = (dir) => {
+    if (!dir) return
+    try {
+      const raw = JSON.parse(localStorage.getItem(RECENT_WORKSPACE_KEY) || '[]')
+      const next = [dir, ...raw.filter((d) => d !== dir)].slice(0, 6)
+      localStorage.setItem(RECENT_WORKSPACE_KEY, JSON.stringify(next))
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (!open) return null
 
@@ -47,7 +85,12 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
     if (!selectedId || busy) return
     setBusy(true)
     try {
-      const p = await api.createProject({ title: '新建标书', template_id: selectedId })
+      const p = await api.createProject({
+        title: '新建标书',
+        template_id: selectedId,
+        ...(workspaceDir.trim() ? { workspace_dir: workspaceDir.trim() } : {}),
+      })
+      if (workspaceDir.trim()) markRecentWorkspace(workspaceDir.trim())
       await api.confirmStep1(p.id, { template_id: selectedId, title: p.title })
       markRecent(selectedId)
       await api.ensureProjectSession(p.id)
@@ -66,6 +109,26 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
         <h3>新建标书</h3>
         <p className="muted">选择模板后进入创作工作台（左预览、右 Agent）。</p>
         <Step1TemplatePicker templates={sortedTemplates} selectedId={selectedId} onSelect={setSelectedId} />
+        <div className="create-hub-workspace" style={{ marginTop: 12 }}>
+          <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
+            <button type="button" className="secondary" onClick={pickWorkspaceDir} disabled={busy}>
+              选择工程目录（推荐）
+            </button>
+            <span className="muted tiny">产出默认写入「过程资料 / 产出」子文件夹</span>
+          </div>
+          {workspaceDir ? (
+            <p className="tiny muted" style={{ marginTop: 6, wordBreak: 'break-all' }}>{workspaceDir}</p>
+          ) : null}
+          {recentWorkspaces.length > 0 ? (
+            <div className="chat-prompt-chips" style={{ marginTop: 8 }}>
+              {recentWorkspaces.map((d) => (
+                <button key={d} type="button" className="chip" onClick={() => setWorkspaceDir(d)}>
+                  最近：{d.split(/[/\\]/).slice(-1)[0] || d}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <div className="row-actions" style={{ marginTop: 16 }}>
           <button type="button" className="ghost" onClick={onClose} disabled={busy}>取消</button>
           <button type="button" onClick={start} disabled={busy || !selectedId}>

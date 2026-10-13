@@ -93,6 +93,60 @@ export function useChatSessions(showToast) {
     }
   }, [actingCardId, loading, ensureSession, showToast])
 
+  const mergeUploadResponse = useCallback((res, optimisticId) => {
+    setMessages((m) => [
+      ...m.filter((x) => x.id !== optimisticId),
+      res.user_message,
+      res.assistant_message,
+    ])
+    if (res.session) {
+      setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
+    }
+  }, [])
+
+  const uploadFiles = useCallback(async (files) => {
+    const list = Array.from(files || []).filter(Boolean)
+    if (!list.length || loading) return
+    const label =
+      list.length === 1
+        ? `[上传文件] ${list[0].name}`
+        : `[上传 ${list.length} 个文件] ${list.map((f) => f.name).slice(0, 3).join('、')}${list.length > 3 ? '…' : ''}`
+    const optimisticId = `tmp-file-${Date.now()}`
+    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: label }])
+    setLoading(true)
+    try {
+      const id = await ensureSession()
+      const res =
+        list.length === 1
+          ? await api.uploadChatFile(id, list[0])
+          : await api.uploadChatFilesBatch(id, list)
+      mergeUploadResponse(res, optimisticId)
+    } catch (e) {
+      showToast?.(e.message)
+      setMessages((m) => m.filter((x) => x.id !== optimisticId))
+    } finally {
+      setLoading(false)
+    }
+  }, [loading, ensureSession, mergeUploadResponse, showToast])
+
+  const importFolderPath = useCallback(async (folderPath, folderLabel) => {
+    if (!folderPath || loading) return
+    const optimisticId = `tmp-folder-${Date.now()}`
+    const userLine = `[${folderLabel || '选择文件夹'}] ${folderPath}`
+    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: userLine }])
+    setLoading(true)
+    try {
+      const id = await ensureSession()
+      const res = await api.importChatFolder(id, folderPath, folderLabel)
+      mergeUploadResponse(res, optimisticId)
+    } catch (e) {
+      showToast?.(e.message)
+      setMessages((m) => m.filter((x) => x.id !== optimisticId))
+    } finally {
+      setLoading(false)
+    }
+  }, [loading, ensureSession, mergeUploadResponse, showToast])
+
   const askChat = useCallback(async () => {
     const q = chatInput.trim()
     if (!q || loading) return
@@ -147,5 +201,8 @@ export function useChatSessions(showToast) {
     refreshSessions,
     handleCardAction,
     actingCardId,
+    uploadFiles,
+    importFolderPath,
+    showToast,
   }
 }

@@ -228,6 +228,11 @@ async def start_qual_folder_import(
         )
 
     preview = scan_qual_folder(root)
+    from app.services.agent_qual_folder import multimodal_configured, multimodal_setup_hint
+
+    mm_hint = ""
+    if preview.get("image_or_scan_count", 0) > 0 and not multimodal_configured(db):
+        mm_hint = f"\n\n⚠️ {multimodal_setup_hint()}\n"
     if preview["file_count"] <= 0:
         return _result(
             f"文件夹 `{root}` 内未找到可识别的资质文件（支持 pdf/docx/txt/图片）。\n"
@@ -250,6 +255,7 @@ async def start_qual_folder_import(
         f"即将扫描并导入资质文件夹：\n`{root}`\n\n"
         f"共 **{preview['file_count']}** 个文件（约 {preview['total_bytes'] // 1024} KB）。"
         f"示例：{sample or '—'}\n\n"
+        f"{mm_hint}"
         "确认后将：\n"
         "1. **递归探索**文件夹内全部材料（不依赖固定子目录名），OCR/多模态提取后 AI 分类\n"
         "2. 识别资质条目写入资质库，并提取企业档案字段（敏感项若已有值则仅提示）\n"
