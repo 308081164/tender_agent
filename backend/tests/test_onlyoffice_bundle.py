@@ -1,6 +1,7 @@
 """Desktop OnlyOffice bundle detection and sidecar config."""
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -172,6 +173,23 @@ def test_desktop_defaults_enable_bundled_server(monkeypatch):
         assert settings.onlyoffice_internal_url.startswith("http://127.0.0.1:")
     finally:
         get_settings.cache_clear()
+
+
+def test_launcher_exposes_sidecar_under_embed_pth(tmp_path: Path, monkeypatch):
+    """Embed python311._pth drops the script directory; the launcher must put it back."""
+    monkeypatch.setenv("TENDER_DATA_DIR", str(tmp_path))
+    desktop = Path(__file__).resolve().parents[2] / "desktop"
+    launcher_path = desktop / "backend_launcher.py"
+    isolated = [entry for entry in sys.path if entry not in ("", str(desktop))]
+    monkeypatch.setattr(sys, "path", isolated)
+    spec = importlib.util.spec_from_file_location("backend_launcher_embed_pth", launcher_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert str(desktop) in sys.path
+    sidecar = importlib.import_module("onlyoffice_sidecar")
+    assert sidecar.__file__
+    assert Path(sidecar.__file__).resolve().parent == desktop
 
 
 def test_probe_health_rejects_closed_port():

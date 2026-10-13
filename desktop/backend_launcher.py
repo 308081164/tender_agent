@@ -16,6 +16,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# python311._pth (embed runtime) enables isolated mode and omits the script
+# directory from sys.path. The OnlyOffice sidecar is a sibling of this file.
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
 DEFAULT_PORT = 18766
 PG_PORT_DEFAULT = 25432
 PG_PORT_LEGACY = 55432
