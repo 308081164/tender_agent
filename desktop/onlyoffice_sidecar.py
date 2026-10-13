@@ -247,15 +247,22 @@ def _ensure_database(
         return
     host = "127.0.0.1" if pg_host in ("", ".") else pg_host
     base = ["-h", host, "-p", str(pg_port), "-U", "tender"]
-    role_sql = (
-        "DO $$ BEGIN "
-        "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'onlyoffice') THEN "
-        "CREATE ROLE onlyoffice LOGIN PASSWORD 'onlyoffice'; "
-        "END IF; END $$;"
+    # CREATE ROLE cannot run inside a DO block (it is a transaction).
+    role_exists = _psql(
+        psql,
+        pg_env,
+        [*base, "-d", "postgres", "-tAc", "SELECT 1 FROM pg_roles WHERE rolname = 'onlyoffice'"],
+        log,
     )
-    role = _psql(psql, pg_env, [*base, "-d", "postgres", "-c", role_sql], log)
-    if role.returncode != 0:
-        log(f"onlyoffice: create role failed: {(role.stderr or role.stdout).strip()}")
+    if "1" not in (role_exists.stdout or ""):
+        role = _psql(
+            psql,
+            pg_env,
+            [*base, "-d", "postgres", "-c", "CREATE ROLE onlyoffice LOGIN PASSWORD 'onlyoffice'"],
+            log,
+        )
+        if role.returncode != 0:
+            log(f"onlyoffice: create role failed: {(role.stderr or role.stdout).strip()}")
     exists = _psql(
         psql,
         pg_env,
@@ -305,7 +312,10 @@ def _rabbitmq_env(erlang_home: Path, data_dir: Path) -> dict[str, str]:
         "\n".join(
             [
                 f"listeners.tcp.default = 127.0.0.1:{ONLYOFFICE_AMQP_PORT}",
-                f"distribution.listener.port = {ONLYOFFICE_DIST_PORT}",
+                # RabbitMQ 3.13 has no distribution.listener.port. A single
+                # dist port is a min=max range; the unknown key aborts boot.
+                f"distribution.listener.port_range.min = {ONLYOFFICE_DIST_PORT}",
+                f"distribution.listener.port_range.max = {ONLYOFFICE_DIST_PORT}",
                 "loopback_users.guest = true",
                 "",
             ]

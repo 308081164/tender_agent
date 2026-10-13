@@ -596,6 +596,41 @@ def _cleanup_stale_postmaster_pid(pgdata: Path) -> bool:
     return False
 
 
+# CREATE DATABASE cannot run inside a DO/transaction block, so existence is a
+# separate query from the create statement.
+TENDER_DB_EXISTS_SQL = "SELECT 1 FROM pg_database WHERE datname = 'tender_agent'"
+TENDER_DB_CREATE_SQL = "CREATE DATABASE tender_agent"
+
+
+def _psql_postgres(
+    install_dir: Path,
+    pgdata: Path,
+    pg_port: int,
+    pg_host: str,
+    psql: Path,
+    extra_args: list[str],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(psql),
+            "-h",
+            pg_host,
+            "-p",
+            str(pg_port),
+            "-U",
+            "tender",
+            "-d",
+            "postgres",
+            *extra_args,
+        ],
+        env=_postgres_env(install_dir, pgdata, pg_port),
+        creationflags=_subprocess_flags(),
+        timeout=15,
+        check=False,
+        **_subprocess_capture_kwargs(),
+    )
+
+
 def _ensure_postgres_database(
     install_dir: Path,
     pgdata: Path,
@@ -607,32 +642,32 @@ def _ensure_postgres_database(
         psql = _postgres_bin(install_dir, "psql.exe")
     if not psql.is_file():
         return
-    create_sql = (
-        "DO $$ BEGIN "
-        "IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'tender_agent') "
-        "THEN CREATE DATABASE tender_agent; END IF; END $$;"
+    probe = _psql_postgres(
+        install_dir,
+        pgdata,
+        pg_port,
+        pg_host,
+        psql,
+        ["-tAc", TENDER_DB_EXISTS_SQL],
     )
-    subprocess.run(
-        [
-            str(psql),
-            "-h",
-            pg_host,
-            "-p",
-            str(pg_port),
-            "-U",
-            "tender",
-            "-d",
-            "postgres",
-            "-c",
-            create_sql,
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=_postgres_env(install_dir, pgdata, pg_port),
-        creationflags=_subprocess_flags(),
-        timeout=15,
-        check=False,
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "").strip()
+        raise RuntimeError(f"无法查询 tender_agent 数据库：{detail}")
+    if "1" in (probe.stdout or ""):
+        _log("postgres database tender_agent already exists")
+        return
+    created = _psql_postgres(
+        install_dir,
+        pgdata,
+        pg_port,
+        pg_host,
+        psql,
+        ["-c", TENDER_DB_CREATE_SQL],
     )
+    if created.returncode != 0:
+        detail = (created.stderr or created.stdout or "").strip()
+        raise RuntimeError(f"创建 tender_agent 数据库失败：{detail}")
+    _log("created postgres database tender_agent")
 
 
 def _postgres_log_has_admin_error(data_dir: Path) -> bool:

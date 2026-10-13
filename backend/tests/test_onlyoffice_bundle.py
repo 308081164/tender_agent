@@ -98,6 +98,34 @@ def test_inspect_native_windows_bundle_without_node(tmp_path: Path):
     assert ok, missing
 
 
+def test_rabbitmq_config_uses_distribution_port_range(tmp_path: Path):
+    from app.onlyoffice_const import ONLYOFFICE_AMQP_PORT, ONLYOFFICE_DIST_PORT
+    from onlyoffice_sidecar import _rabbitmq_env
+
+    env = _rabbitmq_env(tmp_path / "erlang", tmp_path)
+    text = (tmp_path / "onlyoffice" / "rabbitmq" / "rabbitmq.conf").read_text(encoding="utf-8")
+    assert "distribution.listener.port =" not in text
+    assert f"distribution.listener.port_range.min = {ONLYOFFICE_DIST_PORT}" in text
+    assert f"distribution.listener.port_range.max = {ONLYOFFICE_DIST_PORT}" in text
+    assert f"listeners.tcp.default = 127.0.0.1:{ONLYOFFICE_AMQP_PORT}" in text
+    assert env["RABBITMQ_DIST_PORT"] == str(ONLYOFFICE_DIST_PORT)
+
+
+def test_tender_database_create_is_its_own_statement(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TENDER_DATA_DIR", str(tmp_path))
+    desktop = Path(__file__).resolve().parents[2] / "desktop"
+    spec = importlib.util.spec_from_file_location(
+        "backend_launcher_db_sql",
+        desktop / "backend_launcher.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.TENDER_DB_CREATE_SQL == "CREATE DATABASE tender_agent"
+    assert "DO" not in module.TENDER_DB_CREATE_SQL
+    assert "CREATE DATABASE" not in module.TENDER_DB_EXISTS_SQL
+
+
 def test_load_manifest_accepts_powershell5_utf8_bom(tmp_path: Path):
     payload = {"nginx": "nginx/nginx.exe", "docservice": "server/DocService/docservice.exe"}
     (tmp_path / "bundle.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8"))
