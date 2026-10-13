@@ -2082,6 +2082,11 @@ class WorkspaceTreeBody(BaseModel):
     path: str = ""
 
 
+class ChatSessionWorkspacePatch(BaseModel):
+    workspace_dir: str | None = None
+    project_id: int | None = None
+
+
 def _persist_assistant_turn(db: Session, s: ChatSession, user_content: str, result: dict):
     meta = dict(result.get("metadata") or {})
     user_msg = ChatMessage(session_id=s.id, role="user", content=user_content)
@@ -2173,6 +2178,42 @@ async def post_chat_action(session_id: int, body: ChatActionRequest, db: Session
         "acted_message": message_to_dict(acted_message) if acted_message is not None else None,
         "metadata": meta,
     }
+
+
+@router.patch("/chat/sessions/{session_id}/workspace")
+def patch_chat_session_workspace(
+    session_id: int,
+    body: ChatSessionWorkspacePatch,
+    db: Session = Depends(get_db),
+):
+    from app.services.agent_workspace import validate_workspace_dir
+
+    s = get_session_or_404(db, session_id)
+    ws = dict(getattr(s, "workspace", None) or {})
+    if body.workspace_dir is not None:
+        raw = (body.workspace_dir or "").strip()
+        if raw:
+            ws["workspace_dir"] = validate_workspace_dir(raw)
+        else:
+            ws.pop("workspace_dir", None)
+    if body.project_id is not None:
+        pid = int(body.project_id or 0)
+        if pid <= 0:
+            ws.pop("project_id", None)
+        else:
+            p = db.query(TenderProject).filter(TenderProject.id == pid).first()
+            if not p:
+                raise HTTPException(404, "项目不存在")
+            ws["project_id"] = pid
+            if getattr(p, "workspace_dir", None):
+                ws["workspace_dir"] = p.workspace_dir
+            if p.template_id:
+                ws["template_id"] = p.template_id
+    s.workspace = ws
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(s)
+    return session_to_dict(s)
 
 
 @router.get("/chat/sessions/{session_id}/workspace")

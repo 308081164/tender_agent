@@ -47,6 +47,8 @@ export default function FloatingChat({ chat, projectPath = '' }) {
         onImportFolderPath={chat.importFolderPath}
         showToast={chat.showToast}
         boundProjectId={chat.boundProjectId}
+        workspace={chat.workspace}
+        onWorkspaceDirChange={chat.patchWorkspaceDir}
       />
     </>
   )

@@ -4,6 +4,7 @@ import { formatTime } from '../utils/format'
 import ChatMessageBubble from './chat/ChatMessageBubble'
 import ChatAttachmentControls from './chat/ChatAttachmentControls'
 import ChatComposer from './chat/ChatComposer'
+import ComposerContextBar from './chat/ComposerContextBar'
 
 export default function ChatDrawer({
   open,
@@ -26,7 +27,10 @@ export default function ChatDrawer({
   onImportFolderPath,
   showToast,
   boundProjectId = null,
+  workspace = {},
+  onWorkspaceDirChange,
 }) {
+  const workspaceDir = (workspace?.workspace_dir || '').trim()
   if (!open) return null
 
   return (
@@ -100,7 +104,16 @@ export default function ChatDrawer({
               onChange={setChatInput}
               onSend={askChat}
               loading={loading}
+              loadingHint={loading ? '思考中…' : null}
               placeholder="可粘贴文件夹路径并说明「读取录入」…"
+              contextBar={(
+                <ComposerContextBar
+                  workspaceDir={workspaceDir}
+                  onWorkspaceDirChange={onWorkspaceDirChange}
+                  disabled={loading}
+                  showProjectPicker={!boundProjectId}
+                />
+              )}
               left={(
                 <ChatAttachmentControls
                   compact

@@ -66,11 +66,16 @@ def build_context_system_block(
     if sel:
         parts.append(f"用户当前选中的文档片段：\n{_truncate(sel, 4000)}")
     ws_file = (ctx.get("workspace_file") or ctx.get("selected_workspace_file") or "").strip()
+    ws_body = (ctx.get("workspace_file_content") or "").strip()
     if ws_file:
-        parts.append(
+        block = (
             "用户当前在工程目录文件树中选中的文件（相对路径，可用 read_workspace_file 读取/修改）："
-            f"\n{ws_file}",
+            f"\n{ws_file}"
         )
+        if ws_body:
+            note = "（内容已截断）" if ctx.get("workspace_file_truncated") else ""
+            block += f"\n\n文件正文{note}：\n{_truncate(ws_body, 8000)}"
+        parts.append(block)
     refs = ctx.get("reference_snippets") or []
     if isinstance(refs, str):
         refs = [refs]

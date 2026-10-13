@@ -79,6 +79,7 @@ export default function WorkspaceFileTree({
   workspaceRootLabel,
   selectedPath,
   onSelectFile,
+  refreshToken = 0,
 }) {
   const [rootEntries, setRootEntries] = useState([])
   const [loading, setLoading] = useState(false)
@@ -100,7 +101,7 @@ export default function WorkspaceFileTree({
 
   useEffect(() => {
     refreshRoot()
-  }, [refreshRoot, workspaceRootLabel])
+  }, [refreshRoot, workspaceRootLabel, refreshToken])
 
   const onToggleExpand = (path) => {
     setExpandedPaths((prev) => {
