@@ -1037,6 +1037,22 @@ def _ensure_minio(data_dir: Path, install_dir: Path) -> None:
     raise RuntimeError("minio did not become ready")
 
 
+def _ensure_onlyoffice(data_dir: Path, install_dir: Path) -> None:
+    """Start the bundled Document Server. A missing bundle does not stop the app."""
+    from onlyoffice_sidecar import ensure_onlyoffice
+
+    psql = _postgres_bin(install_dir, "psql.exe")
+    ensure_onlyoffice(
+        install_dir,
+        data_dir,
+        pg_host=_ACTIVE_PG_HOST,
+        pg_port=_ACTIVE_PG_PORT or PG_PORT_DEFAULT,
+        psql=psql if psql.is_file() else None,
+        pg_env=_postgres_env(install_dir, data_dir / "pgdata", _ACTIVE_PG_PORT or PG_PORT_DEFAULT),
+        log=_log,
+    )
+
+
 def _runtime_root(install_dir: Path) -> Path:
     return install_dir / "runtime"
 
@@ -1091,6 +1107,7 @@ def _verify_install_layout(install_dir: Path) -> None:
         ("tesseract", install_dir / "tools" / "tesseract" / "tesseract.exe", True),
         ("tesseract chi_sim", install_dir / "tools" / "tesseract" / "tessdata" / "chi_sim.traineddata", True),
         ("aspose license", install_dir / "aspose" / "Aspose.License.txt", True),
+        ("onlyoffice bundle", install_dir / "tools" / "onlyoffice" / "bundle.json", True),
     ]
     missing: list[str] = []
     for label, path, is_file in checks:
@@ -1099,6 +1116,11 @@ def _verify_install_layout(install_dir: Path) -> None:
             missing.append(f"{label}: {path}")
     if missing:
         raise FileNotFoundError("安装目录不完整：\n" + "\n".join(missing))
+    from onlyoffice_sidecar import bundle_problem
+
+    problem = bundle_problem(install_dir)
+    if problem:
+        raise FileNotFoundError(problem)
 
 
 def _verify_runtime_imports(install_dir: Path, data_dir: Path) -> None:
@@ -1148,6 +1170,9 @@ def _start_server(install_dir: Path, data_dir: Path, port: int) -> subprocess.Po
     env = _runtime_env(install_dir, data_dir)
     env["TENDER_DESKTOP"] = "1"
     env["ASPOSE_LICENSE_PATH"] = str(install_dir / "aspose" / "Aspose.License.txt")
+    from onlyoffice_sidecar import backend_env
+
+    env.update(backend_env(port))
     if _ACTIVE_PG_PORT is not None:
         env["TENDER_PG_PORT"] = str(_ACTIVE_PG_PORT)
     env["TENDER_PG_HOST"] = _ACTIVE_PG_HOST
@@ -1268,6 +1293,11 @@ def _shutdown(install_dir: Path | None, data_dir: Path | None) -> None:
                 _log(f"stopping minio from state pid={pid}")
                 _graceful_kill_process_tree(pid, timeout=5.0)
 
+    if data_dir is not None:
+        from onlyoffice_sidecar import stop_onlyoffice
+
+        stop_onlyoffice(data_dir, _kill_process_tree, _log)
+
     if install_dir is not None and data_dir is not None:
         _stop_postgres(data_dir, install_dir)
 
@@ -1354,12 +1384,14 @@ def main() -> int:
     try:
         _ensure_postgres_with_retry(data_dir, install_dir)
         _ensure_minio(data_dir, install_dir)
+        _ensure_onlyoffice(data_dir, install_dir)
         proc = _start_server(install_dir, data_dir, port)
     except Exception as exc:
         _log(f"start failed: {exc}")
         print(str(exc), file=sys.stderr)
         _append_log_tail(data_dir, "postgres.log")
         _append_log_tail(data_dir, "minio.log")
+        _append_log_tail(data_dir, "onlyoffice.log")
         _append_log_tail(data_dir, "backend.log")
         _shutdown(install_dir, data_dir)
         return 1
@@ -1373,6 +1405,7 @@ def main() -> int:
         _append_log_tail(data_dir, "backend.log")
         _append_log_tail(data_dir, "postgres.log")
         _append_log_tail(data_dir, "minio.log")
+        _append_log_tail(data_dir, "onlyoffice.log")
         _shutdown(install_dir, data_dir)
         return 1
 

@@ -44,13 +44,13 @@ def _check_ocr() -> dict[str, Any]:
 
 
 def _check_onlyoffice() -> dict[str, Any]:
-    from app.services import onlyoffice as oo
-    payload = oo.status_payload()
-    enabled = bool(payload.get("enabled"))
+    from app.services.onlyoffice_runtime import classify_onlyoffice, runtime_status
+
+    payload = runtime_status()
     return {
         "id": "onlyoffice",
         "name": "OnlyOffice 在线编辑",
-        "status": "ok" if enabled else "info",
+        "status": classify_onlyoffice(payload),
         "detail": payload,
     }
 
