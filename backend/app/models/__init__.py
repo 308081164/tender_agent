@@ -86,6 +86,7 @@ class TenderProject(Base):
     inserted_quals: Mapped[list] = mapped_column(JSON, default=list)
     checklist_result: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(50), default="draft")
+    workspace_dir: Mapped[str] = mapped_column(String(1000), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

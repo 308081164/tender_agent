@@ -83,6 +83,11 @@ export const api = {
       body: JSON.stringify({ attachment_id, keys }),
     }),
   createProject: (body) => request('/projects', { method: 'POST', body: JSON.stringify(body) }),
+  patchProjectWorkspaceDir: (projectId, workspace_dir) =>
+    request(`/projects/${projectId}/workspace-dir`, {
+      method: 'PATCH',
+      body: JSON.stringify({ workspace_dir }),
+    }),
   deleteProject: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
   confirmStep1: (id, body) => request(`/projects/${id}/step1`, { method: 'POST', body: JSON.stringify(body) }),
   updateFields: (id, fields, confirm = false) =>
@@ -152,6 +157,28 @@ export const api = {
     if (!res.ok) throw new Error(await res.text())
     return res.json()
   },
+  uploadChatFilesBatch: async (sessionId, files) => {
+    const fd = new FormData()
+    ;(files || []).forEach((f) => fd.append('files', f))
+    const res = await fetch(`${BASE}/chat/sessions/${sessionId}/upload-batch`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await readErrorDetail(res))
+    return res.json()
+  },
+  importChatFolder: (sessionId, folder_path, label = '选择资质文件夹') =>
+    request(`/chat/sessions/${sessionId}/import-folder`, {
+      method: 'POST',
+      body: JSON.stringify({ folder_path, label }),
+    }),
+  readWorkspaceFile: (sessionId, path) =>
+    request(`/chat/sessions/${sessionId}/workspace/files/read`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  writeWorkspaceFile: (sessionId, path, content, encoding = 'utf-8') =>
+    request(`/chat/sessions/${sessionId}/workspace/files/write`, {
+      method: 'POST',
+      body: JSON.stringify({ path, content, encoding }),
+    }),
   detectTemplatePlaceholders: (id) =>
     request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
   searchMappingResources: (q = '') =>

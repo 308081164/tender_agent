@@ -2,6 +2,7 @@ import React from 'react'
 import { Link } from 'react-router-dom'
 import { formatTime } from '../utils/format'
 import ChatMessageBubble from './chat/ChatMessageBubble'
+import ChatAttachmentControls from './chat/ChatAttachmentControls'
 
 export default function ChatDrawer({
   open,
@@ -20,6 +21,9 @@ export default function ChatDrawer({
   onSelectSession,
   onCardAction,
   actingCardId,
+  onUploadFiles,
+  onImportFolderPath,
+  showToast,
 }) {
   if (!open) return null
 
@@ -87,11 +91,19 @@ export default function ChatDrawer({
               {loading && <div className="msg bot">思考中…</div>}
             </div>
             <div className="chat-drawer-input">
+              <ChatAttachmentControls
+                compact
+                disabled={loading}
+                showToast={showToast}
+                onUploadFiles={onUploadFiles}
+                onImportFolderPath={onImportFolderPath}
+                onImportFolderZip={(file) => onUploadFiles?.([file])}
+              />
               <input
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && askChat()}
-                placeholder="例如：是否具备铁路总承包一级资质？"
+                placeholder="可粘贴文件夹路径并说明「读取录入」…"
                 disabled={loading}
               />
               <button onClick={askChat} disabled={loading || !chatInput.trim()}>
