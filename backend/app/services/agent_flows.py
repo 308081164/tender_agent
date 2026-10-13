@@ -251,9 +251,9 @@ async def start_qual_folder_import(
         f"共 **{preview['file_count']}** 个文件（约 {preview['total_bytes'] // 1024} KB）。"
         f"示例：{sample or '—'}\n\n"
         "确认后将：\n"
-        "1. 读取文件并识别资质条目，写入资质库\n"
-        "2. 从材料中提取企业档案字段并自动落库（敏感项若已有值则仅提示）\n"
-        "3. 列出未填项并 **强烈建议您人工核对**",
+        "1. **递归探索**文件夹内全部材料（不依赖固定子目录名），OCR/多模态提取后 AI 分类\n"
+        "2. 识别资质条目写入资质库，并提取企业档案字段（敏感项若已有值则仅提示）\n"
+        "3. 列出未填项与「系统识别为…」核实建议，并 **强烈建议您人工核对**",
         cards=[{
             "id": _card_id(),
             "type": "confirm",
@@ -305,6 +305,7 @@ async def _finish_qual_folder_import(db: Session, session: ChatSession, folder: 
                     "company_applied": cn,
                     "suggestions": (result.get("company_patch") or {}).get("suggestions") or [],
                 },
+                "file_insights": ob.get("file_insights") or [],
             },
         }],
         actions=actions,

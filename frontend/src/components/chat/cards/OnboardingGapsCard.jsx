@@ -8,6 +8,7 @@ export default function OnboardingGapsCard({ card }) {
     gaps = [],
     verify_recommended = [],
     import_summary,
+    file_insights = [],
   } = card.payload || {}
 
   const suggestions = import_summary?.suggestions || []
@@ -25,6 +26,27 @@ export default function OnboardingGapsCard({ card }) {
           已处理文件夹：{import_summary.folder || '—'}；新增资质 {import_summary.qual_count ?? 0} 条，
           更新档案 {import_summary.company_applied ?? 0} 项。
         </p>
+      ) : null}
+
+      {file_insights.length > 0 ? (
+        <div className="onboarding-section">
+          <strong>文件识别结果（内容探索）</strong>
+          <ul className="onboarding-gap-list">
+            {file_insights.slice(0, 16).map((ins) => (
+              <li
+                key={`${ins.file_name}-${ins.doc_type}`}
+                className={ins.needs_verify ? 'gap-verify' : 'gap-classified'}
+              >
+                <span>
+                  {ins.file_name}：{ins.display_label || ins.doc_type_label}
+                </span>
+                <Link to={ins.url || '/admin/qualifications'} className="onboarding-gap-link">
+                  查看
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       {suggestions.length > 0 ? (

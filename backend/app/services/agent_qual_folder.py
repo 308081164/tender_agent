@@ -1,6 +1,7 @@
-"""Agent 资质目录扫描：本地路径白名单、文件读取、企业档案/资质落库、缺口清单。"""
+"""Agent 资质目录扫描：本地路径白名单、无结构探索、多模态提取、LLM 分类落库。"""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -44,6 +45,75 @@ COMPANY_ONBOARDING: list[tuple[str, str]] = [
     ("bank_account", "银行账号"),
     ("qual_overview", "资质概述"),
 ]
+
+DOC_TYPE_KEYS = (
+    "business_license",
+    "qualification_certificate",
+    "bank_account_proof",
+    "legal_id_card",
+    "performance_proof",
+    "financial_statement",
+    "personnel_qualification",
+    "authorization_letter",
+    "credit_reputation",
+    "company_intro",
+    "unknown",
+)
+
+DOC_TYPE_LABELS: dict[str, str] = {
+    "business_license": "营业执照",
+    "qualification_certificate": "资质证书",
+    "bank_account_proof": "银行开户许可/证明",
+    "legal_id_card": "法人身份证",
+    "performance_proof": "业绩证明",
+    "financial_statement": "财务材料",
+    "personnel_qualification": "人员资质",
+    "authorization_letter": "授权书",
+    "credit_reputation": "信誉材料",
+    "company_intro": "企业简介/宣传",
+    "unknown": "未知材料",
+}
+
+DOC_TYPE_TO_QUAL_CATEGORY: dict[str, str] = {
+    "business_license": "企业资质包",
+    "qualification_certificate": "企业资质包",
+    "bank_account_proof": "财务包",
+    "legal_id_card": "人员资质包",
+    "performance_proof": "业绩包",
+    "financial_statement": "财务包",
+    "personnel_qualification": "人员资质包",
+    "authorization_letter": "授权包",
+    "credit_reputation": "信誉包",
+    "company_intro": "企业资质包",
+    "unknown": "其他",
+}
+
+DOC_TYPE_COMPANY_FIELDS: dict[str, list[str]] = {
+    "business_license": [
+        "full_name", "credit_code", "register_address", "legal_name",
+        "registered_capital", "founded_date", "business_scope",
+    ],
+    "bank_account_proof": ["bank_name", "bank_account", "full_name"],
+    "legal_id_card": ["legal_name", "legal_id_no", "legal_gender"],
+    "company_intro": ["intro", "qual_overview", "typical_projects", "phone"],
+    "performance_proof": ["typical_projects", "qual_overview"],
+}
+
+CLASSIFY_SYSTEM_PROMPT = """你是标书企业资质材料探索助手。用户提供的文件夹**没有固定目录结构**。
+你必须主要依据每份文件的**正文/OCR 文本**判断类型，文件名与相对路径仅作弱参考，不可仅凭路径或文件夹名下结论。
+
+对输入的 JSON 数组（每项含 file_id、name、extension、relative_path_weak、text_excerpt），
+输出**同长度** JSON 数组，每项字段：
+- file_id: 与输入一致
+- doc_type: 从以下选一：business_license, qualification_certificate, bank_account_proof,
+  legal_id_card, performance_proof, financial_statement, personnel_qualification,
+  authorization_letter, credit_reputation, company_intro, unknown
+- confidence: 0.0~1.0
+- needs_verify: 是否建议人工核实 true/false
+- company_field_hints: 可能对应的企业档案列名数组（如 credit_code, bank_account），无则 []
+- reasoning: 一句话依据（引用正文关键词，勿只写路径）
+
+只输出 JSON 数组，不要 markdown。"""
 
 COMPANY_EXTRACT_PROMPT = """你是企业档案识别助手。根据资质文件夹内材料提取的文本，输出 JSON 对象。
 键为企业档案字段（仅包含有依据的字段，无则省略）：
@@ -238,6 +308,53 @@ def scan_qual_folder(folder: Path | str) -> dict[str, Any]:
     }
 
 
+_IMAGE_EXTS = frozenset({"jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff"})
+
+
+def _image_data_url(data: bytes, ext: str) -> str | None:
+    if ext not in _IMAGE_EXTS or not data:
+        return None
+    mime = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+        "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+        "tif": "image/tiff", "tiff": "image/tiff",
+    }.get(ext, "application/octet-stream")
+    try:
+        b64 = base64.standard_b64encode(data).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+    except Exception:
+        return None
+
+
+async def _vision_text_supplement(
+    text: str,
+    *,
+    data: bytes,
+    ext: str,
+    name: str,
+    db: Session | None,
+) -> str:
+    """图片/PDF 扫描件：OCR 不足时尝试多模态 vision（无 Key 则原样返回）。"""
+    if len((text or "").strip()) >= 80:
+        return text
+    url = _image_data_url(data, ext)
+    if not url:
+        return text
+    from app.services import ai
+
+    extra = await ai.chat_completion_vision([
+        {
+            "role": "system",
+            "content": "你是 OCR 助手。从图片中提取全部可见中文与数字，按原文顺序输出纯文本。",
+        },
+        {"role": "user", "content": f"文件：{name}\n请提取图中文字。"},
+    ], image_data_urls=[url], db=db)
+    merged = (text or "").strip()
+    if extra and extra.strip():
+        merged = (merged + "\n" + extra.strip()).strip() if merged else extra.strip()
+    return merged[:8000]
+
+
 def read_document_file(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     if not p.is_file():
@@ -259,9 +376,218 @@ def read_document_file(path: str | Path) -> dict[str, Any]:
         "name": p.name,
         "extension": ext,
         "size_bytes": len(data),
+        "text": (text or "")[:8000],
         "text_preview": (text or "")[:500],
         "data": data,
+        "is_image": ext in _IMAGE_EXTS,
     }
+
+
+async def extract_folder_material(
+    file_info: dict[str, Any],
+    *,
+    db: Session | None = None,
+) -> dict[str, Any]:
+    """单文件多模态材料包：文本 + 元数据（路径仅弱特征）。"""
+    doc = read_document_file(file_info["path"])
+    text = doc.get("text") or ""
+    if doc.get("is_image") or (doc.get("extension") == "pdf" and len(text.strip()) < 80):
+        text = await _vision_text_supplement(
+            text,
+            data=doc["data"],
+            ext=doc["extension"],
+            name=doc["name"],
+            db=db,
+        )
+        doc["text"] = text[:8000]
+        doc["text_preview"] = text[:500]
+    return {
+        **doc,
+        "relative_path": file_info.get("relative_path") or doc["name"],
+        "relative_path_weak": file_info.get("relative_path") or doc["name"],
+    }
+
+
+def _parse_classify_array(raw: str) -> list[dict[str, Any]]:
+    text = (raw or "").strip()
+    if not text:
+        return []
+    m = re.search(r"\[[\s\S]*\]", text)
+    if m:
+        text = m.group(0)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _rule_classify_material(material: dict[str, Any]) -> dict[str, Any]:
+    """无 LLM 时基于正文关键词分类（不用路径作为主信号）。"""
+    text = (material.get("text") or material.get("text_preview") or "").lower()
+    name = (material.get("name") or "").lower()
+    combined = text + " " + name  # 文件名仅弱补充
+
+    doc_type = "unknown"
+    confidence = 0.35
+    if "营业执照" in combined or "统一社会信用代码" in combined:
+        doc_type, confidence = "business_license", 0.72
+    elif any(k in combined for k in ("开户许可", "开户证明", "基本存款账户")):
+        doc_type, confidence = "bank_account_proof", 0.68
+    elif "身份证" in combined and ("公民身份" in combined or "签发机关" in combined):
+        doc_type, confidence = "legal_id_card", 0.7
+    elif any(k in combined for k in ("资质证书", "建筑业企业资质", "安全生产许可证")):
+        doc_type, confidence = "qualification_certificate", 0.65
+    elif any(k in combined for k in ("业绩", "合同", "中标通知书", "竣工验收")):
+        doc_type, confidence = "performance_proof", 0.62
+    elif any(k in combined for k in ("审计报告", "财务报表", "资产负债表")):
+        doc_type, confidence = "financial_statement", 0.6
+    elif any(k in combined for k in ("授权委托", "授权书", "委托书")):
+        doc_type, confidence = "authorization_letter", 0.6
+    elif any(k in combined for k in ("职称", "建造师", "注册证", "执业资格")):
+        doc_type, confidence = "personnel_qualification", 0.58
+
+    hints = list(DOC_TYPE_COMPANY_FIELDS.get(doc_type, []))
+    return {
+        "file_id": material.get("file_id"),
+        "path": material.get("path"),
+        "doc_type": doc_type,
+        "doc_type_label": DOC_TYPE_LABELS.get(doc_type, doc_type),
+        "confidence": confidence,
+        "needs_verify": confidence < 0.65 or doc_type == "unknown",
+        "company_field_hints": hints,
+        "reasoning": "规则兜底：正文关键词",
+        "source": "rules",
+    }
+
+
+def _normalize_classification(item: dict[str, Any], material: dict[str, Any]) -> dict[str, Any]:
+    doc_type = str(item.get("doc_type") or "unknown").strip()
+    if doc_type not in DOC_TYPE_KEYS:
+        doc_type = "unknown"
+    try:
+        confidence = float(item.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+    needs_verify = bool(item.get("needs_verify"))
+    if doc_type == "unknown" or confidence < 0.55:
+        needs_verify = True
+    hints = item.get("company_field_hints")
+    if not isinstance(hints, list):
+        hints = DOC_TYPE_COMPANY_FIELDS.get(doc_type, [])
+    hints = [str(h) for h in hints if h in CompanyProfile.__table__.columns.keys()]
+    return {
+        "file_id": material.get("file_id"),
+        "path": material.get("path"),
+        "name": material.get("name"),
+        "relative_path": material.get("relative_path"),
+        "doc_type": doc_type,
+        "doc_type_label": DOC_TYPE_LABELS.get(doc_type, doc_type),
+        "confidence": round(confidence, 2),
+        "needs_verify": needs_verify,
+        "company_field_hints": hints,
+        "reasoning": str(item.get("reasoning") or "")[:200],
+        "source": "ai",
+    }
+
+
+async def classify_folder_materials(
+    materials: list[dict[str, Any]],
+    *,
+    db: Session | None = None,
+) -> list[dict[str, Any]]:
+    """LLM 批量分类；失败则逐件规则兜底。"""
+    if not materials:
+        return []
+
+    payload = []
+    for m in materials:
+        payload.append({
+            "file_id": m.get("file_id"),
+            "name": m.get("name"),
+            "extension": m.get("extension"),
+            "size_bytes": m.get("size_bytes"),
+            "relative_path_weak": m.get("relative_path_weak"),
+            "text_excerpt": (m.get("text") or m.get("text_preview") or "")[:3500],
+        })
+
+    from app.services import ai
+
+    raw = await ai.chat_completion([
+        {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ], db=db)
+
+    by_id: dict[Any, dict] = {}
+    if raw.strip():
+        for item in _parse_classify_array(raw):
+            fid = item.get("file_id")
+            if fid is not None:
+                by_id[fid] = item
+
+    out: list[dict[str, Any]] = []
+    for m in materials:
+        fid = m.get("file_id")
+        if fid in by_id:
+            out.append(_normalize_classification(by_id[fid], m))
+        else:
+            ruled = _rule_classify_material(m)
+            ruled["name"] = m.get("name")
+            ruled["relative_path"] = m.get("relative_path")
+            out.append(ruled)
+    return out
+
+
+def _apply_classification_to_analyzed(
+    analyzed: dict[str, Any],
+    classification: dict[str, Any],
+) -> dict[str, Any]:
+    doc_type = classification.get("doc_type") or "unknown"
+    conf = classification.get("confidence") or 0
+    if doc_type != "unknown" and conf >= 0.45:
+        analyzed["category"] = DOC_TYPE_TO_QUAL_CATEGORY.get(doc_type, analyzed.get("category"))
+    kw_parts = [str(analyzed.get("keywords") or "")]
+    kw_parts.append(f"探索分类:{classification.get('doc_type_label')}")
+    if classification.get("needs_verify"):
+        kw_parts.append("需核实")
+    analyzed["keywords"] = ";".join(p for p in kw_parts if p)[:500]
+    analyzed["exploration"] = {
+        "doc_type": doc_type,
+        "doc_type_label": classification.get("doc_type_label"),
+        "confidence": classification.get("confidence"),
+        "needs_verify": classification.get("needs_verify"),
+        "company_field_hints": classification.get("company_field_hints") or [],
+        "reasoning": classification.get("reasoning"),
+    }
+    return analyzed
+
+
+def _classification_insights(
+    classifications: list[dict[str, Any]],
+    qual_created: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    qual_by_name = {q.get("file_name"): q for q in qual_created if q.get("file_name")}
+    insights: list[dict[str, Any]] = []
+    for c in classifications:
+        name = c.get("name") or ""
+        q = qual_by_name.get(name) or {}
+        verify_tag = "需核实" if c.get("needs_verify") else "置信度"
+        conf = c.get("confidence")
+        insights.append({
+            "file_name": name,
+            "relative_path": c.get("relative_path"),
+            "doc_type": c.get("doc_type"),
+            "doc_type_label": c.get("doc_type_label"),
+            "confidence": conf,
+            "needs_verify": c.get("needs_verify"),
+            "display_label": (
+                f"系统识别为 {c.get('doc_type_label')}（{verify_tag} {conf}）"
+            ),
+            "url": q.get("admin_url") or "/admin/qualifications",
+            "qual_id": q.get("id"),
+        })
+    return insights
 
 
 def _parse_company_json(raw: str) -> dict[str, str]:
@@ -472,24 +798,53 @@ async def import_qual_folder_pipeline(
     qual_created: list[dict] = []
     errors: list[dict] = []
     texts_for_company: list[str] = []
+    materials: list[dict[str, Any]] = []
+    extract_errors: list[dict] = []
+
+    for idx, fi in enumerate(scan["files"]):
+        try:
+            mat = await extract_folder_material(fi, db=db)
+            mat["file_id"] = idx
+            materials.append(mat)
+        except Exception as err:
+            extract_errors.append({"file": fi.get("name"), "error": str(err)[:200]})
+
+    classifications = await classify_folder_materials(materials, db=db)
+    class_by_path = {c["path"]: c for c in classifications if c.get("path")}
 
     for fi in scan["files"]:
         try:
-            doc = read_document_file(fi["path"])
+            mat = next((m for m in materials if m.get("path") == fi.get("path")), None)
+            if not mat:
+                continue
+            classification = class_by_path.get(mat["path"]) or _rule_classify_material(mat)
             if dry_run:
-                qual_created.append({"name": fi["name"], "dry_run": True})
+                qual_created.append({
+                    "name": fi["name"],
+                    "dry_run": True,
+                    "exploration": classification,
+                })
                 continue
             analyzed = await analyze_qualification_file(
-                doc["data"], fi["name"], fi["extension"], db=db,
+                mat["data"],
+                fi["name"],
+                fi["extension"],
+                db=db,
+                content_hint=classification,
             )
-            rec = apply_qual_record(db, fi, analyzed, doc["data"])
+            analyzed = _apply_classification_to_analyzed(analyzed, classification)
+            rec = apply_qual_record(db, fi, analyzed, mat["data"])
+            rec["exploration"] = analyzed.get("exploration")
+            rec["file_name"] = fi["name"]
             qual_created.append(rec)
-            if analyzed.get("ocr_text"):
-                texts_for_company.append(analyzed["ocr_text"])
-            elif doc.get("text_preview"):
-                texts_for_company.append(doc["text_preview"])
+            body = analyzed.get("ocr_text") or mat.get("text") or mat.get("text_preview") or ""
+            if body.strip():
+                prefix = f"[{classification.get('doc_type_label')}] "
+                texts_for_company.append(prefix + body)
         except Exception as err:
             errors.append({"file": fi.get("name"), "error": str(err)[:200]})
+
+    errors.extend(extract_errors)
 
     company_result: dict[str, Any] = {"applied": [], "suggestions": []}
     if not dry_run and texts_for_company:
@@ -501,11 +856,36 @@ async def import_qual_folder_pipeline(
         db.commit()
 
     gaps = get_onboarding_gaps(db)
+    file_insights = _classification_insights(classifications, qual_created)
+    verify_from_files = [
+        {
+            "kind": "file_classification",
+            "key": f"{ins.get('file_name')}-{ins.get('doc_type')}",
+            "label": ins.get("display_label") or ins.get("doc_type_label"),
+            "status": "needs_verify",
+            "url": ins.get("url") or "/admin/qualifications",
+        }
+        for ins in file_insights
+        if ins.get("needs_verify")
+    ]
+    combined_verify = (gaps.get("verify_recommended") or []) + verify_from_files
+    gaps = {
+        **gaps,
+        "file_insights": file_insights,
+        "verify_recommended": combined_verify,
+        "verify_count": len(combined_verify),
+    }
+
     return {
         "scan": {
             "folder": scan["folder"],
             "file_count": scan["file_count"],
             "skipped": scan.get("skipped") or [],
+        },
+        "exploration": {
+            "materials_count": len(materials),
+            "classified_count": len(classifications),
+            "classifications": classifications,
         },
         "qualifications_created": qual_created,
         "company_patch": company_result,
