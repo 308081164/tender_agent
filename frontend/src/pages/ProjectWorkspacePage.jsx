@@ -10,6 +10,7 @@ import ProjectDocumentPane from '../components/project/ProjectDocumentPane'
 import WorkspaceDeliveryDrawer from '../components/project/WorkspaceDeliveryDrawer'
 import WorkspaceStepBar from '../components/project/WorkspaceStepBar'
 import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
+import ChatComposer from '../components/chat/ChatComposer'
 import { useProjectContext } from '../hooks/useProjectContext'
 import { stepForWorkspacePhase, workspacePhaseFromStep } from '../utils/projectRouting'
 
@@ -276,24 +277,26 @@ export default function ProjectWorkspacePage() {
               placeholder="可选：粘贴参照段落，发送时将带入改写/创作"
             />
           </div>
-          <footer className="chat-composer compact">
-            <input
-              ref={fileRef}
-              type="file"
-              className="hidden"
-              accept=".docx,.pdf,.txt,.png,.jpg,.jpeg"
-              onChange={(e) => uploadAttachment(e.target.files?.[0])}
-            />
-            <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传材料">📎</button>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
-              placeholder="修改字段、提问、按参照改写…"
-              disabled={loading}
-            />
-            <button type="button" onClick={() => send()} disabled={loading || !input.trim()}>发送</button>
-          </footer>
+          <ChatComposer
+            compact
+            value={input}
+            onChange={setInput}
+            onSend={() => send()}
+            loading={loading}
+            placeholder="修改字段、提问、按参照改写…"
+            left={(
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  className="hidden"
+                  accept=".docx,.pdf,.txt,.png,.jpg,.jpeg"
+                  onChange={(e) => uploadAttachment(e.target.files?.[0])}
+                />
+                <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传材料">📎</button>
+              </>
+            )}
+          />
         </aside>
       </div>
 

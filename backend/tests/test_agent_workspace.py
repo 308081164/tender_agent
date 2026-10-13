@@ -15,6 +15,7 @@ from app.models import ChatSession, TenderProject
 from app.services.agent_qual_folder import PathNotAllowedError
 from app.services.agent_workspace import (
     default_agent_workspace_root,
+    list_workspace_dir,
     normalize_relative_path,
     read_workspace_file,
     write_workspace_file,
@@ -42,6 +43,25 @@ def test_relative_path_blocks_traversal(tmp_path, monkeypatch):
     root = tmp_path.resolve()
     with pytest.raises(PathNotAllowedError):
         normalize_relative_path(root, "../etc/passwd")
+
+
+def test_list_workspace_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.agent_workspace.default_agent_workspace_root",
+        lambda: tmp_path.resolve(),
+    )
+    (tmp_path / "产出").mkdir()
+    (tmp_path / "产出" / "a.md").write_text("x", encoding="utf-8")
+    db = _fresh_db()
+    session = ChatSession(title="t", workspace={})
+    db.add(session)
+    db.commit()
+    top = list_workspace_dir(db, session, "")
+    names = {e["name"] for e in top["entries"]}
+    assert "产出" in names
+    sub = list_workspace_dir(db, session, "产出")
+    assert any(e["name"] == "a.md" and e["type"] == "file" for e in sub["entries"])
+    db.close()
 
 
 def test_write_and_read_session_file(tmp_path, monkeypatch):

@@ -277,6 +277,12 @@ def read_workspace_file(db: Session, session, relative_path: str) -> dict[str, A
     return _read(db, session, relative_path)
 
 
+def list_workspace_dir(db: Session, session, relative_path: str = "") -> dict[str, Any]:
+    from app.services.agent_workspace import list_workspace_dir as _list
+
+    return _list(db, session, relative_path)
+
+
 def write_workspace_file(
     db: Session,
     session,

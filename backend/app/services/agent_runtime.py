@@ -65,6 +65,12 @@ def build_context_system_block(
     sel = (ctx.get("selected_text") or "").strip()
     if sel:
         parts.append(f"用户当前选中的文档片段：\n{_truncate(sel, 4000)}")
+    ws_file = (ctx.get("workspace_file") or ctx.get("selected_workspace_file") or "").strip()
+    if ws_file:
+        parts.append(
+            "用户当前在工程目录文件树中选中的文件（相对路径，可用 read_workspace_file 读取/修改）："
+            f"\n{ws_file}",
+        )
     refs = ctx.get("reference_snippets") or []
     if isinstance(refs, str):
         refs = [refs]

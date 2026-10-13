@@ -6,6 +6,7 @@ import PreviewModal from '../components/PreviewModal'
 import AdminConfirmDialog from '../components/admin/AdminConfirmDialog'
 import { formatTime } from '../utils/format'
 import { projectContinuePath, WIZARD_STEPS, WORKSPACE_PHASES } from '../utils/projectRouting'
+import { formatProjectWorkspaceDir, workspaceDirTitle } from '../utils/workspaceDisplay'
 
 export default function HomePage() {
   const navigate = useNavigate()
@@ -120,6 +121,7 @@ export default function HomePage() {
               <thead>
                 <tr>
                   <th>项目</th>
+                  <th>工作目录</th>
                   <th>当前步骤</th>
                   <th>状态</th>
                   <th>更新时间</th>
@@ -136,6 +138,9 @@ export default function HomePage() {
                       <td className="project-title-cell">
                         <strong>{s.project_name || p.title || `标书 #${p.id}`}</strong>
                         <small>{s.brief || '尚未填写关键信息'}</small>
+                      </td>
+                      <td className="workspace-dir-cell muted" title={workspaceDirTitle(p)}>
+                        {formatProjectWorkspaceDir(p)}
                       </td>
                       <td>{stepName}</td>
                       <td>

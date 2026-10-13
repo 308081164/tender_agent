@@ -3,14 +3,10 @@ import { useApp } from '../App'
 import Layout from '../components/Layout'
 
 export default function MainLayoutRoute() {
-  const { settingsInfo, bootLoading, startNew } = useApp()
+  const { settingsInfo } = useApp()
 
   return (
-    <Layout
-      settingsInfo={settingsInfo}
-      loading={bootLoading}
-      onStartNew={startNew}
-    >
+    <Layout settingsInfo={settingsInfo}>
       <Outlet />
     </Layout>
   )

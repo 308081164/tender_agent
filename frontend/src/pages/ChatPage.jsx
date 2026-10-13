@@ -6,7 +6,9 @@ import BackChevron from '../components/chat/BackChevron'
 import ChatMessageBubble from '../components/chat/ChatMessageBubble'
 import ChatSessionSidebar from '../components/chat/ChatSessionSidebar'
 import DocumentWorkspace from '../components/chat/DocumentWorkspace'
+import WorkspaceFileTree from '../components/chat/WorkspaceFileTree'
 import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
+import ChatComposer from '../components/chat/ChatComposer'
 
 export default function ChatPage() {
   const { showToast } = useApp()
@@ -22,7 +24,13 @@ export default function ChatPage() {
   const [showSessions, setShowSessions] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [creatingChat, setCreatingChat] = useState(false)
+  const [docPanelOpen, setDocPanelOpen] = useState(true)
+  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState('')
   const messagesRef = useRef(null)
+
+  const workspaceDir = (workspace?.workspace_dir || '').trim()
+  const showFileTree = !!(workspaceDir || workspace?.project_id)
+  const treeRootLabel = workspaceDir || '工程目录'
 
   const refreshWorkspace = async (id) => {
     if (!id) return
@@ -85,9 +93,9 @@ export default function ChatPage() {
     setMessages((m) => [...m, optimistic])
     try {
       const id = await ensureSession()
-      const res = await api.sendChatMessage(id, q, {
-        selected_text: selectedText,
-      })
+      const ctx = { selected_text: selectedText }
+      if (selectedWorkspaceFile) ctx.workspace_file = selectedWorkspaceFile
+      const res = await api.sendChatMessage(id, q, ctx)
       setMessages((m) => [
         ...m.filter((x) => x.id !== optimisticId),
         res.user_message,
@@ -121,6 +129,7 @@ export default function ChatPage() {
       setWorkspace({})
       setParagraphs([])
       setSelectedText('')
+      setSelectedWorkspaceFile('')
       setSessions((list) => [s, ...list.filter((x) => x.id !== s.id)])
       setShowSessions(false)
     } catch (e) {
@@ -241,6 +250,14 @@ export default function ChatPage() {
         </Link>
         <strong>文档 Agent 工作区</strong>
         <div className="chat-workspace-top-actions">
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setDocPanelOpen((v) => !v)}
+            title={docPanelOpen ? '收起文档区，仅显示对话' : '展开文档工作区'}
+          >
+            {docPanelOpen ? '收起文档' : '展开文档'}
+          </button>
           <button type="button" className="ghost" onClick={() => setShowSessions(true)}>历史对话</button>
           <button type="button" onClick={newChat} disabled={creatingChat || loading}>
             {creatingChat ? '创建中…' : '新对话'}
@@ -259,19 +276,31 @@ export default function ChatPage() {
         chatBusy={loading}
       />
 
-      <div className="chat-workspace-split">
-        <section className="chat-workspace-doc">
-          <DocumentWorkspace
-            sessionId={sessionId}
-            workspace={workspace}
-            paragraphs={paragraphs}
-            selectedText={selectedText}
-            onSelectText={setSelectedText}
-            onParagraphEdit={onParagraphEdit}
-            onRefresh={() => refreshWorkspace(sessionId)}
-            onlyOfficeEnabled={!!features.onlyoffice?.enabled}
-          />
-        </section>
+      <div className={`chat-workspace-split${docPanelOpen ? '' : ' doc-collapsed'}`}>
+        {docPanelOpen ? (
+          <section className="chat-workspace-doc">
+            <div className={`chat-doc-layout${showFileTree ? ' with-tree' : ''}`}>
+              {showFileTree ? (
+                <WorkspaceFileTree
+                  sessionId={sessionId}
+                  workspaceRootLabel={treeRootLabel}
+                  selectedPath={selectedWorkspaceFile}
+                  onSelectFile={setSelectedWorkspaceFile}
+                />
+              ) : null}
+              <DocumentWorkspace
+                sessionId={sessionId}
+                workspace={workspace}
+                paragraphs={paragraphs}
+                selectedText={selectedText}
+                onSelectText={setSelectedText}
+                onParagraphEdit={onParagraphEdit}
+                onRefresh={() => refreshWorkspace(sessionId)}
+                onlyOfficeEnabled={!!features.onlyoffice?.enabled}
+              />
+            </div>
+          </section>
+        ) : null}
 
         <aside className="chat-workspace-panel">
           <div className="chat-panel-head">
@@ -311,25 +340,32 @@ export default function ChatPage() {
               <button type="button" className="ghost tiny" onClick={() => setSelectedText('')}>清除</button>
             </div>
           ) : null}
+          {selectedWorkspaceFile ? (
+            <div className="chat-selection-hint">
+              当前工程文件：
+              <em>{selectedWorkspaceFile}</em>
+              <button type="button" className="ghost tiny" onClick={() => setSelectedWorkspaceFile('')}>清除</button>
+            </div>
+          ) : null}
 
-          <footer className="chat-composer compact">
-            <ChatAttachmentControls
-              compact
-              disabled={loading}
-              showToast={showToast}
-              onUploadFiles={uploadFiles}
-              onImportFolderPath={importFolderPath}
-              onImportFolderZip={(file) => uploadFiles([file])}
-            />
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
-              placeholder="提问、检索标书、编写/替换指令…"
-              disabled={loading}
-            />
-            <button type="button" onClick={() => send()} disabled={loading || !input.trim()}>发送</button>
-          </footer>
+          <ChatComposer
+            compact
+            value={input}
+            onChange={setInput}
+            onSend={() => send()}
+            loading={loading}
+            placeholder="提问、检索标书、编写/替换指令…"
+            left={(
+              <ChatAttachmentControls
+                compact
+                disabled={loading}
+                showToast={showToast}
+                onUploadFiles={uploadFiles}
+                onImportFolderPath={importFolderPath}
+                onImportFolderZip={(file) => uploadFiles([file])}
+              />
+            )}
+          />
         </aside>
       </div>
     </div>

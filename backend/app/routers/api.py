@@ -2078,6 +2078,10 @@ class WorkspaceFileBody(BaseModel):
     encoding: str = "utf-8"
 
 
+class WorkspaceTreeBody(BaseModel):
+    path: str = ""
+
+
 def _persist_assistant_turn(db: Session, s: ChatSession, user_content: str, result: dict):
     meta = dict(result.get("metadata") or {})
     user_msg = ChatMessage(session_id=s.id, role="user", content=user_content)
@@ -2473,6 +2477,24 @@ async def upload_chat_files_batch(
         "metadata": dict(result.get("metadata") or {}),
         "workspace": getattr(s, "workspace", None) or {},
     }
+
+
+@router.post("/chat/sessions/{session_id}/workspace/tree")
+def list_session_workspace_tree(
+    session_id: int, body: WorkspaceTreeBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_tools
+    from app.services.agent_qual_folder import PathNotAllowedError
+
+    s = get_session_or_404(db, session_id)
+    try:
+        return agent_tools.list_workspace_dir(db, s, body.path or "")
+    except PathNotAllowedError as err:
+        raise HTTPException(400, str(err)) from err
+    except NotADirectoryError as err:
+        raise HTTPException(400, str(err)) from err
+    except FileNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
 
 
 @router.post("/chat/sessions/{session_id}/workspace/files/read")
