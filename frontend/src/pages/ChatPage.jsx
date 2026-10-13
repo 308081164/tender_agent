@@ -295,6 +295,29 @@ export default function ChatPage() {
               onChange={(e) => uploadFile(e.target.files?.[0])}
             />
             <button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={loading} title="上传 DOCX">📎</button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={loading}
+              title="选择资质文件夹（桌面版）"
+              onClick={async () => {
+                const desktop = window.tenderAgentDesktop
+                if (desktop?.pickQualFolder) {
+                  try {
+                    const res = await desktop.pickQualFolder()
+                    if (!res?.canceled && res.path) {
+                      await send(`请扫描资质文件夹 ${res.path}`)
+                    }
+                  } catch (e) {
+                    showToast(e.message || '无法打开文件夹选择器')
+                  }
+                } else {
+                  showToast('请粘贴本机文件夹路径，例如：请扫描资质文件夹 C:\\Users\\我\\Desktop\\资质')
+                }
+              }}
+            >
+              📁
+            </button>
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}

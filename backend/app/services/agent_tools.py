@@ -225,6 +225,48 @@ def get_missing_critical_fields(db: Session, project_id: int) -> dict[str, Any]:
     }
 
 
+def scan_qual_folder(folder: str) -> dict[str, Any]:
+    from app.services.agent_qual_folder import scan_qual_folder as _scan
+
+    return _scan(folder)
+
+
+def read_document_file(path: str) -> dict[str, Any]:
+    from app.services.agent_qual_folder import read_document_file as _read
+
+    doc = _read(path)
+    # 工具层不向外返回原始 bytes
+    return {k: v for k, v in doc.items() if k != "data"}
+
+
+def apply_company_field_patch(
+    db: Session, patch: dict[str, Any], *, force_sensitive: bool = False
+) -> dict[str, Any]:
+    from app.services.agent_qual_folder import apply_company_field_patch as _apply
+
+    return _apply(db, patch, force_sensitive=force_sensitive)
+
+
+def apply_qual_record(
+    db: Session, file_info: dict[str, Any], analyzed: dict[str, Any], data: bytes
+) -> dict[str, Any]:
+    from app.services.agent_qual_folder import apply_qual_record as _apply
+
+    return _apply(db, file_info, analyzed, data)
+
+
+def get_onboarding_gaps(db: Session) -> dict[str, Any]:
+    from app.services.agent_qual_folder import get_onboarding_gaps as _gaps
+
+    return _gaps(db)
+
+
+async def import_qual_folder(db: Session, folder: str, *, dry_run: bool = False) -> dict[str, Any]:
+    from app.services.agent_qual_folder import import_qual_folder_pipeline
+
+    return await import_qual_folder_pipeline(db, folder, dry_run=dry_run)
+
+
 async def list_missing_intake_questions(db: Session, project_id: int) -> dict[str, Any]:
     from app.models import TenderProject
     from app.services.project_workflow import guided_intake_questions
