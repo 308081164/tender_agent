@@ -34,17 +34,22 @@ export default function ProjectWorkspacePage() {
   useEffect(() => {
     ;(async () => {
       try {
-        const [p, sess, feat] = await Promise.all([
+        const [p, feat] = await Promise.all([
           api.getProject(projectId),
-          api.ensureProjectSession(projectId),
           api.getChatFeatures(),
         ])
         setProject(p)
         setFeatures(feat)
-        setSessionId(sess.session.id)
-        setWorkspace(sess.session.workspace || {})
-        const full = await api.getChatSession(sess.session.id)
-        setMessages(full.messages || [])
+        const opened = await api.openProjectWorkspace(projectId, true)
+        setSessionId(opened.session.id)
+        setWorkspace(opened.session.workspace || {})
+        const full = await api.getChatSession(opened.session.id)
+        let msgs = full.messages || []
+        if (opened.assistant_message) {
+          const hasOpening = msgs.some((m) => m.metadata?.kind === 'workspace_opening')
+          if (!hasOpening) msgs = [...msgs, opened.assistant_message]
+        }
+        setMessages(msgs)
       } catch (e) {
         showToast(e.message)
       }
@@ -65,13 +70,22 @@ export default function ProjectWorkspacePage() {
     setInput('')
     setLoading(true)
     const optimisticId = `tmp-${Date.now()}`
-    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: q }])
+    const assistantId = `tmp-bot-${Date.now()}`
+    setMessages((m) => [
+      ...m,
+      { id: optimisticId, role: 'user', content: q },
+      { id: assistantId, role: 'assistant', content: '' },
+    ])
     try {
       const ctx = { project_id: projectId, guided_intake: guidedIntake }
       if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
-      const res = await api.sendChatMessage(sessionId, q, ctx)
+      const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok) => {
+        setMessages((m) => m.map((x) => (
+          x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
+        )))
+      })
       setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
+        ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
         res.user_message,
         res.assistant_message,
       ])
@@ -175,9 +189,13 @@ export default function ProjectWorkspacePage() {
             projectId={projectId}
             sessionId={sessionId}
             workspace={workspace}
+            context={context}
             onlyOfficeEnabled={!!features.onlyoffice?.enabled}
             refreshToken={previewToken}
-            onPreviewError={(msg) => showToast(msg)}
+            showToast={showToast}
+            onPreviewError={(msg) => showToast(msg || '预览失败')}
+            onFieldsSaved={refreshContext}
+            onAgentFollowup={(msg) => setMessages((m) => [...m, msg])}
           />
         </section>
 

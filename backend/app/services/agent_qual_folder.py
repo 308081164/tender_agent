@@ -21,6 +21,7 @@ from app.services.qual_extract import analyze_qualification_file
 SCAN_EXTENSIONS = frozenset({
     "pdf", "docx", "txt", "jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff",
 })
+_IMAGE_EXTS = frozenset({"jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff"})
 MAX_FOLDER_FILES = 40
 MAX_FILE_BYTES = 15 * 1024 * 1024
 MAX_TOTAL_BYTES = 80 * 1024 * 1024
@@ -151,6 +152,12 @@ def _windows_user_dirs() -> list[Path]:
 
 def allowed_path_prefixes() -> list[Path]:
     prefixes: list[Path] = []
+    try:
+        from app.services.agent_workspace import default_agent_workspace_root
+
+        prefixes.append(default_agent_workspace_root())
+    except Exception:
+        pass
     for p in (
         DATA_DIR,
         INSTALL_DIR,
@@ -225,19 +232,27 @@ def normalize_folder_path(raw: str) -> Path:
 
 
 def extract_folder_path_from_text(text: str) -> str | None:
-    q = (text or "").strip()
+    q = (text or "").strip().strip('"').strip("'").strip("「」")
     if not q:
         return None
     m = re.search(r"[「『\"']([^」』\"']+)[」』\"']", q)
     if m and ("/" in m.group(1) or "\\" in m.group(1) or re.match(r"[A-Za-z]:", m.group(1))):
-        return m.group(1).strip()
-    m2 = re.search(r"([A-Za-z]:\\[^\s\"'，,；;]+)", q)
-    if m2:
-        return m2.group(1).rstrip("\\")
-    m3 = re.search(r"(/(?:tmp|workspace|home|Users)[^\s\"'，,；;]*)", q)
+        return m.group(1).strip().rstrip("\\/")
+    win = re.search(
+        r"([A-Za-z]:\\(?:[^\s\\:*?\"<>|\r\n]+\\)*[^\s\\:*?\"<>|\r\n]*)",
+        q,
+    )
+    if win:
+        return win.group(1).strip().rstrip("\\/")
+    m3 = re.search(r"(/(?:tmp|workspace|home|Users|Volumes)[^\s\"'，,；;]*)", q)
     if m3:
         return m3.group(1).rstrip("/")
     return None
+
+
+_FOLDER_ACTION_RE = re.compile(
+    r"读取|读目录|读文件夹|录入|落库|导入|扫描|识别|整理|写入|存进|加到|录入系统|读取并|读并|加载|同步",
+)
 
 
 def is_qual_folder_intent(text: str) -> bool:
@@ -246,13 +261,57 @@ def is_qual_folder_intent(text: str) -> bool:
         return False
     keys = (
         "资质文件夹", "资质目录", "资质材料", "导入资质", "扫描文件夹", "扫描目录",
-        "读取文件夹", "企业档案导入", "落库", "资质包",
+        "读取文件夹", "企业档案导入", "落库", "资质包", "参考资料", "资料文件夹",
     )
-    if any(k in q for k in keys) and extract_folder_path_from_text(q):
+    path = extract_folder_path_from_text(q)
+    if path and _FOLDER_ACTION_RE.search(q):
+        return True
+    if any(k in q for k in keys) and path:
         return True
     if any(k in q for k in keys) and re.search(r"[A-Za-z]:\\|/", q):
         return True
     return False
+
+
+def detect_local_folder_import(text: str) -> tuple[str | None, float]:
+    """粘贴本机绝对路径 + 读目录/落库意图 → 资质文件夹导入。"""
+    path = extract_folder_path_from_text(text)
+    if not path:
+        return None, 0.0
+    if is_qual_folder_intent(text):
+        return path, 0.97
+    if _FOLDER_ACTION_RE.search(text or ""):
+        return path, 0.96
+    if re.match(r"[A-Za-z]:\\", path) or path.startswith(("/Users/", "/home/", "/Volumes/")):
+        return path, 0.9
+    return path, 0.75
+
+
+def multimodal_configured(db: Session | None) -> bool:
+    from app.services import settings_svc
+
+    cfg = settings_svc.resolve_ai_config(db)
+    if (cfg.get("qwen_api_key") or "").strip():
+        vm = (
+            (cfg.get("vision_model") or cfg.get("qwen_vl_model") or cfg.get("qwen_model") or "")
+            .lower()
+        )
+        if "vl" in vm or "vision" in vm:
+            return True
+        if vm:
+            return True
+    dm = (cfg.get("deepseek_model") or "").lower()
+    if (cfg.get("deepseek_api_key") or "").strip() and ("kimi" in dm or "k3" in dm):
+        return True
+    return False
+
+
+def multimodal_setup_hint() -> str:
+    return (
+        "扫描件/图片较多的文件夹建议配置 **通义千问 VL**（系统设置 → 千问 API + VL 模型）"
+        "或 **Kimi K3**（DeepSeek 接口 + 模型名含 kimi/k3）。"
+        "未配置时仍可用 OCR/文本提取，但识别率可能下降。"
+    )
 
 
 def scan_qual_folder(folder: Path | str) -> dict[str, Any]:
@@ -294,10 +353,16 @@ def scan_qual_folder(folder: Path | str) -> dict[str, Any]:
             })
             total_bytes += stat.st_size
 
+    image_or_scan_count = sum(
+        1 for f in files
+        if f.get("extension") in _IMAGE_EXTS or f.get("extension") == "pdf"
+    )
+
     return {
         "folder": str(root),
         "file_count": len(files),
         "total_bytes": total_bytes,
+        "image_or_scan_count": image_or_scan_count,
         "files": files,
         "skipped": skipped,
         "limits": {
@@ -306,9 +371,6 @@ def scan_qual_folder(folder: Path | str) -> dict[str, Any]:
             "max_total_bytes": MAX_TOTAL_BYTES,
         },
     }
-
-
-_IMAGE_EXTS = frozenset({"jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff"})
 
 
 def _image_data_url(data: bytes, ext: str) -> str | None:
@@ -501,6 +563,11 @@ async def classify_folder_materials(
     if not materials:
         return []
 
+    from app.services.ai import MultimodalRequiredError, is_multimodal_ready
+
+    if not is_multimodal_ready(db):
+        raise MultimodalRequiredError()
+
     payload = []
     for m in materials:
         payload.append({
@@ -517,7 +584,7 @@ async def classify_folder_materials(
     raw = await ai.chat_completion([
         {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ], db=db)
+    ], db=db, task_kind="qual_folder_classify")
 
     by_id: dict[Any, dict] = {}
     if raw.strip():
@@ -794,6 +861,11 @@ async def import_qual_folder_pipeline(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    from app.services.ai import MultimodalRequiredError, is_multimodal_ready
+
+    if not is_multimodal_ready(db):
+        raise MultimodalRequiredError()
+
     scan = scan_qual_folder(folder)
     qual_created: list[dict] = []
     errors: list[dict] = []

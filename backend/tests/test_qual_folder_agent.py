@@ -14,6 +14,7 @@ import pytest
 from app.models import CompanyProfile, FieldDef
 from app.services.agent_qual_folder import (
     PathNotAllowedError,
+    detect_local_folder_import,
     extract_folder_path_from_text,
     get_onboarding_gaps,
     is_qual_folder_intent,
@@ -37,6 +38,19 @@ def test_extract_path_from_message():
     text = '请扫描资质文件夹 C:\\Users\\test\\Desktop\\资质包'
     assert extract_folder_path_from_text(text) == 'C:\\Users\\test\\Desktop\\资质包'
     assert is_qual_folder_intent(text) is True
+
+
+def test_pasted_downloads_folder_with录入意图():
+    text = (
+        r"C:\Users\Administrator\Downloads\标书智能体参考资料-和远智能-20260729 "
+        "请读取并录入系统"
+    )
+    path = extract_folder_path_from_text(text)
+    assert path == r"C:\Users\Administrator\Downloads\标书智能体参考资料-和远智能-20260729"
+    assert is_qual_folder_intent(text) is True
+    p2, score = detect_local_folder_import(text)
+    assert p2 == path
+    assert score >= 0.85
 
 
 def test_path_rejects_parent_traversal(tmp_path):
@@ -97,6 +111,7 @@ def test_rule_classify_by_content_not_folder_name(tmp_path):
 
 @pytest.mark.asyncio
 async def test_llm_classify_folder_materials_mock(monkeypatch):
+    monkeypatch.setattr("app.services.ai.is_multimodal_ready", lambda db=None: True)
     materials = [
         {
             "file_id": 0,
@@ -108,7 +123,7 @@ async def test_llm_classify_folder_materials_mock(monkeypatch):
         },
     ]
 
-    async def fake_chat(messages, db=None, provider=None):
+    async def fake_chat(messages, db=None, provider=None, task_kind="text"):
         return json.dumps([{
             "file_id": 0,
             "doc_type": "bank_account_proof",
@@ -128,6 +143,7 @@ async def test_llm_classify_folder_materials_mock(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_import_pipeline_exploration_dry_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.ai.is_multimodal_ready", lambda db=None: True)
     folder = tmp_path / "flat"
     folder.mkdir()
     (folder / "doc1.txt").write_text("业绩合同 某某项目中标", encoding="utf-8")
@@ -155,6 +171,11 @@ async def test_import_pipeline_exploration_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "app.services.agent_qual_folder.classify_folder_materials",
         fake_classify,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai.is_multimodal_ready",
+        lambda _db: True,
     )
 
     db = _fresh_db()

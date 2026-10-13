@@ -59,24 +59,44 @@ def _check_ai(db: Session | None) -> dict[str, Any]:
     cfg = settings_svc.resolve_ai_config(db) if db else {}
     ds = bool(cfg.get("deepseek_api_key"))
     qw = bool(cfg.get("qwen_api_key"))
+    km = bool(cfg.get("kimi_api_key"))
+    mm = settings_svc.multimodal_ready(cfg)
     model = cfg.get("deepseek_model") or settings_svc.DEEPSEEK_DEFAULT_MODEL
-    if ds or qw:
+    if not (ds or qw or km):
         return {
             "id": "ai",
             "name": "AI 模型 API",
-            "status": "ok",
+            "status": "warn",
+            "detail": "未配置 DeepSeek / 通义千问 / Kimi Key，智能创作将回退本地模板引擎",
+        }
+    if not mm:
+        return {
+            "id": "ai",
+            "name": "AI 模型 API",
+            "status": "warn",
             "detail": {
+                "message": settings_svc.multimodal_warning_message(),
                 "deepseek_configured": ds,
-                "qwen_configured": qw,
-                "deepseek_model": model,
-                "preferred_provider": cfg.get("preferred_provider") or "auto",
+                "qwen_vl_ready": settings_svc.qwen_vl_ready(cfg),
+                "kimi_k3_ready": settings_svc.kimi_k3_ready(cfg),
+                "multimodal_ready": False,
             },
         }
     return {
         "id": "ai",
         "name": "AI 模型 API",
-        "status": "warn",
-        "detail": "未配置 DeepSeek / 通义千问 Key，智能创作将回退本地模板引擎",
+        "status": "ok",
+        "detail": {
+            "deepseek_configured": ds,
+            "qwen_configured": qw,
+            "qwen_vl_ready": settings_svc.qwen_vl_ready(cfg),
+            "kimi_k3_ready": settings_svc.kimi_k3_ready(cfg),
+            "multimodal_ready": True,
+            "deepseek_model": model,
+            "qwen_vl_model": cfg.get("qwen_vl_model") or settings_svc.QWEN_VL_DEFAULT_MODEL,
+            "kimi_model": cfg.get("kimi_model") or settings_svc.KIMI_K3_DEFAULT_MODEL,
+            "preferred_provider": cfg.get("preferred_provider") or "auto",
+        },
     }
 
 

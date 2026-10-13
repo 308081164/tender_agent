@@ -76,6 +76,16 @@ export default function App() {
     })()
   }, [])
 
+  const { bindProjectSession } = chat
+  useEffect(() => {
+    const m = location.pathname.match(/^\/projects\/(\d+)/)
+    if (!m || location.pathname.includes('/workspace')) {
+      bindProjectSession(null)
+      return
+    }
+    bindProjectSession(Number(m[1]))
+  }, [location.pathname, bindProjectSession])
+
   const requestStartNew = () => setCreateHubOpen(true)
 
   const ctx = useMemo(() => ({

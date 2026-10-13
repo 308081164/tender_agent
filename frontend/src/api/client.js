@@ -62,6 +62,23 @@ export const api = {
   getProject: (id) => request(`/projects/${id}`),
   getProjectContext: (id) => request(`/projects/${id}/context`),
   ensureProjectSession: (id) => request(`/projects/${id}/sessions`, { method: 'POST' }),
+  openProjectWorkspace: (id, guidedIntake) =>
+    request(`/projects/${id}/workspace/open`, {
+      method: 'POST',
+      body: JSON.stringify(
+        guidedIntake === undefined ? {} : { guided_intake: guidedIntake },
+      ),
+    }),
+  projectWorkspaceFollowup: (id, guidedIntake = true) =>
+    request(`/projects/${id}/workspace/followup`, {
+      method: 'POST',
+      body: JSON.stringify({ guided_intake: guidedIntake }),
+    }),
+  getDraftPreviewStatus: (id) => request(`/projects/${id}/draft-preview/status`),
+  startDraftPreviewAsync: (id) =>
+    request(`/projects/${id}/draft-preview/async`, { method: 'POST' }),
+  getDraftPreviewJob: (id, jobId) =>
+    request(`/projects/${id}/draft-preview/jobs/${jobId}`),
   renderProjectDraft: (id) => request(`/projects/${id}/render`, { method: 'POST' }),
   projectDraftPreviewUrl: (id, token = '') =>
     `${BASE}/projects/${id}/draft-preview.pdf${token ? `?t=${encodeURIComponent(token)}` : ''}`,
@@ -83,6 +100,11 @@ export const api = {
       body: JSON.stringify({ attachment_id, keys }),
     }),
   createProject: (body) => request('/projects', { method: 'POST', body: JSON.stringify(body) }),
+  patchProjectWorkspaceDir: (projectId, workspace_dir) =>
+    request(`/projects/${projectId}/workspace-dir`, {
+      method: 'PATCH',
+      body: JSON.stringify({ workspace_dir }),
+    }),
   deleteProject: (id) => request(`/projects/${id}`, { method: 'DELETE' }),
   confirmStep1: (id, body) => request(`/projects/${id}/step1`, { method: 'POST', body: JSON.stringify(body) }),
   updateFields: (id, fields, confirm = false) =>
@@ -152,6 +174,28 @@ export const api = {
     if (!res.ok) throw new Error(await res.text())
     return res.json()
   },
+  uploadChatFilesBatch: async (sessionId, files) => {
+    const fd = new FormData()
+    ;(files || []).forEach((f) => fd.append('files', f))
+    const res = await fetch(`${BASE}/chat/sessions/${sessionId}/upload-batch`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await readErrorDetail(res))
+    return res.json()
+  },
+  importChatFolder: (sessionId, folder_path, label = '选择资质文件夹') =>
+    request(`/chat/sessions/${sessionId}/import-folder`, {
+      method: 'POST',
+      body: JSON.stringify({ folder_path, label }),
+    }),
+  readWorkspaceFile: (sessionId, path) =>
+    request(`/chat/sessions/${sessionId}/workspace/files/read`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  writeWorkspaceFile: (sessionId, path, content, encoding = 'utf-8') =>
+    request(`/chat/sessions/${sessionId}/workspace/files/write`, {
+      method: 'POST',
+      body: JSON.stringify({ path, content, encoding }),
+    }),
   detectTemplatePlaceholders: (id) =>
     request(`/admin/templates/${id}/detect-placeholders`, { method: 'POST' }),
   searchMappingResources: (q = '') =>
@@ -187,6 +231,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content, context }),
     }),
+  sendChatMessageStream: async (sessionId, content, context = null, onToken) => {
+    const res = await fetch(`${BASE}/chat/sessions/${sessionId}/messages/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, context }),
+    })
+    if (!res.ok) {
+      throw new Error(await readErrorDetail(res))
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let payload = null
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const parts = buf.split('\n\n')
+      buf = parts.pop() || ''
+      for (const part of parts) {
+        const line = part.trim()
+        if (!line.startsWith('data:')) continue
+        const data = JSON.parse(line.slice(5).trim())
+        if (data.type === 'token' && data.text && onToken) onToken(data.text)
+        if (data.type === 'done') payload = data.payload
+      }
+    }
+    if (!payload) throw new Error('流式响应未完成')
+    return payload
+  },
   getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),
   sendChatAction: (sessionId, body) =>
     request(`/chat/sessions/${sessionId}/actions`, { method: 'POST', body: JSON.stringify(body) }),

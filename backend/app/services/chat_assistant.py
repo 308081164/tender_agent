@@ -365,24 +365,37 @@ async def _handle_draft_create(db: Session) -> dict[str, Any]:
     }
 
 
-async def _handle_search_info(db: Session, text: str, history: list[dict], faq_items: list[dict]) -> dict[str, Any]:
+async def _handle_search_info(
+    db: Session,
+    text: str,
+    history: list[dict],
+    faq_items: list[dict],
+    *,
+    workspace: dict | None = None,
+    context: dict | None = None,
+) -> dict[str, Any]:
     quals = db.query(Qualification).order_by(Qualification.sort_order.asc()).limit(30).all()
     qual_lines = [f"- {q.category}：{q.name}" for q in quals[:15]]
     fields = db.query(FieldDef).order_by(FieldDef.sort_order.asc()).limit(20).all()
     field_lines = [f"- {f.name}（{f.key}）" for f in fields[:10]]
     company = _company_context(db)
 
-    context = (
+    ref_block = (
         f"企业信息：\n{company}\n\n"
         f"资质摘录：\n" + ("\n".join(qual_lines) if qual_lines else "暂无") + "\n\n"
         f"常用字段：\n" + ("\n".join(field_lines) if field_lines else "暂无")
     )
 
+    from app.services import agent_runtime
+
     messages = [
         {"role": "system", "content": "你是企业投标信息检索助手。基于给定企业资料回答，无法确认时请说明需人工核实。"},
         *history[-6:],
-        {"role": "user", "content": f"用户问题：{text}\n\n参考资料：\n{context}"},
+        {"role": "user", "content": f"用户问题：{text}\n\n参考资料：\n{ref_block}"},
     ]
+    messages = agent_runtime.augment_messages(
+        messages, db, workspace=workspace, context=context,
+    )
     answer = await ai.chat_completion(messages, db=db)
     if not answer:
         faq_result = await ai.answer_faq(text, faq_items, db=db, history=history)
@@ -463,6 +476,45 @@ async def _handle_meta_question() -> dict[str, Any]:
     }
 
 
+async def _handle_general_conversation(
+    text: str,
+    db: Session,
+    history: list[dict] | None,
+    faq_items: list[dict] | None,
+    *,
+    workspace: dict | None = None,
+    context: dict | None = None,
+    stream: bool = False,
+) -> dict[str, Any]:
+    from app.services import agent_runtime
+
+    messages = agent_runtime.build_general_messages(
+        text,
+        faq_items or [],
+        history,
+        db,
+        workspace=workspace,
+        context=context,
+    )
+    meta = {
+        "intent": "general",
+        "actions": [
+            {"type": "link", "label": "文档工作区", "url": "/chat", "primary": True},
+            {"type": "link", "label": "新建标书", "url": "/projects/new"},
+        ],
+    }
+    if stream:
+        return {"stream_messages": messages, "mode": "ai", "metadata": meta}
+    answer = await ai.chat_completion(messages, db=db)
+    if not answer:
+        return {
+            "answer": "暂未匹配到明确答案，建议补充项目信息或打开创作工作台继续。",
+            "mode": "fallback",
+            "metadata": meta,
+        }
+    return {"answer": answer.strip(), "mode": "ai", "metadata": meta}
+
+
 async def process_chat_message(
     text: str,
     db: Session,
@@ -472,6 +524,7 @@ async def process_chat_message(
     workspace: dict | None = None,
     context: dict | None = None,
     session=None,
+    stream: bool = False,
 ) -> dict[str, Any]:
     # 流程状态机优先：进行中的多轮任务由卡片驱动，文本仅支持取消
     if session is not None:
@@ -487,6 +540,12 @@ async def process_chat_message(
             hint = agent_flows.pending_hint(session)
             if hint:
                 return hint
+
+    from app.services.agent_qual_folder import detect_local_folder_import
+
+    folder_path, folder_score = detect_local_folder_import(text)
+    if folder_path and folder_score >= 0.85 and session is not None:
+        return await agent_flows.start_qual_folder_import(db, session, folder_path)
 
     from app.services import agent_semantic
 
@@ -524,19 +583,16 @@ async def process_chat_message(
     if intent == "draft_create":
         return await _handle_draft_create(db)
     if intent == "search_info":
-        return await _handle_search_info(db, text, hist, faqs)
+        return await _handle_search_info(
+            db, text, hist, faqs, workspace=workspace, context=context,
+        )
 
-    faq_result = await ai.answer_faq(text, faqs, db=db, history=hist)
-    return {
-        "answer": faq_result.get("answer") or "",
-        "mode": faq_result.get("mode") or "fallback",
-        "source": faq_result.get("source") or "",
-        "matched_question": faq_result.get("matched_question") or "",
-        "metadata": {
-            "intent": "general",
-            "actions": [
-                {"type": "link", "label": "文档工作区", "url": "/chat", "primary": True},
-                {"type": "link", "label": "新建标书", "url": "/projects/new"},
-            ],
-        },
-    }
+    return await _handle_general_conversation(
+        text,
+        db,
+        hist,
+        faqs,
+        workspace=workspace,
+        context=context,
+        stream=stream,
+    )

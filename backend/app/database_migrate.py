@@ -25,9 +25,20 @@ ALTERS = [
     "ALTER TABLE field_defs ALTER COLUMN default_value TYPE VARCHAR(500)",
     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata JSON DEFAULT '{}'::json",
     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS workspace JSON DEFAULT '{}'::json",
+    "ALTER TABLE tender_projects ADD COLUMN IF NOT EXISTS workspace_dir VARCHAR(1000) DEFAULT ''",
     # DeepSeek V4 Pro 默认模型升级（保留用户自定义的其他模型名）
     "UPDATE system_settings SET deepseek_model = 'deepseek-v4-pro' "
     "WHERE deepseek_model IS NULL OR deepseek_model IN ('', 'deepseek-chat', 'deepseek-reasoner')",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_api_key TEXT DEFAULT ''",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_base_url VARCHAR(300) DEFAULT 'https://api.moonshot.cn/v1'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_model VARCHAR(100) DEFAULT 'moonshot-v1-8k'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS qwen_vl_model VARCHAR(100) DEFAULT 'qwen-vl-plus'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_k3_model VARCHAR(100) DEFAULT 'kimi-k3'",
+    "UPDATE system_settings SET kimi_k3_model = kimi_model "
+    "WHERE (kimi_k3_model IS NULL OR kimi_k3_model = '') "
+    "AND kimi_model IN ('kimi-k3', 'kimi-k2.6', 'kimi-k2-0905-preview')",
+    "UPDATE system_settings SET kimi_model = 'moonshot-v1-8k' "
+    "WHERE kimi_model IN ('kimi-k3', 'kimi-k2.6', 'kimi-k2-0905-preview')",
 ]
 
 

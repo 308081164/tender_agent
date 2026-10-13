@@ -263,8 +263,31 @@ def get_onboarding_gaps(db: Session) -> dict[str, Any]:
 
 async def import_qual_folder(db: Session, folder: str, *, dry_run: bool = False) -> dict[str, Any]:
     from app.services.agent_qual_folder import import_qual_folder_pipeline
+    from app.services.ai import MultimodalRequiredError
 
-    return await import_qual_folder_pipeline(db, folder, dry_run=dry_run)
+    try:
+        return await import_qual_folder_pipeline(db, folder, dry_run=dry_run)
+    except MultimodalRequiredError as err:
+        return err.payload()
+
+
+def read_workspace_file(db: Session, session, relative_path: str) -> dict[str, Any]:
+    from app.services.agent_workspace import read_workspace_file as _read
+
+    return _read(db, session, relative_path)
+
+
+def write_workspace_file(
+    db: Session,
+    session,
+    relative_path: str,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+) -> dict[str, Any]:
+    from app.services.agent_workspace import write_workspace_file as _write
+
+    return _write(db, session, relative_path, content, encoding=encoding)
 
 
 async def list_missing_intake_questions(db: Session, project_id: int) -> dict[str, Any]:

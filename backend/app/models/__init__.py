@@ -86,6 +86,7 @@ class TenderProject(Base):
     inserted_quals: Mapped[list] = mapped_column(JSON, default=list)
     checklist_result: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(50), default="draft")
+    workspace_dir: Mapped[str] = mapped_column(String(1000), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -173,6 +174,11 @@ class SystemSetting(Base):
         String(300), default="https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
     qwen_model: Mapped[str] = mapped_column(String(100), default="qwen-plus")
+    qwen_vl_model: Mapped[str] = mapped_column(String(100), default="qwen-vl-plus")
+    kimi_api_key: Mapped[str] = mapped_column(Text, default="")
+    kimi_base_url: Mapped[str] = mapped_column(String(300), default="https://api.moonshot.cn/v1")
+    kimi_model: Mapped[str] = mapped_column(String(100), default="moonshot-v1-8k")
+    kimi_k3_model: Mapped[str] = mapped_column(String(100), default="kimi-k3")
     preferred_provider: Mapped[str] = mapped_column(String(50), default="auto")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -1,8 +1,10 @@
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
+import json
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -34,6 +36,11 @@ class ProjectCreate(BaseModel):
     title: str = "未命名标书"
     source_type: str = "template"
     template_id: int | None = None
+    workspace_dir: str | None = None
+
+
+class ProjectWorkspaceUpdate(BaseModel):
+    workspace_dir: str
 
 
 class SettingsUpdate(BaseModel):
@@ -43,13 +50,19 @@ class SettingsUpdate(BaseModel):
     qwen_api_key: str | None = None
     qwen_base_url: str | None = None
     qwen_model: str | None = None
+    qwen_vl_model: str | None = None
+    kimi_api_key: str | None = None
+    kimi_base_url: str | None = None
+    kimi_model: str | None = None
+    kimi_k3_model: str | None = None
     preferred_provider: str | None = None
     clear_deepseek_api_key: bool = False
     clear_qwen_api_key: bool = False
+    clear_kimi_api_key: bool = False
 
 
 class TestProviderRequest(BaseModel):
-    provider: str  # deepseek | qwen
+    provider: str  # deepseek | qwen | kimi
 
 
 
@@ -160,6 +173,7 @@ def project_to_dict(p: TenderProject) -> dict:
         "inserted_quals": p.inserted_quals or [],
         "checklist_result": p.checklist_result or {},
         "status": p.status,
+        "workspace_dir": getattr(p, "workspace_dir", None) or "",
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
         "summary": project_summary(p),
@@ -295,8 +309,8 @@ def update_settings_api(body: SettingsUpdate, db: Session = Depends(get_db)):
 
 @router.post("/settings/test")
 async def test_settings_api(body: TestProviderRequest, db: Session = Depends(get_db)):
-    if body.provider not in ("deepseek", "qwen"):
-        raise HTTPException(400, "provider 仅支持 deepseek 或 qwen")
+    if body.provider not in ("deepseek", "qwen", "qwen_vl", "kimi", "kimi_k3"):
+        raise HTTPException(400, "provider 仅支持 deepseek、qwen、qwen_vl、kimi")
     return await ai_svc.test_provider(body.provider, db=db)
 
 
@@ -444,6 +458,11 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
         tpl = db.query(Template).filter(Template.id == body.template_id).first()
         if not tpl:
             raise HTTPException(404, "模板不存在")
+    workspace_dir = ""
+    if body.workspace_dir and str(body.workspace_dir).strip():
+        from app.services.agent_workspace import validate_workspace_dir
+
+        workspace_dir = validate_workspace_dir(str(body.workspace_dir).strip())
     project = TenderProject(
         title=body.title,
         source_type=body.source_type,
@@ -452,12 +471,40 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
         fields={},
         chapters={},
         inserted_quals=[],
+        workspace_dir=workspace_dir,
     )
     db.add(project)
     db.commit()
     db.refresh(project)
     save_snapshot(db, project, 1)
     return project_to_dict(project)
+
+
+@router.patch("/projects/{project_id}/workspace-dir")
+def patch_project_workspace_dir(
+    project_id: int, body: ProjectWorkspaceUpdate, db: Session = Depends(get_db),
+):
+    from app.services.agent_workspace import validate_workspace_dir
+    from app.services.project_sessions import find_bound_session
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    try:
+        p.workspace_dir = validate_workspace_dir(body.workspace_dir.strip())
+    except Exception as err:
+        raise HTTPException(400, str(err)) from err
+    p.updated_at = datetime.utcnow()
+    bound = find_bound_session(db, project_id)
+    if bound:
+        ws = dict(bound.workspace or {})
+        ws["workspace_dir"] = p.workspace_dir
+        ws["project_id"] = project_id
+        bound.workspace = ws
+        bound.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(p)
+    return project_to_dict(p)
 
 
 @router.get("/projects/{project_id}")
@@ -495,6 +542,79 @@ def get_or_create_project_chat_session(project_id: int, db: Session = Depends(ge
     return {"session": session_to_dict(s), "project_id": project_id}
 
 
+class WorkspaceOpenIn(BaseModel):
+    guided_intake: bool | None = None
+
+
+@router.post("/projects/{project_id}/workspace/open")
+async def open_project_workspace(
+    project_id: int,
+    body: WorkspaceOpenIn | None = None,
+    db: Session = Depends(get_db),
+):
+    """进入创作工作台：绑定会话并注入主动开场 assistant 消息（幂等）。"""
+    from app.services.project_sessions import get_or_create_project_session
+    from app.services import project_workspace_agent
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    s = get_or_create_project_session(db, p)
+    guided = body.guided_intake if body and body.guided_intake is not None else None
+    msg = await project_workspace_agent.ensure_workspace_opening_message(
+        db, s, p, guided=guided,
+    )
+    if msg:
+        db.refresh(s)
+    return {
+        "session": session_to_dict(s),
+        "project_id": project_id,
+        "assistant_message": message_to_dict(msg) if msg else None,
+        "created": bool(msg),
+    }
+
+
+class WorkspaceFollowupIn(BaseModel):
+    guided_intake: bool = True
+
+
+@router.post("/projects/{project_id}/workspace/followup")
+async def project_workspace_followup(
+    project_id: int,
+    body: WorkspaceFollowupIn,
+    db: Session = Depends(get_db),
+):
+    """字段保存后主动追问下一缺项（引导补全开启时）。"""
+    from app.services.project_sessions import find_bound_session
+    from app.services import project_workspace_agent
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not body.guided_intake:
+        return {"assistant_message": None, "created": False}
+    s = find_bound_session(db, project_id)
+    if not s:
+        raise HTTPException(404, "请先打开创作工作台以创建项目会话")
+    msg = await project_workspace_agent.append_workspace_followup_message(
+        db, s, p, guided=True,
+    )
+    return {
+        "assistant_message": message_to_dict(msg) if msg else None,
+        "created": bool(msg),
+    }
+
+
+@router.get("/projects/{project_id}/draft-preview/status")
+async def draft_preview_status(project_id: int, db: Session = Depends(get_db)):
+    from app.services.project_draft import get_draft_preview_status
+
+    try:
+        return await get_draft_preview_status(db, project_id)
+    except ValueError as err:
+        raise HTTPException(404, str(err)) from err
+
+
 @router.post("/projects/{project_id}/render")
 async def render_project_draft(project_id: int, db: Session = Depends(get_db)):
     from app.services.project_draft import render_project_draft_docx
@@ -521,18 +641,22 @@ async def draft_preview_pdf(project_id: int, force: bool = False, db: Session = 
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
+    from app.services import pdf_convert
+
     try:
         pdf_bytes = await get_draft_preview_pdf(db, project_id, force_render=force)
     except ValueError as err:
         raise HTTPException(400, str(err)) from err
     title = (p.fields or {}).get("project_name") or p.title or "draft"
     pdf_name = f"{title}.pdf"
+    engine = pdf_convert.get_pdf_engine() or "unknown"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{quote(pdf_name)}",
             "Cache-Control": "private, max-age=60",
+            "X-PDF-Engine": engine,
         },
     )
 
@@ -1346,6 +1470,14 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     db.commit()
     save_snapshot(db, p, 6)
 
+    try:
+        from app.services.agent_workspace import mirror_bytes_to_project_workspace
+
+        rel = f"产出/{filename}"
+        mirror_bytes_to_project_workspace(p, rel, doc_bytes)
+    except Exception:
+        pass
+
     ascii_name = "tender.docx"
     return Response(
         content=doc_bytes,
@@ -1576,37 +1708,15 @@ def list_chat_messages(session_id: int, db: Session = Depends(get_db)):
     return [message_to_dict(m) for m in (s.messages or [])]
 
 
-@router.post("/chat/sessions/{session_id}/messages")
-async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
-    s = get_session_or_404(db, session_id)
-    content = (body.content or "").strip()
-    if not content:
-        raise HTTPException(400, "消息不能为空")
-
-    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
-    db.add(user_msg)
-    db.flush()
-
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in (s.messages or [])
-        if m.id != user_msg.id
-    ]
-    faqs = db.query(FAQItem).all()
-    items = [
-        {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
-        for f in faqs
-    ]
-    result = await chat_assistant.process_chat_message(
-        content,
-        db,
-        history=history,
-        faq_items=items,
-        workspace=getattr(s, "workspace", None) or {},
-        context=body.context or {},
-        session=s,
-    )
-
+async def _finalize_chat_message_turn(
+    session_id: int,
+    s: ChatSession,
+    user_msg: ChatMessage,
+    content: str,
+    body: "ChatMessageCreate",
+    result: dict,
+    db: Session,
+) -> dict:
     meta = dict(result.get("metadata") or {})
     ws = dict(getattr(s, "workspace", None) or {})
 
@@ -1696,7 +1806,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
     if pid:
         try:
             from app.services.project_context import build_project_context
-            from app.services import agent_tools
+            from app.services import agent_tools, project_workspace_agent
 
             ctx_pack = build_project_context(db, int(pid))
             meta["project_context"] = ctx_pack
@@ -1714,28 +1824,22 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
             if ctx_body.get("guided_intake") is False:
                 guided = False
             if guided and not meta.get("cards"):
-                intake = await agent_tools.list_missing_intake_questions(db, int(pid))
-                card_fields = intake.get("field_cards") or []
-                if card_fields:
-                    import uuid
+                guided_meta = await project_workspace_agent.build_guided_intake_metadata(
+                    db, int(pid), guided=True,
+                )
+                for card in guided_meta.get("cards") or []:
+                    meta.setdefault("cards", []).append(card)
+                follow = guided_meta.get("guided_followup_text")
+                if follow and not meta.get("cards"):
+                    result["answer"] = ((result.get("answer") or "") + f"\n\n{follow}").strip()
+            if guided and not meta.get("cards"):
+                tail = await project_workspace_agent.build_workspace_followup(db, int(pid), guided=True)
+                if tail and tail not in (result.get("answer") or ""):
+                    result["answer"] = ((result.get("answer") or "").strip() + f"\n\n{tail}").strip()
+        except Exception as err:
+            import logging
 
-                    meta.setdefault("cards", []).append({
-                        "id": uuid.uuid4().hex[:12],
-                        "type": "field_collect",
-                        "title": "待填基础信息",
-                        "state": "active",
-                        "payload": {
-                            "fields": card_fields,
-                            "template_name": tpl.get("name"),
-                            "confirm_action": "confirm_fields",
-                            "cancel_action": "dismiss_card",
-                        },
-                    })
-                elif (intake.get("questions") or []) and len(intake["questions"]) <= 3:
-                    qtext = "\n".join(f"- {q.get('text')}" for q in intake["questions"][:3])
-                    result["answer"] = ((result.get("answer") or "") + f"\n\n为继续完善标书，请补充：\n{qtext}").strip()
-        except Exception:
-            pass
+            logging.getLogger(__name__).warning("project chat context enrich failed: %s", err)
 
     bot_msg = ChatMessage(
         session_id=s.id,
@@ -1766,11 +1870,156 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
     }
 
 
+@router.post("/chat/sessions/{session_id}/messages")
+async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "消息不能为空")
+
+    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    db.add(user_msg)
+    db.flush()
+
+    history = [
+        {"role": m.role, "content": m.content}
+        for m in (s.messages or [])
+        if m.id != user_msg.id
+    ]
+    faqs = db.query(FAQItem).all()
+    items = [
+        {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
+        for f in faqs
+    ]
+    result = await chat_assistant.process_chat_message(
+        content,
+        db,
+        history=history,
+        faq_items=items,
+        workspace=getattr(s, "workspace", None) or {},
+        context=body.context or {},
+        session=s,
+    )
+    return await _finalize_chat_message_turn(session_id, s, user_msg, content, body, result, db)
+
+
+@router.post("/chat/sessions/{session_id}/messages/stream")
+async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
+    s = get_session_or_404(db, session_id)
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(400, "消息不能为空")
+
+    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    db.add(user_msg)
+    db.commit()
+    user_msg_id = user_msg.id
+    db_bind = db.get_bind()
+
+    async def event_stream():
+        stream_db = Session(bind=db_bind)
+        try:
+            s_live = stream_db.query(ChatSession).filter(ChatSession.id == session_id).first()
+            user_live = stream_db.query(ChatMessage).filter(ChatMessage.id == user_msg_id).first()
+            if not s_live or not user_live:
+                return
+            history = [
+                {"role": m.role, "content": m.content}
+                for m in (s_live.messages or [])
+                if m.id != user_live.id
+            ]
+            faqs = stream_db.query(FAQItem).all()
+            items = [
+                {"question": f.question, "answer": f.answer, "category": f.category, "source": f.source}
+                for f in faqs
+            ]
+            ws = getattr(s_live, "workspace", None) or {}
+            ctx = body.context or {}
+
+            result = await chat_assistant.process_chat_message(
+                content,
+                stream_db,
+                history=history,
+                faq_items=items,
+                workspace=ws,
+                context=ctx,
+                session=s_live,
+                stream=True,
+            )
+            stream_msgs = result.pop("stream_messages", None)
+            if stream_msgs:
+                pieces: list[str] = []
+                async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
+                    pieces.append(tok)
+                    yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
+                result["answer"] = "".join(pieces)
+            else:
+                result = await chat_assistant.process_chat_message(
+                    content,
+                    stream_db,
+                    history=history,
+                    faq_items=items,
+                    workspace=ws,
+                    context=ctx,
+                    session=s_live,
+                    stream=False,
+                )
+                ans = result.get("answer") or ""
+                if ans:
+                    yield f"data: {json.dumps({'type': 'token', 'text': ans}, ensure_ascii=False)}\n\n"
+
+            payload = await _finalize_chat_message_turn(
+                session_id, s_live, user_live, content, body, result, stream_db,
+            )
+            yield f"data: {json.dumps({'type': 'done', 'payload': payload}, ensure_ascii=False)}\n\n"
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 class ChatActionRequest(BaseModel):
     message_id: int | None = None
     card_id: str = ""
     action: str
     payload: dict = {}
+
+
+class ImportFolderBody(BaseModel):
+    folder_path: str
+    label: str = "选择资质文件夹"
+
+
+class WorkspaceFileBody(BaseModel):
+    path: str
+    content: str = ""
+    encoding: str = "utf-8"
+
+
+def _persist_assistant_turn(db: Session, s: ChatSession, user_content: str, result: dict):
+    meta = dict(result.get("metadata") or {})
+    user_msg = ChatMessage(session_id=s.id, role="user", content=user_content)
+    db.add(user_msg)
+    db.flush()
+    bot_msg = ChatMessage(
+        session_id=s.id,
+        role="assistant",
+        content=result.get("answer") or "",
+        source=result.get("source") or "",
+        matched_question=result.get("matched_question") or "",
+        metadata_json=meta,
+    )
+    db.add(bot_msg)
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(bot_msg)
+    db.refresh(s)
+    return user_msg, bot_msg
 
 
 def _resolve_card_state(message: ChatMessage | None, card_id: str, action: str, label: str) -> None:
@@ -2031,6 +2280,157 @@ async def upload_chat_file(
         "object_key": key,
         "workspace": getattr(s, "workspace", None) or {},
     }
+
+
+@router.post("/chat/sessions/{session_id}/import-folder")
+async def post_chat_import_folder(
+    session_id: int, body: ImportFolderBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_flows
+
+    s = get_session_or_404(db, session_id)
+    folder = (body.folder_path or "").strip()
+    if not folder:
+        raise HTTPException(400, "folder_path 不能为空")
+    result = await agent_flows.start_qual_folder_import(db, s, folder)
+    label = (body.label or "选择资质文件夹").strip()
+    user_msg, bot_msg = _persist_assistant_turn(db, s, f"[{label}] {folder}", result)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": message_to_dict(bot_msg),
+        "metadata": dict(result.get("metadata") or {}),
+    }
+
+
+@router.post("/chat/sessions/{session_id}/upload-batch")
+async def upload_chat_files_batch(
+    session_id: int,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """批量上传附件；多份资质类文件时走文件夹导入确认流程。"""
+    import zipfile
+    from io import BytesIO
+
+    from app.services import agent_flows
+    from app.services.agent_qual_folder import SCAN_EXTENSIONS
+    from app.services.agent_workspace import chat_staging_dir
+
+    s = get_session_or_404(db, session_id)
+    if not files:
+        raise HTTPException(400, "请至少选择一个文件")
+
+    batch_id = datetime.utcnow().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    staging = chat_staging_dir(session_id, batch_id)
+
+    saved_names: list[str] = []
+    for upload in files:
+        data = await upload.read()
+        if not data:
+            continue
+        fname = upload.filename or "upload.bin"
+        if fname.lower().endswith(".zip") and len(files) == 1:
+            with zipfile.ZipFile(BytesIO(data)) as zf:
+                for info in zf.infolist():
+                    if info.is_dir() or info.filename.startswith("__MACOSX"):
+                        continue
+                    base = Path(info.filename).name
+                    if not base or base.startswith("."):
+                        continue
+                    ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
+                    if ext and ext not in SCAN_EXTENSIONS and ext != "zip":
+                        continue
+                    target = staging / base
+                    target.write_bytes(zf.read(info))
+                    saved_names.append(base)
+        else:
+            safe = Path(fname).name
+            (staging / safe).write_bytes(data)
+            saved_names.append(safe)
+
+    if not saved_names:
+        raise HTTPException(400, "未保存任何有效文件")
+
+    docx_only = len(saved_names) == 1 and saved_names[0].lower().endswith(".docx")
+    if docx_only:
+        data = (staging / saved_names[0]).read_bytes()
+        fname = saved_names[0]
+
+        class _BytesUpload:
+            def __init__(self, name: str, payload: bytes):
+                self.filename = name
+                self._payload = payload
+
+            async def read(self):
+                return self._payload
+
+        return await upload_chat_file(session_id, _BytesUpload(fname, data), db)
+
+    qual_count = sum(
+        1 for n in saved_names
+        if (("." in n and n.rsplit(".", 1)[-1].lower() in SCAN_EXTENSIONS) or n.lower().endswith(".docx"))
+    )
+    names_label = "、".join(saved_names[:8]) + ("…" if len(saved_names) > 8 else "")
+    user_label = f"[上传 {len(saved_names)} 个文件] {names_label}"
+
+    if qual_count >= 1:
+        result = await agent_flows.start_qual_folder_import(db, s, str(staging))
+        answer_prefix = f"已接收 **{len(saved_names)}** 个文件并暂存。\n\n"
+        result["answer"] = answer_prefix + (result.get("answer") or "")
+    else:
+        result = {
+            "answer": (
+                f"已接收 **{len(saved_names)}** 个文件：{names_label}\n\n"
+                "当前批次未识别为资质包材料；如需导入资质库，请使用「整个文件夹」或上传 pdf/docx/图片等资质文件。"
+            ),
+            "metadata": {"intent": "file_upload_batch", "staging_dir": str(staging), "files": saved_names},
+        }
+
+    user_msg, bot_msg = _persist_assistant_turn(db, s, user_label, result)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": message_to_dict(bot_msg),
+        "metadata": dict(result.get("metadata") or {}),
+        "workspace": getattr(s, "workspace", None) or {},
+    }
+
+
+@router.post("/chat/sessions/{session_id}/workspace/files/read")
+def read_session_workspace_file(
+    session_id: int, body: WorkspaceFileBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_tools
+    from app.services.agent_qual_folder import PathNotAllowedError
+
+    s = get_session_or_404(db, session_id)
+    try:
+        data = agent_tools.read_workspace_file(db, s, body.path)
+    except PathNotAllowedError as err:
+        raise HTTPException(400, str(err)) from err
+    except FileNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
+    return data
+
+
+@router.post("/chat/sessions/{session_id}/workspace/files/write")
+def write_session_workspace_file(
+    session_id: int, body: WorkspaceFileBody, db: Session = Depends(get_db),
+):
+    from app.services import agent_tools
+    from app.services.agent_qual_folder import PathNotAllowedError
+
+    s = get_session_or_404(db, session_id)
+    if not (body.path or "").strip():
+        raise HTTPException(400, "path 不能为空")
+    try:
+        data = agent_tools.write_workspace_file(
+            db, s, body.path.strip(), body.content or "", encoding=body.encoding or "utf-8",
+        )
+    except PathNotAllowedError as err:
+        raise HTTPException(400, str(err)) from err
+    return data
 
 
 @router.post("/chatbot/ask")

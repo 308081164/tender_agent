@@ -75,11 +75,11 @@ def _keyword_route(text: str) -> tuple[str, dict[str, Any], float]:
     if bulk:
         return "bulk_replace", {"old_text": bulk[0], "new_text": bulk[1]}, 0.9
 
-    from app.services.agent_qual_folder import extract_folder_path_from_text, is_qual_folder_intent
+    from app.services.agent_qual_folder import detect_local_folder_import
 
-    if is_qual_folder_intent(q):
-        path = extract_folder_path_from_text(q) or ""
-        return "import_qual_folder", {"folder_path": path}, 0.93
+    folder_path, folder_score = detect_local_folder_import(q)
+    if folder_path and folder_score >= 0.85:
+        return "import_qual_folder", {"folder_path": folder_path}, folder_score
 
     return "general", {}, 0.0
 
@@ -112,6 +112,8 @@ async def _llm_route(
         "- 上传文件后要建模板 → create_template\n"
         "- 全文替换 → bulk_replace，params 含 old_text/new_text\n"
         "- 企业资质业绩 → search_info\n"
+        "- 用户提供本机文件夹绝对路径并要求读取/录入/导入/落库 → import_qual_folder，"
+        "params.folder_path 为路径（桌面版后端可读盘，勿回答无法访问本地目录）\n"
         "只返回 JSON。"
     )
     raw = await ai.chat_completion([
@@ -240,6 +242,28 @@ async def process_with_semantic_router(
     session=None,
 ) -> dict[str, Any] | None:
     """语义路由处理；返回 None 表示交给旧版 chat_assistant 流程。"""
+    from app.services.agent_qual_folder import detect_local_folder_import
+
+    folder_path, folder_score = detect_local_folder_import(text)
+    if folder_path and folder_score >= 0.85:
+        if session is not None:
+            return await agent_flows.start_qual_folder_import(db, session, folder_path)
+        return {
+            "answer": (
+                f"已识别文件夹路径：`{folder_path}`。\n\n"
+                "请在 **Agent 对话**（全屏 `/chat` 或右下角浮窗）中发送该路径，"
+                "或使用输入框旁 **📎 → 整个文件夹** 选择目录，确认卡片后开始落库。"
+            ),
+            "mode": "action",
+            "metadata": {
+                "intent": "import_qual_folder",
+                "actions": [
+                    {"type": "link", "label": "打开 Agent 对话", "url": "/chat", "primary": True},
+                    {"type": "link", "label": "企业档案", "url": "/admin/company"},
+                ],
+            },
+        }
+
     intent, params, confidence = await route_intent(text, db, history, workspace)
     hist = history or []
     faqs = faq_items or []
@@ -415,11 +439,15 @@ async def process_with_semantic_router(
         if session is not None:
             return await agent_flows.start_qual_folder_import(db, session, folder)
         return {
-            "answer": "资质文件夹导入需要在 Agent 对话会话中进行，请打开「文档工作区」或浮窗助手后重试。",
+            "answer": (
+                f"已识别路径 `{folder}`。\n\n"
+                "请在本窗口发送该消息，或点击 **📎 → 整个文件夹** 选择目录；"
+                "确认卡片后将由后端扫描并写入资质库（务必人工核对）。"
+            ),
             "mode": "action",
             "metadata": {
                 "intent": "import_qual_folder",
-                "actions": [{"type": "link", "label": "打开文档 Agent", "url": "/chat", "primary": True}],
+                "actions": [{"type": "link", "label": "打开 Agent 对话", "url": "/chat", "primary": True}],
             },
         }
 

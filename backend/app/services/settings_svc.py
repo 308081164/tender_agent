@@ -8,6 +8,11 @@ from app.models import SystemSetting
 env = get_settings()
 
 DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
+KIMI_K3_DEFAULT_MODEL = "kimi-k3"
+KIMI_DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
+QWEN_VL_DEFAULT_MODEL = "qwen-vl-plus"
+KIMI_DEFAULT_MODEL = "moonshot-v1-8k"
+SETTINGS_URL = "/settings"
 
 
 def _mask(key: str) -> str:
@@ -30,6 +35,11 @@ def get_or_create_setting(db: Session) -> SystemSetting:
         qwen_api_key=env.qwen_api_key or "",
         qwen_base_url=env.qwen_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         qwen_model="qwen-plus",
+        qwen_vl_model=getattr(env, "qwen_vl_model", None) or QWEN_VL_DEFAULT_MODEL,
+        kimi_api_key=env.kimi_api_key or "",
+        kimi_base_url=env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
+        kimi_model=env.kimi_model or KIMI_DEFAULT_MODEL,
+        kimi_k3_model=getattr(env, "kimi_k3_model", None) or KIMI_K3_DEFAULT_MODEL,
         preferred_provider="auto",
     )
     db.add(row)
@@ -47,6 +57,11 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         "qwen_api_key": env.qwen_api_key or "",
         "qwen_base_url": env.qwen_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "qwen_model": "qwen-plus",
+        "qwen_vl_model": env.qwen_vl_model or QWEN_VL_DEFAULT_MODEL,
+        "kimi_api_key": env.kimi_api_key or "",
+        "kimi_base_url": env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
+        "kimi_model": env.kimi_model or KIMI_DEFAULT_MODEL,
+        "kimi_k3_model": env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": "auto",
     }
     if db is None:
@@ -64,14 +79,63 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         cfg["qwen_base_url"] = row.qwen_base_url
     if row.qwen_model:
         cfg["qwen_model"] = row.qwen_model
+    if row.qwen_vl_model:
+        cfg["qwen_vl_model"] = row.qwen_vl_model
+    if row.kimi_api_key:
+        cfg["kimi_api_key"] = row.kimi_api_key
+    if row.kimi_base_url:
+        cfg["kimi_base_url"] = row.kimi_base_url
+    if row.kimi_model:
+        cfg["kimi_model"] = row.kimi_model
+    if getattr(row, "kimi_k3_model", None):
+        cfg["kimi_k3_model"] = row.kimi_k3_model
     if row.preferred_provider:
         cfg["preferred_provider"] = row.preferred_provider
+    if not cfg.get("qwen_vl_model"):
+        cfg["qwen_vl_model"] = QWEN_VL_DEFAULT_MODEL
     return cfg
+
+
+def qwen_vl_ready(cfg: dict) -> bool:
+    if not (cfg.get("qwen_api_key") or "").strip():
+        return False
+    vl = (cfg.get("qwen_vl_model") or "").strip()
+    if vl:
+        return True
+    return "vl" in (cfg.get("qwen_model") or "").lower()
+
+
+def kimi_k3_ready(cfg: dict) -> bool:
+    if not (cfg.get("kimi_api_key") or "").strip():
+        return False
+    return bool((cfg.get("kimi_k3_model") or KIMI_K3_DEFAULT_MODEL).strip())
+
+
+def multimodal_ready(cfg: dict) -> bool:
+    """资质文件夹扫描 / vision 等多模态能力：千问 VL 或 Kimi K3 至少配置其一。"""
+    return qwen_vl_ready(cfg) or kimi_k3_ready(cfg)
+
+
+def multimodal_warning_message() -> str:
+    return (
+        "资质文件夹扫描、图片/PDF 多模态理解需要 **通义千问 VL** 或 **Kimi K3** 至少配置一项（API Key + 多模态模型）。"
+        f"请前往系统设置 {SETTINGS_URL}。纯文本生成可单独使用 DeepSeek。"
+    )
+
+
+def multimodal_gate_payload() -> dict:
+    return {
+        "ok": False,
+        "error_code": "multimodal_not_configured",
+        "message": multimodal_warning_message(),
+        "settings_url": SETTINGS_URL,
+    }
 
 
 def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
     ds_key = row.deepseek_api_key or ((env.deepseek_api_key or "") if env_fallback else "")
     qw_key = row.qwen_api_key or ((env.qwen_api_key or "") if env_fallback else "")
+    km_key = row.kimi_api_key or ((env.kimi_api_key or "") if env_fallback else "")
     return {
         "deepseek_api_key_set": bool(ds_key),
         "deepseek_api_key_masked": _mask(ds_key),
@@ -81,7 +145,24 @@ def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
         "qwen_api_key_masked": _mask(qw_key),
         "qwen_base_url": row.qwen_base_url or env.qwen_base_url,
         "qwen_model": row.qwen_model or "qwen-plus",
+        "qwen_vl_model": row.qwen_vl_model or env.qwen_vl_model or QWEN_VL_DEFAULT_MODEL,
+        "qwen_vl_ready": bool(qw_key),
+        "kimi_api_key_set": bool(km_key),
+        "kimi_k3_ready": bool(km_key),
+        "kimi_api_key_masked": _mask(km_key),
+        "kimi_base_url": row.kimi_base_url or env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
+        "kimi_model": row.kimi_model or env.kimi_model or KIMI_DEFAULT_MODEL,
+        "kimi_k3_model": getattr(row, "kimi_k3_model", None) or env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": row.preferred_provider or "auto",
+        "multimodal_ready": multimodal_ready({
+            "qwen_api_key": qw_key,
+            "kimi_api_key": km_key,
+        }),
+        "multimodal_warning": (
+            None
+            if multimodal_ready({"qwen_api_key": qw_key, "kimi_api_key": km_key})
+            else multimodal_warning_message()
+        ),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -100,6 +181,11 @@ def update_settings(db: Session, payload: dict) -> SystemSetting:
     elif payload.get("qwen_api_key"):
         row.qwen_api_key = str(payload["qwen_api_key"]).strip()
 
+    if payload.get("clear_kimi_api_key"):
+        row.kimi_api_key = ""
+    elif payload.get("kimi_api_key"):
+        row.kimi_api_key = str(payload["kimi_api_key"]).strip()
+
     if "deepseek_base_url" in payload and payload["deepseek_base_url"] is not None:
         row.deepseek_base_url = str(payload["deepseek_base_url"]).strip() or row.deepseek_base_url
     if "deepseek_model" in payload and payload["deepseek_model"] is not None:
@@ -108,9 +194,17 @@ def update_settings(db: Session, payload: dict) -> SystemSetting:
         row.qwen_base_url = str(payload["qwen_base_url"]).strip() or row.qwen_base_url
     if "qwen_model" in payload and payload["qwen_model"] is not None:
         row.qwen_model = str(payload["qwen_model"]).strip() or row.qwen_model
+    if "qwen_vl_model" in payload and payload["qwen_vl_model"] is not None:
+        row.qwen_vl_model = str(payload["qwen_vl_model"]).strip() or row.qwen_vl_model
+    if "kimi_base_url" in payload and payload["kimi_base_url"] is not None:
+        row.kimi_base_url = str(payload["kimi_base_url"]).strip() or row.kimi_base_url
+    if "kimi_model" in payload and payload["kimi_model"] is not None:
+        row.kimi_model = str(payload["kimi_model"]).strip() or row.kimi_model
+    if "kimi_k3_model" in payload and payload["kimi_k3_model"] is not None:
+        row.kimi_k3_model = str(payload["kimi_k3_model"]).strip() or row.kimi_k3_model
     if "preferred_provider" in payload and payload["preferred_provider"] is not None:
         provider = str(payload["preferred_provider"]).strip()
-        if provider in ("auto", "deepseek", "qwen"):
+        if provider in ("auto", "deepseek", "qwen", "kimi"):
             row.preferred_provider = provider
 
     db.commit()

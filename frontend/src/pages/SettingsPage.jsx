@@ -50,18 +50,31 @@ export default function SettingsPage() {
     <div className="panel">
       <h2>系统设置</h2>
       <p className="lead">
-        配置 DeepSeek / 通义千问 API Key。留空保存不会覆盖已有 Key；未配置时 AI 生成将回退到本地模板引擎。
+        配置 DeepSeek / 通义千问 / Kimi K3 API Key。留空保存不会覆盖已有 Key；未配置时 AI 生成将回退到本地模板引擎。
       </p>
+      <p className="lead muted" style={{ fontSize: 13, marginTop: -8 }}>
+        <strong>路由策略：</strong>纯文本任务（对话、模板映射、分类摘要等）在已配置 DeepSeek 时<strong>优先 DeepSeek</strong>；
+        图片/PDF 多模态、资质文件夹扫描<strong>不使用 DeepSeek</strong>，走通义千问 VL 或 Kimi K3（二者至少配置一项）。
+      </p>
+      {settingsInfo && !settingsInfo.multimodal_ready ? (
+        <div className="card-block" style={{ marginBottom: 16, borderColor: 'var(--warn, #c9a227)' }}>
+          <strong>多模态未就绪</strong>
+          <p className="muted" style={{ margin: '8px 0 0', fontSize: 13 }}>
+            {settingsInfo.multimodal_warning || '请配置通义千问 VL 或 Kimi K3 的 API Key，否则无法使用资质文件夹扫描与图片理解。'}
+          </p>
+        </div>
+      ) : null}
 
       <div className="field" style={{ marginBottom: 18, maxWidth: 360 }}>
-        <label>优先使用的模型</label>
+        <label>优先使用的模型（主要影响纯文本回退顺序）</label>
         <select
           value={settingsForm.preferred_provider}
           onChange={(e) => setSettingsForm({ ...settingsForm, preferred_provider: e.target.value })}
         >
-          <option value="auto">自动（先 DeepSeek，失败再用千问）</option>
-          <option value="deepseek">仅 DeepSeek</option>
-          <option value="qwen">仅通义千问</option>
+          <option value="auto">自动（文本：DeepSeek → 千问 → Kimi K3）</option>
+          <option value="deepseek">仅 DeepSeek（文本）</option>
+          <option value="qwen">仅通义千问（文本）</option>
+          <option value="kimi">仅 Kimi K3（文本）</option>
         </select>
       </div>
 
@@ -116,9 +129,9 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className={`chapter${settingsInfo?.qwen_api_key_set ? ' chapter-configured' : ''}`}>
+      <div className={`chapter${settingsInfo?.qwen_vl_ready ? ' chapter-configured' : ''}`}>
         <div className="chapter-head">
-          <h4>通义千问</h4>
+          <h4>通义千问（文本 + VL 多模态）</h4>
           <span className="badge">
             {settingsInfo?.qwen_api_key_set
               ? `已配置 ${settingsInfo.qwen_api_key_masked}`
@@ -144,20 +157,127 @@ export default function SettingsPage() {
             />
           </div>
           <div className="field">
-            <label>模型</label>
+            <label>文本模型</label>
             <input
               value={settingsForm.qwen_model}
               onChange={(e) => setSettingsForm({ ...settingsForm, qwen_model: e.target.value })}
               placeholder="qwen-plus"
             />
           </div>
+          <div className="field">
+            <label>VL 多模态模型</label>
+            <input
+              value={settingsForm.qwen_vl_model}
+              onChange={(e) => setSettingsForm({ ...settingsForm, qwen_vl_model: e.target.value })}
+              placeholder="qwen-vl-plus"
+            />
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              资质文件夹扫描、图片/PDF 理解使用 VL 模型（与上方 API Key 相同）
+            </div>
+          </div>
         </div>
         <div className="actions">
-          <button className="ghost" onClick={() => testKey('qwen')} disabled={loading}>测试连接</button>
+          <button className="ghost" onClick={() => testKey('qwen')} disabled={loading}>测试文本</button>
+          <button className="ghost" onClick={() => testKey('qwen_vl')} disabled={loading}>测试 VL</button>
           <button
             className="secondary"
             onClick={() => clearKey('qwen')}
             disabled={loading || !settingsInfo?.qwen_api_key_set}
+          >
+            清除 Key
+          </button>
+        </div>
+      </div>
+
+      <div className={`chapter${settingsInfo?.kimi_k3_ready ? ' chapter-configured' : ''}`}>
+        <div className="chapter-head">
+          <h4>Kimi K3（月之暗面）</h4>
+          <span className="badge">
+            {settingsInfo?.kimi_api_key_set
+              ? `已配置 ${settingsInfo.kimi_api_key_masked}`
+              : '未配置'}
+          </span>
+        </div>
+        <div className="form-grid">
+          <div className="field full">
+            <label>API Key（输入新值以更新）</label>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={settingsInfo?.kimi_api_key_set ? '已配置，留空则保持不变' : 'sk-...'}
+              value={settingsForm.kimi_api_key}
+              onChange={(e) => setSettingsForm({ ...settingsForm, kimi_api_key: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>Base URL</label>
+            <input
+              value={settingsForm.kimi_base_url}
+              onChange={(e) => setSettingsForm({ ...settingsForm, kimi_base_url: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>文本模型</label>
+            <select
+              value={['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0905-preview'].includes(settingsForm.kimi_model)
+                ? settingsForm.kimi_model
+                : '__custom__'}
+              onChange={(e) => {
+                const v = e.target.value
+                setSettingsForm({ ...settingsForm, kimi_model: v === '__custom__' ? '' : v })
+              }}
+            >
+              <option value="moonshot-v1-8k">moonshot-v1-8k</option>
+              <option value="moonshot-v1-32k">moonshot-v1-32k</option>
+              <option value="moonshot-v1-128k">moonshot-v1-128k</option>
+              <option value="kimi-k2-0905-preview">kimi-k2-0905-preview</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+            {!['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0905-preview'].includes(settingsForm.kimi_model) ? (
+              <input
+                style={{ marginTop: 8 }}
+                value={settingsForm.kimi_model}
+                onChange={(e) => setSettingsForm({ ...settingsForm, kimi_model: e.target.value })}
+                placeholder="Moonshot 文本 model id"
+              />
+            ) : null}
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              纯文本自动链 fallback，不参与图片理解
+            </div>
+          </div>
+          <div className="field">
+            <label>Kimi K3（多模态）</label>
+            <select
+              value={['kimi-k3', 'kimi-k2.6', 'moonshot-v1-8k-vision-preview'].includes(settingsForm.kimi_k3_model)
+                ? settingsForm.kimi_k3_model
+                : '__custom__'}
+              onChange={(e) => {
+                const v = e.target.value
+                setSettingsForm({ ...settingsForm, kimi_k3_model: v === '__custom__' ? '' : v })
+              }}
+            >
+              <option value="kimi-k3">Kimi K3（kimi-k3）</option>
+              <option value="kimi-k2.6">kimi-k2.6</option>
+              <option value="moonshot-v1-8k-vision-preview">moonshot-v1-8k-vision-preview</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+            {!['kimi-k3', 'kimi-k2.6', 'moonshot-v1-8k-vision-preview'].includes(settingsForm.kimi_k3_model) ? (
+              <input
+                style={{ marginTop: 8 }}
+                value={settingsForm.kimi_k3_model}
+                onChange={(e) => setSettingsForm({ ...settingsForm, kimi_k3_model: e.target.value })}
+                placeholder="官方多模态 model id"
+              />
+            ) : null}
+          </div>
+        </div>
+        <div className="actions">
+          <button className="ghost" onClick={() => testKey('kimi')} disabled={loading}>测试文本</button>
+          <button className="ghost" onClick={() => testKey('kimi_k3')} disabled={loading}>测试 K3</button>
+          <button
+            className="secondary"
+            onClick={() => clearKey('kimi')}
+            disabled={loading || !settingsInfo?.kimi_api_key_set}
           >
             清除 Key
           </button>
@@ -195,6 +315,9 @@ export default function SettingsPage() {
                   {' '}
                   <EnvStatusBadge status={c.status} />
                   {c.detail && typeof c.detail === 'string' ? `: ${c.detail}` : null}
+                  {c.id === 'ai' && c.detail && typeof c.detail === 'object' && c.detail.message ? (
+                    <span className="muted"> — {c.detail.message}</span>
+                  ) : null}
                   {c.id === 'ocr' && c.detail?.tesseract_available === false ? (
                     <span className="muted">（将使用文件名/分类兜底匹配）</span>
                   ) : null}

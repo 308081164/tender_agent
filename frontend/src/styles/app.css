@@ -601,9 +601,13 @@ textarea.desensitized {
 .upload-kind-option {
   display: grid; gap: 6px; text-align: left; padding: 14px 16px;
   border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
+  color: var(--ink); font-weight: 400;
   cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
 }
-.upload-kind-option:hover { border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08); }
+.upload-kind-option:hover:not(:disabled) {
+  background: var(--surface-2); color: var(--ink);
+  border-color: #93c5fd; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+}
 .upload-kind-option strong { font-size: 15px; color: var(--text); }
 .upload-kind-option span { font-size: 13px; line-height: 1.55; color: var(--muted); }
 .admin-row-actions button.linkish { background: none; border: none; padding: 0; cursor: pointer; font: inherit; }
@@ -726,6 +730,23 @@ textarea.desensitized {
   overscroll-behavior: contain;
 }
 .chat-composer.compact { flex-shrink: 0; padding: 12px; }
+.chat-attach-wrap { position: relative; flex-shrink: 0; }
+.chat-attach-wrap.compact .chat-attach-trigger { padding: 8px 10px; }
+.chat-attach-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.chat-attach-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 50;
+  min-width: 220px; padding: 6px; border-radius: 12px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.chat-attach-menu button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  text-align: left; padding: 10px 12px; border-radius: 10px; border: 0;
+  background: transparent; cursor: pointer; font: inherit; width: 100%;
+}
+.chat-attach-menu button:hover:not(:disabled) { background: var(--surface-2); }
+.chat-drawer-input { flex-wrap: wrap; align-items: center; }
+.chat-drawer-input > input { flex: 1; min-width: 120px; }
 .chat-selection-hint {
   flex-shrink: 0;
   padding: 8px 12px; font-size: 12px; background: var(--primary-soft); border-top: 1px solid #c7d7fe;
@@ -808,8 +829,14 @@ textarea.desensitized {
 .mapping-picker-search { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .mapping-picker-loading { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); }
 .mapping-picker-dropdown { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); max-height: 220px; overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,.12); }
-.mapping-picker-option { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 0; background: transparent; cursor: pointer; font-size: 12px; }
-.mapping-picker-option:hover, .mapping-picker-option.active { background: var(--primary-soft); }
+.mapping-picker-option {
+  display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 10px; border: 0; border-radius: 0; background: transparent;
+  color: var(--ink); font-weight: 400; cursor: pointer; font-size: 12px;
+}
+.mapping-picker-option:hover:not(:disabled), .mapping-picker-option.active {
+  background: var(--primary-soft); color: var(--ink);
+}
 .mapping-picker-label { line-height: 1.4; }
 .mapping-picker-empty { padding: 10px; font-size: 12px; }
 .mapping-picker-fallback { display: none; }
@@ -983,6 +1010,13 @@ textarea.desensitized {
 }
 .field-checklist-panel section { margin-bottom: 10px; }
 .field-checklist-panel h4 { margin: 0 0 6px; font-size: 13px; }
+.project-field-editor-pane { padding: 12px 16px; overflow: auto; height: 100%; }
+.field-editor-list { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+.field-editor-row { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.field-editor-row em.req { color: #b45309; font-style: normal; margin-left: 6px; font-size: 11px; }
+.field-editor-row em.verify { color: #0369a1; font-style: normal; margin-left: 6px; font-size: 11px; }
+.field-editor-row input { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.field-editor-actions { margin-top: 12px; }
 .floating-chat-wrap {
   position: fixed; right: 24px; bottom: 24px; z-index: 50;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;

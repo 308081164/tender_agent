@@ -43,6 +43,10 @@ export default function FloatingChat({ chat, projectPath = '' }) {
         onSelectSession={chat.loadSession}
         onCardAction={chat.handleCardAction}
         actingCardId={chat.actingCardId}
+        onUploadFiles={chat.uploadFiles}
+        onImportFolderPath={chat.importFolderPath}
+        showToast={chat.showToast}
+        boundProjectId={chat.boundProjectId}
       />
     </>
   )
