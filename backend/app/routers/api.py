@@ -43,6 +43,7 @@ class SettingsUpdate(BaseModel):
     qwen_api_key: str | None = None
     qwen_base_url: str | None = None
     qwen_model: str | None = None
+    qwen_vl_model: str | None = None
     kimi_api_key: str | None = None
     kimi_base_url: str | None = None
     kimi_model: str | None = None
@@ -299,8 +300,8 @@ def update_settings_api(body: SettingsUpdate, db: Session = Depends(get_db)):
 
 @router.post("/settings/test")
 async def test_settings_api(body: TestProviderRequest, db: Session = Depends(get_db)):
-    if body.provider not in ("deepseek", "qwen", "kimi"):
-        raise HTTPException(400, "provider 仅支持 deepseek、qwen 或 kimi")
+    if body.provider not in ("deepseek", "qwen", "qwen_vl", "kimi", "kimi_k3"):
+        raise HTTPException(400, "provider 仅支持 deepseek、qwen、qwen_vl、kimi")
     return await ai_svc.test_provider(body.provider, db=db)
 
 

@@ -8,6 +8,7 @@ const emptyForm = {
   qwen_api_key: '',
   qwen_base_url: '',
   qwen_model: '',
+  qwen_vl_model: '',
   kimi_api_key: '',
   kimi_base_url: '',
   kimi_model: '',
@@ -29,9 +30,10 @@ export function useSettings(showToast) {
       qwen_api_key: '',
       qwen_base_url: s.qwen_base_url || '',
       qwen_model: s.qwen_model || 'qwen-plus',
+      qwen_vl_model: s.qwen_vl_model || 'qwen-vl-plus',
       kimi_api_key: '',
       kimi_base_url: s.kimi_base_url || 'https://api.moonshot.cn/v1',
-      kimi_model: s.kimi_model || 'moonshot-v1-8k',
+      kimi_model: s.kimi_model || 'kimi-k3',
       preferred_provider: s.preferred_provider || 'auto',
     })
     return s
@@ -45,6 +47,7 @@ export function useSettings(showToast) {
         deepseek_model: settingsForm.deepseek_model,
         qwen_base_url: settingsForm.qwen_base_url,
         qwen_model: settingsForm.qwen_model,
+        qwen_vl_model: settingsForm.qwen_vl_model,
         kimi_base_url: settingsForm.kimi_base_url,
         kimi_model: settingsForm.kimi_model,
         preferred_provider: settingsForm.preferred_provider,
@@ -83,7 +86,7 @@ export function useSettings(showToast) {
         ? '已清除 DeepSeek Key'
         : provider === 'qwen'
           ? '已清除通义千问 Key'
-          : '已清除 Kimi Key'
+          : '已清除 Kimi K3 Key'
       showToast?.(cleared)
     } catch (e) {
       showToast?.(e.message)
@@ -98,10 +101,10 @@ export function useSettings(showToast) {
       if (provider === 'deepseek' && settingsForm.deepseek_api_key.trim()) {
         await api.updateSettings({ deepseek_api_key: settingsForm.deepseek_api_key.trim() })
       }
-      if (provider === 'qwen' && settingsForm.qwen_api_key.trim()) {
+      if ((provider === 'qwen' || provider === 'qwen_vl') && settingsForm.qwen_api_key.trim()) {
         await api.updateSettings({ qwen_api_key: settingsForm.qwen_api_key.trim() })
       }
-      if (provider === 'kimi' && settingsForm.kimi_api_key.trim()) {
+      if ((provider === 'kimi' || provider === 'kimi_k3') && settingsForm.kimi_api_key.trim()) {
         await api.updateSettings({ kimi_api_key: settingsForm.kimi_api_key.trim() })
       }
       const res = await api.testProvider(provider)

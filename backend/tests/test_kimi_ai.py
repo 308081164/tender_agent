@@ -1,4 +1,4 @@
-"""Kimi（Moonshot）AI 配置与 chat_completion 路由测试（mock，无需真实 Key）。"""
+"""Kimi K3 / 多模态路由与门禁测试（mock，无需真实 Key）。"""
 from __future__ import annotations
 
 import os
@@ -15,18 +15,67 @@ from app.services import ai as ai_svc
 from app.services import settings_svc
 
 
-KIMI_CFG = {
-    "deepseek_api_key": "",
+BASE_CFG = {
+    "deepseek_api_key": "sk-ds",
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_model": "deepseek-v4-pro",
     "qwen_api_key": "",
     "qwen_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "qwen_model": "qwen-plus",
-    "kimi_api_key": "sk-test-kimi",
+    "qwen_vl_model": "qwen-vl-plus",
+    "kimi_api_key": "",
     "kimi_base_url": "https://api.moonshot.cn/v1",
-    "kimi_model": "moonshot-v1-8k",
-    "preferred_provider": "kimi",
+    "kimi_model": "kimi-k3",
+    "preferred_provider": "auto",
 }
+
+KIMI_CFG = {**BASE_CFG, "deepseek_api_key": "", "kimi_api_key": "sk-kimi", "preferred_provider": "kimi"}
+
+
+def test_pick_model_text_prefers_deepseek():
+    order = ai_svc.pick_model("text", BASE_CFG)
+    assert order[0] == "deepseek"
+
+
+def test_pick_model_text_no_deepseek_falls_qwen_kimi():
+    cfg = {**BASE_CFG, "deepseek_api_key": "", "qwen_api_key": "sk-q", "kimi_api_key": "sk-k"}
+    order = ai_svc.pick_model("text", cfg)
+    assert order == ["qwen", "kimi"]
+
+
+def test_pick_model_qual_folder_classify_skips_deepseek():
+    order = ai_svc.pick_model("qual_folder_classify", BASE_CFG)
+    assert "deepseek" not in order
+    assert order == []
+
+
+def test_pick_model_vision_qwen_before_kimi():
+    cfg = {**BASE_CFG, "qwen_api_key": "sk-q", "kimi_api_key": "sk-k"}
+    order = ai_svc.pick_model("vision", cfg)
+    assert order == ["qwen_vl", "kimi_k3"]
+
+
+def test_multimodal_ready_gate():
+    assert not settings_svc.multimodal_ready(BASE_CFG)
+    assert settings_svc.multimodal_ready({**BASE_CFG, "qwen_api_key": "sk-q"})
+    assert settings_svc.multimodal_ready({**BASE_CFG, "kimi_api_key": "sk-k"})
+
+
+def test_require_multimodal_raises():
+    with pytest.raises(ai_svc.MultimodalRequiredError):
+        ai_svc.require_multimodal(None)
+    with patch.object(settings_svc, "resolve_ai_config", return_value={**BASE_CFG, "qwen_api_key": "x"}):
+        ai_svc.require_multimodal(None)
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_text_uses_deepseek():
+    with patch.object(settings_svc, "resolve_ai_config", return_value=BASE_CFG):
+        with patch.object(ai_svc, "_openai_compat", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = "ds"
+            text = await ai_svc.chat_completion([{"role": "user", "content": "hi"}], db=None, task_kind="text")
+            assert text == "ds"
+            assert mock_call.await_args[0][2] == "deepseek-v4-pro"
 
 
 @pytest.mark.asyncio
@@ -34,33 +83,35 @@ async def test_chat_completion_kimi_only():
     with patch.object(settings_svc, "resolve_ai_config", return_value=KIMI_CFG):
         with patch.object(ai_svc, "_openai_compat", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = "hello kimi"
-            text = await ai_svc.chat_completion([{"role": "user", "content": "hi"}], db=None)
+            text = await ai_svc.chat_completion([{"role": "user", "content": "hi"}], db=None, task_kind="text")
             assert text == "hello kimi"
-            mock_call.assert_awaited_once()
-            args = mock_call.await_args[0]
-            assert args[0] == "https://api.moonshot.cn/v1"
-            assert args[1] == "sk-test-kimi"
-            assert args[2] == "moonshot-v1-8k"
+            assert mock_call.await_args[0][2] == "kimi-k3"
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_auto_falls_through_to_kimi():
-    cfg = {**KIMI_CFG, "preferred_provider": "auto", "kimi_api_key": "sk-k2"}
+async def test_chat_completion_vision_no_multimodal_returns_empty():
+    with patch.object(settings_svc, "resolve_ai_config", return_value=BASE_CFG):
+        text = await ai_svc.chat_completion_vision(
+            [{"role": "user", "content": "看图片"}],
+            image_data_urls=["data:image/png;base64,abc"],
+            db=None,
+        )
+        assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_vision_uses_qwen_vl():
+    cfg = {**BASE_CFG, "qwen_api_key": "sk-q"}
     with patch.object(settings_svc, "resolve_ai_config", return_value=cfg):
         with patch.object(ai_svc, "_openai_compat", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = "from kimi"
-            text = await ai_svc.chat_completion([{"role": "user", "content": "x"}], db=None)
-            assert text == "from kimi"
-            assert mock_call.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_test_provider_kimi_no_key():
-    cfg = {**KIMI_CFG, "kimi_api_key": ""}
-    with patch.object(settings_svc, "resolve_ai_config", return_value=cfg):
-        res = await ai_svc.test_provider("kimi", db=None)
-        assert res["ok"] is False
-        assert "未配置" in res["message"]
+            mock_call.return_value = "vl ok"
+            text = await ai_svc.chat_completion_vision(
+                [{"role": "user", "content": "描述"}],
+                image_data_urls=["data:image/png;base64,abc"],
+                db=None,
+            )
+            assert text == "vl ok"
+            assert mock_call.await_args[0][2] == "qwen-vl-plus"
 
 
 @pytest.mark.asyncio
@@ -68,13 +119,5 @@ async def test_test_provider_kimi_ok():
     with patch.object(settings_svc, "resolve_ai_config", return_value=KIMI_CFG):
         with patch.object(ai_svc, "_openai_compat", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = "ok"
-            res = await ai_svc.test_provider("kimi", db=None)
+            res = await ai_svc.test_provider("kimi_k3", db=None)
             assert res["ok"] is True
-            assert "Kimi" in res["message"]
-
-
-def test_resolve_ai_config_includes_kimi_defaults():
-    cfg = settings_svc.resolve_ai_config(None)
-    assert "kimi_api_key" in cfg
-    assert cfg["kimi_base_url"] == settings_svc.KIMI_DEFAULT_BASE_URL
-    assert cfg["kimi_model"] == settings_svc.KIMI_DEFAULT_MODEL

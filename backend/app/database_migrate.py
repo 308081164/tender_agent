@@ -30,7 +30,10 @@ ALTERS = [
     "WHERE deepseek_model IS NULL OR deepseek_model IN ('', 'deepseek-chat', 'deepseek-reasoner')",
     "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_api_key TEXT DEFAULT ''",
     "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_base_url VARCHAR(300) DEFAULT 'https://api.moonshot.cn/v1'",
-    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_model VARCHAR(100) DEFAULT 'moonshot-v1-8k'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_model VARCHAR(100) DEFAULT 'kimi-k3'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS qwen_vl_model VARCHAR(100) DEFAULT 'qwen-vl-plus'",
+    "UPDATE system_settings SET kimi_model = 'kimi-k3' "
+    "WHERE kimi_model IS NULL OR kimi_model IN ('', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k')",
 ]
 
 

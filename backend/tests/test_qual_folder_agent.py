@@ -108,7 +108,7 @@ async def test_llm_classify_folder_materials_mock(monkeypatch):
         },
     ]
 
-    async def fake_chat(messages, db=None, provider=None):
+    async def fake_chat(messages, db=None, provider=None, task_kind="text"):
         return json.dumps([{
             "file_id": 0,
             "doc_type": "bank_account_proof",
@@ -155,6 +155,11 @@ async def test_import_pipeline_exploration_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "app.services.agent_qual_folder.classify_folder_materials",
         fake_classify,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai.is_multimodal_ready",
+        lambda _db: True,
     )
 
     db = _fresh_db()

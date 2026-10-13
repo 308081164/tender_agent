@@ -216,6 +216,15 @@ async def start_qual_folder_import(
         normalize_folder_path,
         scan_qual_folder,
     )
+    from app.services.ai import MultimodalRequiredError, is_multimodal_ready
+
+    if not is_multimodal_ready(db):
+        err = MultimodalRequiredError()
+        return _result(
+            err.user_message(),
+            intent="import_qual_folder",
+            actions=err.actions(),
+        )
 
     try:
         root = normalize_folder_path(folder_path)
@@ -272,7 +281,16 @@ async def start_qual_folder_import(
 
 
 async def _finish_qual_folder_import(db: Session, session: ChatSession, folder: str) -> dict[str, Any]:
-    result = await agent_tools.import_qual_folder(db, folder)
+    from app.services.ai import MultimodalRequiredError
+
+    try:
+        result = await agent_tools.import_qual_folder(db, folder)
+    except MultimodalRequiredError as err:
+        return _result(
+            err.user_message(),
+            intent="import_qual_folder",
+            actions=err.actions(),
+        )
     _set_pending(session, None)
     ob = result.get("onboarding") or {}
     qn = len(result.get("qualifications_created") or [])

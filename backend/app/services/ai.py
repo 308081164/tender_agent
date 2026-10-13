@@ -5,6 +5,87 @@ from sqlalchemy.orm import Session
 
 from app.services import settings_svc
 
+TEXT_TASK_KINDS = frozenset({"text", "text_batch"})
+MULTIMODAL_TASK_KINDS = frozenset({"multimodal", "vision", "qual_folder_classify"})
+SETTINGS_PATH = "/settings"
+
+
+class MultimodalRequiredError(Exception):
+    """未配置千问 VL / Kimi K3 时阻止多模态任务。"""
+
+    def user_message(self) -> str:
+        return settings_svc.multimodal_warning_message()
+
+    def actions(self) -> list[dict]:
+        return [
+            {"type": "link", "label": "打开系统设置", "url": SETTINGS_PATH, "primary": True},
+        ]
+
+
+def is_multimodal_ready(db: Session | None = None) -> bool:
+    return settings_svc.multimodal_ready(settings_svc.resolve_ai_config(db))
+
+
+def require_multimodal(db: Session | None = None) -> None:
+    if not is_multimodal_ready(db):
+        raise MultimodalRequiredError()
+
+
+def pick_model(task_kind: str, cfg: dict) -> list[str]:
+    """返回 provider 尝试顺序（内部 slug）。"""
+    kind = (task_kind or "text").strip().lower()
+    if kind in MULTIMODAL_TASK_KINDS:
+        order: list[str] = []
+        if settings_svc.qwen_vl_ready(cfg):
+            order.append("qwen_vl")
+        if settings_svc.kimi_k3_ready(cfg):
+            order.append("kimi_k3")
+        return order
+    if kind in TEXT_TASK_KINDS:
+        order = []
+        if cfg.get("deepseek_api_key"):
+            order.append("deepseek")
+        if cfg.get("qwen_api_key"):
+            order.append("qwen")
+        if cfg.get("kimi_api_key"):
+            order.append("kimi")
+        pref = (cfg.get("preferred_provider") or "auto").strip()
+        if pref == "deepseek" and "deepseek" in order:
+            return ["deepseek"]
+        if pref == "qwen" and "qwen" in order:
+            return ["qwen"]
+        if pref == "kimi" and "kimi" in order:
+            return ["kimi"]
+        return order
+    return pick_model("text", cfg)
+
+
+def _provider_call(slug: str, cfg: dict, *, vision: bool = False) -> tuple[str, str, str] | None:
+    """base_url, api_key, model"""
+    if slug == "deepseek" and cfg.get("deepseek_api_key"):
+        return (
+            cfg["deepseek_base_url"],
+            cfg["deepseek_api_key"],
+            cfg.get("deepseek_model") or settings_svc.DEEPSEEK_DEFAULT_MODEL,
+        )
+    if slug == "qwen" and cfg.get("qwen_api_key"):
+        return (
+            cfg["qwen_base_url"],
+            cfg["qwen_api_key"],
+            cfg.get("qwen_model") or "qwen-plus",
+        )
+    if slug == "qwen_vl" and cfg.get("qwen_api_key"):
+        return (
+            cfg["qwen_base_url"],
+            cfg["qwen_api_key"],
+            cfg.get("qwen_vl_model") or settings_svc.QWEN_VL_DEFAULT_MODEL,
+        )
+    if slug in ("kimi", "kimi_k3") and cfg.get("kimi_api_key"):
+        model = cfg.get("kimi_model") or settings_svc.KIMI_K3_DEFAULT_MODEL
+        return (cfg["kimi_base_url"], cfg["kimi_api_key"], model)
+    return None
+
+
 CHAPTER_TEMPLATES = {
     "施工组织设计": (
         "针对「{project_name}」项目，我方拟采用分段流水施工组织方式。"
@@ -43,58 +124,37 @@ async def chat_completion(
     messages: list[dict],
     provider: str | None = None,
     db: Session | None = None,
+    *,
+    task_kind: str = "text",
 ) -> str:
     """调用外部 LLM；失败或无 Key 时返回空字符串，由上层走模板兜底。"""
     cfg = settings_svc.resolve_ai_config(db)
-    use_provider = provider or cfg.get("preferred_provider") or "auto"
+    kind = (task_kind or "text").strip().lower()
 
-    order = []
-    if use_provider == "deepseek":
-        order = ["deepseek"]
-    elif use_provider == "qwen":
-        order = ["qwen"]
-    elif use_provider == "kimi":
-        order = ["kimi"]
+    if provider:
+        slug_map = {
+            "deepseek": "deepseek",
+            "qwen": "qwen",
+            "kimi": "kimi_k3",
+            "kimi_k3": "kimi_k3",
+            "qwen_vl": "qwen_vl",
+        }
+        order = [slug_map.get(provider, provider)]
     else:
-        order = ["deepseek", "qwen", "kimi"]
+        order = pick_model(kind, cfg)
 
-    for name in order:
-        if name == "deepseek" and cfg.get("deepseek_api_key"):
-            try:
-                return await _openai_compat(
-                    cfg["deepseek_base_url"],
-                    cfg["deepseek_api_key"],
-                    cfg.get("deepseek_model") or "deepseek-v4-pro",
-                    messages,
-                )
-            except Exception:
-                if use_provider == "deepseek":
-                    return ""
-                continue
-        if name == "qwen" and cfg.get("qwen_api_key"):
-            try:
-                return await _openai_compat(
-                    cfg["qwen_base_url"],
-                    cfg["qwen_api_key"],
-                    cfg.get("qwen_model") or "qwen-plus",
-                    messages,
-                )
-            except Exception:
-                if use_provider == "qwen":
-                    return ""
-                continue
-        if name == "kimi" and cfg.get("kimi_api_key"):
-            try:
-                return await _openai_compat(
-                    cfg["kimi_base_url"],
-                    cfg["kimi_api_key"],
-                    cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL,
-                    messages,
-                )
-            except Exception:
-                if use_provider == "kimi":
-                    return ""
-                continue
+    single = len(order) == 1
+    for slug in order:
+        call = _provider_call(slug, cfg)
+        if not call:
+            continue
+        base_url, api_key, model = call
+        try:
+            return await _openai_compat(base_url, api_key, model, messages)
+        except Exception:
+            if single:
+                return ""
+            continue
     return ""
 
 
@@ -124,18 +184,14 @@ async def chat_completion_vision(
     image_data_urls: list[str] | None = None,
     db: Session | None = None,
 ) -> str:
-    """多模态对话：传入 base64 data URL 图片时尝试 vision 模型，失败则回退纯文本。"""
+    """多模态对话：仅走千问 VL / Kimi K3，禁止 DeepSeek；未配置多模态则返回空字符串。"""
     imgs = [u for u in (image_data_urls or []) if u]
     if not imgs:
-        return await chat_completion(messages, db=db)
+        return await chat_completion(messages, db=db, task_kind="text")
 
     cfg = settings_svc.resolve_ai_config(db)
-    vision_model = (cfg.get("vision_model") or cfg.get("qwen_vl_model") or "").strip()
-    use_qwen = bool(cfg.get("qwen_api_key")) and (
-        vision_model or "vl" in (cfg.get("qwen_model") or "").lower()
-    )
-    if not use_qwen:
-        return await chat_completion(messages, db=db)
+    if not settings_svc.multimodal_ready(cfg):
+        return ""
 
     user_content: list[dict] = []
     for m in messages:
@@ -148,17 +204,18 @@ async def chat_completion_vision(
     vision_messages = [m for m in messages if m.get("role") != "user"]
     vision_messages.append({"role": "user", "content": user_content})
 
-    model = vision_model or cfg.get("qwen_model") or "qwen-vl-plus"
-    try:
-        return await _openai_compat(
-            cfg["qwen_base_url"],
-            cfg["qwen_api_key"],
-            model,
-            vision_messages,
-            vision=True,
-        )
-    except Exception:
-        return await chat_completion(messages, db=db)
+    for slug in pick_model("vision", cfg):
+        call = _provider_call(slug, cfg, vision=True)
+        if not call:
+            continue
+        base_url, api_key, model = call
+        try:
+            return await _openai_compat(
+                base_url, api_key, model, vision_messages, vision=True,
+            )
+        except Exception:
+            continue
+    return ""
 
 
 def local_chapter_text(chapter_key: str, fields: dict) -> str:
@@ -432,17 +489,30 @@ async def test_provider(provider: str, db: Session | None = None) -> dict:
             return {"ok": True, "message": "通义千问连接成功", "sample": (text or "")[:80]}
         except Exception as e:
             return {"ok": False, "message": f"通义千问连接失败：{e}"}
-    if provider == "kimi":
+    if provider == "qwen_vl":
+        if not cfg.get("qwen_api_key"):
+            return {"ok": False, "message": "未配置通义千问 API Key（VL 共用同一 Key）"}
+        try:
+            text = await _openai_compat(
+                cfg["qwen_base_url"],
+                cfg["qwen_api_key"],
+                cfg.get("qwen_vl_model") or settings_svc.QWEN_VL_DEFAULT_MODEL,
+                [{"role": "user", "content": "请只回复：ok"}],
+            )
+            return {"ok": True, "message": "通义千问 VL 连接成功", "sample": (text or "")[:80]}
+        except Exception as e:
+            return {"ok": False, "message": f"通义千问 VL 连接失败：{e}"}
+    if provider in ("kimi", "kimi_k3"):
         if not cfg.get("kimi_api_key"):
             return {"ok": False, "message": "未配置 Kimi API Key"}
         try:
             text = await _openai_compat(
                 cfg["kimi_base_url"],
                 cfg["kimi_api_key"],
-                cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL,
+                cfg.get("kimi_model") or settings_svc.KIMI_K3_DEFAULT_MODEL,
                 [{"role": "user", "content": "请只回复：ok"}],
             )
-            return {"ok": True, "message": "Kimi 连接成功", "sample": (text or "")[:80]}
+            return {"ok": True, "message": "Kimi K3 连接成功", "sample": (text or "")[:80]}
         except Exception as e:
             return {"ok": False, "message": f"Kimi 连接失败：{e}"}
     return {"ok": False, "message": "未知供应商"}

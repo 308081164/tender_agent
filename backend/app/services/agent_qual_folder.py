@@ -517,7 +517,7 @@ async def classify_folder_materials(
     raw = await ai.chat_completion([
         {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ], db=db)
+    ], db=db, task_kind="qual_folder_classify")
 
     by_id: dict[Any, dict] = {}
     if raw.strip():
@@ -794,6 +794,11 @@ async def import_qual_folder_pipeline(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    from app.services.ai import MultimodalRequiredError, is_multimodal_ready
+
+    if not is_multimodal_ready(db):
+        raise MultimodalRequiredError()
+
     scan = scan_qual_folder(folder)
     qual_created: list[dict] = []
     errors: list[dict] = []
