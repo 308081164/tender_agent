@@ -318,6 +318,9 @@ export default function SettingsPage() {
                   {c.id === 'ai' && c.detail && typeof c.detail === 'object' && c.detail.message ? (
                     <span className="muted"> — {c.detail.message}</span>
                   ) : null}
+                  {c.id === 'onlyoffice' && c.detail && typeof c.detail === 'object' && c.detail.message ? (
+                    <span className="muted"> — {c.detail.message}</span>
+                  ) : null}
                   {c.id === 'ocr' && c.detail?.tesseract_available === false ? (
                     <span className="muted">（将使用文件名/分类兜底匹配）</span>
                   ) : null}

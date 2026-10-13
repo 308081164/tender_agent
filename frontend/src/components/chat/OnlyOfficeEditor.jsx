@@ -15,7 +15,7 @@ function loadOnlyOfficeApi(documentServerUrl) {
     script.onload = () => resolve()
     script.onerror = () => {
       scriptPromise = null
-      reject(new Error('无法加载 OnlyOffice 编辑器脚本'))
+      reject(new Error(`无法加载内置 OnlyOffice 编辑器（${documentServerUrl}）`))
     }
     document.body.appendChild(script)
   })
@@ -41,6 +41,9 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
       try {
         const data = await api.getOnlyOfficeConfig(sessionId)
         if (cancelled) return
+        if (!data?.document_server_url) {
+          throw new Error(data?.message || '内置 OnlyOffice 未配置，无法打开可编辑文档')
+        }
         await loadOnlyOfficeApi(data.document_server_url)
         if (cancelled || !containerRef.current) return
 

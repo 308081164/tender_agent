@@ -116,7 +116,7 @@ export default function ProjectDocumentPane({
   useEffect(() => {
     setPdfFailed(false)
     setPdfOk(false)
-    if (onlyOfficeEnabled && sessionId) setMode('onlyoffice')
+    if (sessionId && onlyOfficeEnabled) setMode('onlyoffice')
     else setMode('pdf')
     loadStatus()
   }, [projectId, sessionId, onlyOfficeEnabled, loadStatus])
@@ -136,15 +136,20 @@ export default function ProjectDocumentPane({
       <button type="button" className={mode === 'pdf' ? 'active' : ''} onClick={() => setMode('pdf')}>
         PDF 预览
       </button>
-      {onlyOfficeEnabled && sessionId ? (
+      {sessionId && onlyOfficeEnabled ? (
         <button type="button" className={mode === 'onlyoffice' ? 'active' : ''} onClick={() => setMode('onlyoffice')}>
-          Word 编辑
+          可编辑
         </button>
       ) : (
         <button type="button" className={mode === 'edit' ? 'active' : ''} onClick={() => setMode('edit')}>
           可编辑
         </button>
       )}
+      {sessionId && onlyOfficeEnabled ? (
+        <button type="button" className={mode === 'edit' ? 'active' : ''} onClick={() => setMode('edit')}>
+          字段
+        </button>
+      ) : null}
     </div>
   )
 

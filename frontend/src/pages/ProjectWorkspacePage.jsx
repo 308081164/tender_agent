@@ -29,7 +29,7 @@ export default function ProjectWorkspacePage() {
   const [checklistOpen, setChecklistOpen] = useState(true)
   const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [previewToken, setPreviewToken] = useState(Date.now())
-  const [features, setFeatures] = useState({ onlyoffice: { enabled: false }, suggested_prompts: [] })
+  const [features, setFeatures] = useState({ onlyoffice: { enabled: false, required: false }, suggested_prompts: [] })
   const [guidedIntake, setGuidedIntake] = useState(true)
   const [referenceText, setReferenceText] = useState('')
   const [reviewHighlights, setReviewHighlights] = useState([])
@@ -259,7 +259,7 @@ export default function ProjectWorkspacePage() {
             sessionId={sessionId}
             workspace={workspace}
             context={context}
-            onlyOfficeEnabled={!!features.onlyoffice?.enabled}
+            onlyOfficeEnabled={!!(features.onlyoffice?.enabled || features.onlyoffice?.required)}
             refreshToken={previewToken}
             highlightTexts={reviewHighlights}
             showToast={showToast}
