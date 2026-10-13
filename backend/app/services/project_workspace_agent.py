@@ -36,11 +36,13 @@ def _opening_body(ctx: dict[str, Any], intake: dict[str, Any]) -> str:
     tpl = ctx.get("template") or {}
     cl = ctx.get("field_checklist") or {}
     missing_n = len(cl.get("missing_required") or [])
-    verify_n = len(cl.get("needs_verify") or [])
+    verify_items = [v for v in (cl.get("needs_verify") or []) if not v.get("confirmed")]
+    verify_n = len(verify_items)
     tpl_name = tpl.get("name") or "当前模板"
     lines = [
         f"您好，我已接入「{tpl_name}」创作工作台。",
-        f"进度摘要：必填待填 {missing_n} 项，待核实 {verify_n} 项。",
+        f"进度摘要：必填待填 {missing_n} 项"
+        + (f"，待核实 {verify_n} 项" if verify_n else "（基础信息已信任向导录入）"),
     ]
     pri = _priority_questions(ctx, intake)
     if pri:

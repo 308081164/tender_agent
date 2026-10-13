@@ -24,6 +24,7 @@ INTENT_LABELS = [
     "bulk_replace",
     "create_project",
     "edit_fragment",
+    "export_project",
     "search_info",
     "general",
 ]
