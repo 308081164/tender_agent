@@ -75,6 +75,30 @@ def test_inspect_bundle_roundtrip(tmp_path: Path):
     assert missing == []
 
 
+def test_inspect_native_windows_bundle_without_node(tmp_path: Path):
+    _write(tmp_path / "documentserver" / "nginx" / "nginx.exe")
+    _write(tmp_path / "documentserver" / "server" / "DocService" / "docservice.exe")
+    _write(tmp_path / "documentserver" / "server" / "FileConverter" / "converter.exe")
+    _write(tmp_path / "documentserver" / "server" / "schema" / "postgresql" / "createdb.sql", "select 1;")
+    _write(tmp_path / "documentserver" / "config" / "default.json", "{}")
+    _write(tmp_path / "rabbitmq" / "sbin" / "rabbitmq-server.bat", "@echo off")
+    _write(tmp_path / "erlang" / "bin" / "erl.exe")
+    import json
+
+    manifest = {
+        "nginx": "documentserver/nginx/nginx.exe",
+        "docservice": "documentserver/server/DocService/docservice.exe",
+        "converter": "documentserver/server/FileConverter/converter.exe",
+        "schema": "documentserver/server/schema/postgresql/createdb.sql",
+        "config_dir": "documentserver/config",
+        "rabbitmq": "rabbitmq/sbin/rabbitmq-server.bat",
+        "erlang_home": "erlang",
+    }
+    (tmp_path / "bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
+    ok, missing = inspect_bundle(tmp_path)
+    assert ok, missing
+
+
 def test_inspect_bundle_reports_missing_manifest(tmp_path: Path):
     ok, missing = inspect_bundle(tmp_path)
     assert ok is False

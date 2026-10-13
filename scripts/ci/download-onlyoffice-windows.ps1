@@ -112,33 +112,62 @@ if ($innounpExit -ne 0) {
   throw "innounp could not extract onlyoffice-documentserver.exe (exit $innounpExit)"
 }
 
+function Select-DefaultJson([string]$Root) {
+  $candidates = @(Get-ChildItem -Path $Root -Recurse -Filter "default.json" -File -ErrorAction SilentlyContinue)
+  $preferred = $candidates | Where-Object {
+    $_.Directory.Name -eq "config" -and $_.FullName -notmatch "[\\/]example[\\/]" -and $_.FullName -notmatch "node_modules"
+  } | Select-Object -First 1
+  if ($preferred) { return $preferred }
+  return $candidates | Where-Object { $_.FullName -notmatch "node_modules" } | Select-Object -First 1
+}
+
+function Find-ServiceEntry([string]$Root, [string]$NativeName, [string]$ScriptName, [string]$PathLike) {
+  $native = Find-First $Root $NativeName $PathLike
+  if ($native) { return $native }
+  return Find-First $Root $ScriptName $PathLike
+}
+
 $nginx = Find-First $extract "nginx.exe" "*nginx*"
 if (-not $nginx) { $nginx = Find-First $extract "nginx.exe" $null }
-$docJs = Find-First $extract "server.js" "*DocService*"
-$converterJs = Find-First $extract "convertermaster.js" "*FileConverter*"
+# Current Community builds ship docservice.exe / converter.exe. Older builds used node scripts.
+$docEntry = Find-ServiceEntry $extract "docservice.exe" "server.js" "*DocService*"
+$converterEntry = Find-ServiceEntry $extract "converter.exe" "convertermaster.js" "*FileConverter*"
 $schema = Find-First $extract "createdb.sql" "*postgresql*"
-$defaultJson = Get-ChildItem -Path $extract -Recurse -Filter "default.json" -File -ErrorAction SilentlyContinue |
-  Where-Object { $_.FullName -notmatch "node_modules" } |
-  Select-Object -First 1
-$node = Find-First $extract "node.exe" $null
+$defaultJson = Select-DefaultJson $extract
+$needsNode = ($docEntry -and $docEntry.Extension -eq ".js") -or ($converterEntry -and $converterEntry.Extension -eq ".js")
+$node = $null
+if ($needsNode) { $node = Find-First $extract "node.exe" $null }
 
-if (-not $nginx -or -not $docJs -or -not $converterJs -or -not $schema -or -not $defaultJson -or -not $node) {
+if (-not $nginx -or -not $docEntry -or -not $converterEntry -or -not $schema -or -not $defaultJson -or ($needsNode -and -not $node)) {
+  $missing = @()
+  if (-not $nginx) { $missing += "nginx.exe" }
+  if (-not $docEntry) { $missing += "docservice.exe|server.js" }
+  if (-not $converterEntry) { $missing += "converter.exe|convertermaster.js" }
+  if (-not $schema) { $missing += "postgresql/createdb.sql" }
+  if (-not $defaultJson) { $missing += "config/default.json" }
+  if ($needsNode -and -not $node) { $missing += "node.exe" }
+  Write-Host ("Missing: " + ($missing -join ", "))
   Write-Host "Extracted tree (first 40 files):"
   Get-ChildItem -Path $extract -Recurse -File -ErrorAction SilentlyContinue |
     Select-Object -First 40 -ExpandProperty FullName
-  throw "OnlyOffice installer layout is missing nginx, DocService, FileConverter, schema, config, or node.exe. Refusing to ship an incomplete editor."
+  throw "OnlyOffice installer layout is incomplete ($($missing -join ', ')). Refusing to ship an incomplete editor."
 }
 
 # Install root is the directory that contains both nginx\ and server\.
 $docRoot = Find-DocRoot $nginx
 $serverMarker = Join-Path $docRoot "server"
 if (-not (Test-Path -LiteralPath $serverMarker)) {
-  $docRoot = $docJs.Directory.Parent.Parent.Parent.FullName
+  $docRoot = $docEntry.Directory.FullName
+  while ($docRoot -and -not ((Test-Path -LiteralPath (Join-Path $docRoot "nginx")) -and (Test-Path -LiteralPath (Join-Path $docRoot "server")))) {
+    $parent = Split-Path -Parent $docRoot
+    if (-not $parent -or $parent -eq $docRoot) { break }
+    $docRoot = $parent
+  }
 }
 $docDest = Join-Path $DestinationDir "documentserver"
 Write-Host "  copying Document Server from $docRoot"
 Copy-Tree -Source $docRoot -Dest $docDest
-if (-not (Find-First $docDest "node.exe" $null)) {
+if ($needsNode -and -not (Find-First $docDest "node.exe" $null)) {
   Copy-Item -LiteralPath $node.FullName -Destination (Join-Path $docDest "node.exe") -Force
   Write-Host "  copied node.exe from outside the Document Server root"
 }
@@ -184,16 +213,15 @@ function Find-InDest([string]$Filter, [string]$PathLike) {
 }
 
 $nginxOut = Find-InDest "nginx.exe" "*nginx*"
-$docOut = Find-InDest "server.js" "*DocService*"
-$converterOut = Find-InDest "convertermaster.js" "*FileConverter*"
+$docOut = Find-ServiceEntry $DestinationDir "docservice.exe" "server.js" "*DocService*"
+$converterOut = Find-ServiceEntry $DestinationDir "converter.exe" "convertermaster.js" "*FileConverter*"
 $schemaOut = Find-InDest "createdb.sql" "*postgresql*"
-$nodeOut = Find-InDest "node.exe" $null
-$defaultOut = Get-ChildItem -Path $DestinationDir -Recurse -Filter "default.json" -File |
-  Where-Object { $_.FullName -notmatch "node_modules" } |
-  Select-Object -First 1
+$nodeOut = $null
+if ($needsNode) { $nodeOut = Find-InDest "node.exe" $null }
+$defaultOut = Select-DefaultJson $DestinationDir
 $rabbitOut = Find-InDest "rabbitmq-server.bat" $null
 $erlOut = Find-InDest "erl.exe" $null
-if (-not ($nginxOut -and $docOut -and $converterOut -and $schemaOut -and $nodeOut -and $defaultOut -and $rabbitOut -and $erlOut)) {
+if (-not ($nginxOut -and $docOut -and $converterOut -and $schemaOut -and $defaultOut -and $rabbitOut -and $erlOut -and (-not $needsNode -or $nodeOut))) {
   throw "OnlyOffice bundle copy is incomplete"
 }
 
@@ -207,11 +235,13 @@ $manifest = [ordered]@{
   nginx = (Relative-To $DestinationDir $nginxOut.FullName)
   docservice = (Relative-To $DestinationDir $docOut.FullName)
   converter = (Relative-To $DestinationDir $converterOut.FullName)
-  node = (Relative-To $DestinationDir $nodeOut.FullName)
   schema = (Relative-To $DestinationDir $schemaOut.FullName)
   config_dir = (Relative-To $DestinationDir $defaultOut.Directory.FullName)
   rabbitmq = (Relative-To $DestinationDir $rabbitOut.FullName)
   erlang_home = (Relative-To $DestinationDir $erlOut.Directory.Parent.FullName)
+}
+if ($nodeOut) {
+  $manifest.node = (Relative-To $DestinationDir $nodeOut.FullName)
 }
 $manifestPath = Join-Path $DestinationDir "bundle.json"
 $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
