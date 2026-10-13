@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useApp } from '../../App'
 import { api } from '../../api/client'
 import AdminDetailHeader from '../../components/admin/AdminDetailHeader'
 import AdminConfirmDialog from '../../components/admin/AdminConfirmDialog'
 import AdminFormSection, { AdminField } from '../../components/admin/AdminFormSection'
 import AdminFilePreview from '../../components/admin/AdminFilePreview'
+import { mergeQualCategories, QUAL_CATEGORY_OPTIONS } from '../../constants/qualCategories'
 
 const EMPTY = {
   category: '', name: '', issuer: '', file_type: 'jpg', file_name: '',
@@ -32,6 +33,7 @@ function applyAiResult(form, result) {
 
 export default function QualificationDetailPage() {
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { showToast, refreshBaseData } = useApp()
   const isNew = id === 'new'
@@ -44,16 +46,20 @@ export default function QualificationDetailPage() {
   const [previewObjectUrl, setPreviewObjectUrl] = useState(null)
 
   useEffect(() => {
-    api.qualCategories().then(setCategories).catch(() => {})
+    api.qualCategories().then((cats) => setCategories(mergeQualCategories(cats))).catch(() => {
+      setCategories(mergeQualCategories([]))
+    })
   }, [])
 
   useEffect(() => {
     if (isNew) {
-      setForm(EMPTY)
+      const preset = (searchParams.get('category') || '').trim()
+      const valid = QUAL_CATEGORY_OPTIONS.some((o) => o.value === preset)
+      setForm(valid ? { ...EMPTY, category: preset } : EMPTY)
       return
     }
     api.getQual(id).then(setForm).catch((e) => showToast(e.message))
-  }, [id, isNew, showToast])
+  }, [id, isNew, showToast, searchParams])
 
   useEffect(() => {
     if (!uploadFile) {
@@ -136,8 +142,15 @@ export default function QualificationDetailPage() {
         <div className="card-block">
           <AdminFormSection title="基本信息">
             <AdminField label="分类">
-              <input list="qual-cats" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
-              <datalist id="qual-cats">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+              <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+                <option value="">请选择分类</option>
+                {QUAL_CATEGORY_OPTIONS.map(({ value, description }) => (
+                  <option key={value} value={value}>{value} — {description}</option>
+                ))}
+                {categories.filter((c) => !QUAL_CATEGORY_OPTIONS.some((o) => o.value === c)).map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
             </AdminField>
             <AdminField label="名称"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></AdminField>
             <AdminField label="颁发机构"><input value={form.issuer} onChange={(e) => setForm({ ...form, issuer: e.target.value })} /></AdminField>

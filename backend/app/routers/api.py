@@ -441,8 +441,17 @@ def list_qualifications(category: str | None = None, db: Session = Depends(get_d
 
 @router.get("/qualifications/categories")
 def qual_categories(db: Session = Depends(get_db)):
+    from app.services.qual_extract import QUAL_CATEGORIES
+
     rows = db.query(Qualification.category).distinct().all()
-    return [r[0] for r in rows]
+    extra = [r[0] for r in rows if r[0]]
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in [*QUAL_CATEGORIES, *extra]:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
 
 @router.get("/checklist")
