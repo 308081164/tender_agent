@@ -25,6 +25,23 @@ function Write-Step([string]$Message) {
   Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Mount-ShortStageDrive([string]$Target) {
+  foreach ($letter in @("S", "T", "U", "V", "W")) {
+    $root = "${letter}:\"
+    if (Test-Path -LiteralPath $root) { continue }
+    & subst.exe "${letter}:" $Target
+    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $root)) {
+      return $letter
+    }
+  }
+  throw "No free drive letter for the installer staging directory"
+}
+
+function Dismount-ShortStageDrive([string]$Letter) {
+  if (-not $Letter) { return }
+  & subst.exe "${Letter}:" /d | Out-Null
+}
+
 function Resolve-InnoSetupCompiler {
   $candidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
@@ -142,13 +159,27 @@ if ($AppVersion) {
 }
 
 Write-Step "Compiling installer (Inno Setup)"
-$isccArgs = @()
-if ($AppVersion) {
-  $isccArgs += "/DMyAppVersion=$AppVersion"
+# ISCC resolves the script-relative source through installer\.., which pushes
+# RabbitMQ plugin paths past MAX_PATH (260) on the GitHub runner. A subst
+# drive keeps every source path short enough for the compiler to read.
+$stageTarget = (Resolve-Path -LiteralPath $Stage).Path
+$stageDrive = Mount-ShortStageDrive $stageTarget
+try {
+  if (-not (Test-Path -LiteralPath "${stageDrive}:\TenderAgent.exe")) {
+    throw "Staging drive ${stageDrive}: does not see TenderAgent.exe"
+  }
+  Write-Host "Installer source drive: ${stageDrive}: -> $stageTarget"
+  $isccArgs = @("/DStageDir=${stageDrive}:")
+  if ($AppVersion) {
+    $isccArgs += "/DMyAppVersion=$AppVersion"
+  }
+  $isccArgs += $IssFile
+  & $iscc @isccArgs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
-$isccArgs += $IssFile
-& $iscc @isccArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+finally {
+  Dismount-ShortStageDrive $stageDrive
+}
 
 if (-not (Test-Path $SetupExe)) {
   Write-Host "Setup exe not found: $SetupExe" -ForegroundColor Red

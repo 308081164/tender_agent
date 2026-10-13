@@ -7,6 +7,9 @@
 #define MyAppExeName "TenderAgent.exe"
 #define MyAppMutex "Global\\TenderAgentDesktopElectron"
 #define MyUninstallRegKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\B8C4D2E1-5F3A-4B9C-8D2E-202608080001_is1"
+#ifndef StageDir
+#define StageDir "..\dist\tender-agent-installer-stage"
+#endif
 
 [Setup]
 AppId={{B8C4D2E1-5F3A-4B9C-8D2E-202608080001}}
@@ -48,7 +51,7 @@ english.LaunchApp=Launch {#MyAppName}
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\dist\tender-agent-installer-stage\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "{cm:AppComment}"; IconFilename: "{app}\icon.ico"; IconIndex: 0

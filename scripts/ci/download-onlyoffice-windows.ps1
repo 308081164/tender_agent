@@ -38,6 +38,17 @@ function Find-First([string]$Root, [string]$Filter, [string]$PathLike) {
     Select-Object -First 1
 }
 
+function Remove-RuntimeUnused([string]$Root, [string[]]$DirNames) {
+  if (-not (Test-Path -LiteralPath $Root)) { return }
+  $dirs = @(Get-ChildItem -LiteralPath $Root -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+    Where-Object { $DirNames -contains $_.Name })
+  foreach ($dir in $dirs) {
+    if (Test-Path -LiteralPath $dir.FullName) {
+      Remove-Item -LiteralPath $dir.FullName -Recurse -Force
+    }
+  }
+}
+
 function Copy-Tree([string]$Source, [string]$Dest) {
   if (Test-Path -LiteralPath $Dest) {
     Remove-Item -LiteralPath $Dest -Recurse -Force
@@ -195,6 +206,7 @@ $erlangHomeSrc = $erl.Directory.Parent.FullName
 $erlangDest = Join-Path $DestinationDir "erlang"
 Write-Host "  copying Erlang from $erlangHomeSrc"
 Copy-Tree -Source $erlangHomeSrc -Dest $erlangDest
+Remove-RuntimeUnused $erlangDest @("doc", "src", "java_src", "examples", "man")
 
 $rabbitZip = Join-Path $work "rabbitmq-server-windows-$RabbitVersion.zip"
 Download-File -Url $RabbitUrl -Destination $rabbitZip
