@@ -4,9 +4,10 @@ import { api } from '../../api/client'
 import { useAdminList } from '../../hooks/useAdminList'
 import AdminPageHeader from '../../components/admin/AdminPageHeader'
 import AdminToolbar from '../../components/admin/AdminToolbar'
-import AdminEmptyState from '../../components/admin/AdminEmptyState'
 import AdminSortableHeader from '../../components/admin/AdminSortableHeader'
 import Pagination from '../../components/Pagination'
+import QualCategoryGuide from '../../components/admin/QualCategoryGuide'
+import { mergeQualCategories, QUAL_CATEGORY_OPTIONS } from '../../constants/qualCategories'
 
 const STATUS_FILTERS = [
   { value: '', label: '全部状态' },
@@ -22,8 +23,15 @@ export default function QualificationsListPage() {
   const [categories, setCategories] = useState([])
 
   useEffect(() => {
-    api.qualCategories().then(setCategories).catch(() => {})
+    api.qualCategories().then((cats) => setCategories(mergeQualCategories(cats))).catch(() => {
+      setCategories(mergeQualCategories([]))
+    })
   }, [])
+
+  const goNewQual = (category = '') => {
+    const q = category ? `?category=${encodeURIComponent(category)}` : ''
+    navigate(`/admin/qualifications/new${q}`)
+  }
 
   const fetchFn = useCallback(({ page, pageSize, q, category, status, sortBy, sortDir }) =>
     api.adminQuals({ page, pageSize, q, category, status, sortBy, sortDir }), [])
@@ -72,7 +80,7 @@ export default function QualificationsListPage() {
       <AdminPageHeader
         title="资质库"
         lead="七大类资质材料，支持有效期管理与文件预览。"
-        actions={<button type="button" onClick={() => navigate('/admin/qualifications/new')}>新增资质</button>}
+        actions={<button type="button" onClick={() => goNewQual()}>新增资质</button>}
       />
       <AdminToolbar
         search={search}
@@ -82,7 +90,12 @@ export default function QualificationsListPage() {
           <>
             <select value={filters.category || ''} onChange={(e) => setFilters((prev) => ({ ...prev, category: e.target.value }))}>
               <option value="">全部分类</option>
-              {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+              {QUAL_CATEGORY_OPTIONS.map(({ value, description }) => (
+                <option key={value} value={value}>{value} — {description}</option>
+              ))}
+              {categories.filter((c) => !QUAL_CATEGORY_OPTIONS.some((o) => o.value === c)).map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
             </select>
             <select value={filters.status || ''} onChange={(e) => setFilters((prev) => ({ ...prev, status: e.target.value }))}>
               {STATUS_FILTERS.map((s) => (
@@ -99,7 +112,11 @@ export default function QualificationsListPage() {
       />
       {loading ? <div className="admin-loading">加载中…</div> : null}
       {!loading && items.length === 0 ? (
-        <AdminEmptyState title="暂无资质" action={<button type="button" onClick={() => navigate('/admin/qualifications/new')}>新增资质</button>} />
+        <QualCategoryGuide
+          activeCategory={filters.category || ''}
+          onAdd={goNewQual}
+          onAddInCategory={goNewQual}
+        />
       ) : (
         <>
           <table className="data-table admin-table">
