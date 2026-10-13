@@ -11,8 +11,8 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
 KIMI_K3_DEFAULT_MODEL = "kimi-k3"
 KIMI_DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
 QWEN_VL_DEFAULT_MODEL = "qwen-vl-plus"
-# 兼容旧默认
-KIMI_DEFAULT_MODEL = KIMI_K3_DEFAULT_MODEL
+KIMI_DEFAULT_MODEL = "moonshot-v1-8k"
+SETTINGS_URL = "/settings"
 
 
 def _mask(key: str) -> str:
@@ -38,7 +38,8 @@ def get_or_create_setting(db: Session) -> SystemSetting:
         qwen_vl_model=getattr(env, "qwen_vl_model", None) or QWEN_VL_DEFAULT_MODEL,
         kimi_api_key=env.kimi_api_key or "",
         kimi_base_url=env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
-        kimi_model=env.kimi_model or KIMI_K3_DEFAULT_MODEL,
+        kimi_model=env.kimi_model or KIMI_DEFAULT_MODEL,
+        kimi_k3_model=getattr(env, "kimi_k3_model", None) or KIMI_K3_DEFAULT_MODEL,
         preferred_provider="auto",
     )
     db.add(row)
@@ -59,7 +60,8 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         "qwen_vl_model": env.qwen_vl_model or QWEN_VL_DEFAULT_MODEL,
         "kimi_api_key": env.kimi_api_key or "",
         "kimi_base_url": env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
-        "kimi_model": env.kimi_model or KIMI_K3_DEFAULT_MODEL,
+        "kimi_model": env.kimi_model or KIMI_DEFAULT_MODEL,
+        "kimi_k3_model": env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": "auto",
     }
     if db is None:
@@ -85,6 +87,8 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         cfg["kimi_base_url"] = row.kimi_base_url
     if row.kimi_model:
         cfg["kimi_model"] = row.kimi_model
+    if getattr(row, "kimi_k3_model", None):
+        cfg["kimi_k3_model"] = row.kimi_k3_model
     if row.preferred_provider:
         cfg["preferred_provider"] = row.preferred_provider
     if not cfg.get("qwen_vl_model"):
@@ -93,11 +97,18 @@ def resolve_ai_config(db: Session | None = None) -> dict:
 
 
 def qwen_vl_ready(cfg: dict) -> bool:
-    return bool(cfg.get("qwen_api_key"))
+    if not (cfg.get("qwen_api_key") or "").strip():
+        return False
+    vl = (cfg.get("qwen_vl_model") or "").strip()
+    if vl:
+        return True
+    return "vl" in (cfg.get("qwen_model") or "").lower()
 
 
 def kimi_k3_ready(cfg: dict) -> bool:
-    return bool(cfg.get("kimi_api_key"))
+    if not (cfg.get("kimi_api_key") or "").strip():
+        return False
+    return bool((cfg.get("kimi_k3_model") or KIMI_K3_DEFAULT_MODEL).strip())
 
 
 def multimodal_ready(cfg: dict) -> bool:
@@ -107,9 +118,18 @@ def multimodal_ready(cfg: dict) -> bool:
 
 def multimodal_warning_message() -> str:
     return (
-        "资质文件夹扫描、图片/PDF 多模态理解需要 **通义千问 VL** 或 **Kimi K3** 至少配置一项 API Key。"
-        "纯文本生成可单独使用 DeepSeek。"
+        "资质文件夹扫描、图片/PDF 多模态理解需要 **通义千问 VL** 或 **Kimi K3** 至少配置一项（API Key + 多模态模型）。"
+        f"请前往系统设置 {SETTINGS_URL}。纯文本生成可单独使用 DeepSeek。"
     )
+
+
+def multimodal_gate_payload() -> dict:
+    return {
+        "ok": False,
+        "error_code": "multimodal_not_configured",
+        "message": multimodal_warning_message(),
+        "settings_url": SETTINGS_URL,
+    }
 
 
 def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
@@ -131,7 +151,8 @@ def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
         "kimi_k3_ready": bool(km_key),
         "kimi_api_key_masked": _mask(km_key),
         "kimi_base_url": row.kimi_base_url or env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
-        "kimi_model": row.kimi_model or env.kimi_model or KIMI_K3_DEFAULT_MODEL,
+        "kimi_model": row.kimi_model or env.kimi_model or KIMI_DEFAULT_MODEL,
+        "kimi_k3_model": getattr(row, "kimi_k3_model", None) or env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": row.preferred_provider or "auto",
         "multimodal_ready": multimodal_ready({
             "qwen_api_key": qw_key,
@@ -179,6 +200,8 @@ def update_settings(db: Session, payload: dict) -> SystemSetting:
         row.kimi_base_url = str(payload["kimi_base_url"]).strip() or row.kimi_base_url
     if "kimi_model" in payload and payload["kimi_model"] is not None:
         row.kimi_model = str(payload["kimi_model"]).strip() or row.kimi_model
+    if "kimi_k3_model" in payload and payload["kimi_k3_model"] is not None:
+        row.kimi_k3_model = str(payload["kimi_k3_model"]).strip() or row.kimi_k3_model
     if "preferred_provider" in payload and payload["preferred_provider"] is not None:
         provider = str(payload["preferred_provider"]).strip()
         if provider in ("auto", "deepseek", "qwen", "kimi"):

@@ -12,6 +12,7 @@ const emptyForm = {
   kimi_api_key: '',
   kimi_base_url: '',
   kimi_model: '',
+  kimi_k3_model: '',
   preferred_provider: 'auto',
 }
 
@@ -33,7 +34,8 @@ export function useSettings(showToast) {
       qwen_vl_model: s.qwen_vl_model || 'qwen-vl-plus',
       kimi_api_key: '',
       kimi_base_url: s.kimi_base_url || 'https://api.moonshot.cn/v1',
-      kimi_model: s.kimi_model || 'kimi-k3',
+      kimi_model: s.kimi_model || 'moonshot-v1-8k',
+      kimi_k3_model: s.kimi_k3_model || 'kimi-k3',
       preferred_provider: s.preferred_provider || 'auto',
     })
     return s
@@ -50,6 +52,7 @@ export function useSettings(showToast) {
         qwen_vl_model: settingsForm.qwen_vl_model,
         kimi_base_url: settingsForm.kimi_base_url,
         kimi_model: settingsForm.kimi_model,
+        kimi_k3_model: settingsForm.kimi_k3_model,
         preferred_provider: settingsForm.preferred_provider,
       }
       if (settingsForm.deepseek_api_key.trim()) {

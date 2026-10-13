@@ -501,6 +501,11 @@ async def classify_folder_materials(
     if not materials:
         return []
 
+    from app.services.ai import MultimodalRequiredError, is_multimodal_ready
+
+    if not is_multimodal_ready(db):
+        raise MultimodalRequiredError()
+
     payload = []
     for m in materials:
         payload.append({

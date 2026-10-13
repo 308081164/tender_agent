@@ -217,19 +217,63 @@ export default function SettingsPage() {
             />
           </div>
           <div className="field">
-            <label>模型</label>
-            <input
-              value={settingsForm.kimi_model}
-              onChange={(e) => setSettingsForm({ ...settingsForm, kimi_model: e.target.value })}
-              placeholder="kimi-k3"
-            />
+            <label>文本模型</label>
+            <select
+              value={['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0905-preview'].includes(settingsForm.kimi_model)
+                ? settingsForm.kimi_model
+                : '__custom__'}
+              onChange={(e) => {
+                const v = e.target.value
+                setSettingsForm({ ...settingsForm, kimi_model: v === '__custom__' ? '' : v })
+              }}
+            >
+              <option value="moonshot-v1-8k">moonshot-v1-8k</option>
+              <option value="moonshot-v1-32k">moonshot-v1-32k</option>
+              <option value="moonshot-v1-128k">moonshot-v1-128k</option>
+              <option value="kimi-k2-0905-preview">kimi-k2-0905-preview</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+            {!['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0905-preview'].includes(settingsForm.kimi_model) ? (
+              <input
+                style={{ marginTop: 8 }}
+                value={settingsForm.kimi_model}
+                onChange={(e) => setSettingsForm({ ...settingsForm, kimi_model: e.target.value })}
+                placeholder="Moonshot 文本 model id"
+              />
+            ) : null}
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              推荐 <code>kimi-k3</code>（文本与 vision）；备选 <code>kimi-k2.6</code> 等见 Moonshot 文档
+              纯文本自动链 fallback，不参与图片理解
             </div>
+          </div>
+          <div className="field">
+            <label>Kimi K3（多模态）</label>
+            <select
+              value={['kimi-k3', 'kimi-k2.6', 'moonshot-v1-8k-vision-preview'].includes(settingsForm.kimi_k3_model)
+                ? settingsForm.kimi_k3_model
+                : '__custom__'}
+              onChange={(e) => {
+                const v = e.target.value
+                setSettingsForm({ ...settingsForm, kimi_k3_model: v === '__custom__' ? '' : v })
+              }}
+            >
+              <option value="kimi-k3">Kimi K3（kimi-k3）</option>
+              <option value="kimi-k2.6">kimi-k2.6</option>
+              <option value="moonshot-v1-8k-vision-preview">moonshot-v1-8k-vision-preview</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+            {!['kimi-k3', 'kimi-k2.6', 'moonshot-v1-8k-vision-preview'].includes(settingsForm.kimi_k3_model) ? (
+              <input
+                style={{ marginTop: 8 }}
+                value={settingsForm.kimi_k3_model}
+                onChange={(e) => setSettingsForm({ ...settingsForm, kimi_k3_model: e.target.value })}
+                placeholder="官方多模态 model id"
+              />
+            ) : null}
           </div>
         </div>
         <div className="actions">
-          <button className="ghost" onClick={() => testKey('kimi_k3')} disabled={loading}>测试连接</button>
+          <button className="ghost" onClick={() => testKey('kimi')} disabled={loading}>测试文本</button>
+          <button className="ghost" onClick={() => testKey('kimi_k3')} disabled={loading}>测试 K3</button>
           <button
             className="secondary"
             onClick={() => clearKey('kimi')}

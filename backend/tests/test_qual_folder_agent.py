@@ -97,6 +97,7 @@ def test_rule_classify_by_content_not_folder_name(tmp_path):
 
 @pytest.mark.asyncio
 async def test_llm_classify_folder_materials_mock(monkeypatch):
+    monkeypatch.setattr("app.services.ai.is_multimodal_ready", lambda db=None: True)
     materials = [
         {
             "file_id": 0,
@@ -128,6 +129,7 @@ async def test_llm_classify_folder_materials_mock(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_import_pipeline_exploration_dry_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.ai.is_multimodal_ready", lambda db=None: True)
     folder = tmp_path / "flat"
     folder.mkdir()
     (folder / "doc1.txt").write_text("业绩合同 某某项目中标", encoding="utf-8")

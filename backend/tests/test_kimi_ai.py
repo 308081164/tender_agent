@@ -25,7 +25,8 @@ BASE_CFG = {
     "qwen_vl_model": "qwen-vl-plus",
     "kimi_api_key": "",
     "kimi_base_url": "https://api.moonshot.cn/v1",
-    "kimi_model": "kimi-k3",
+    "kimi_model": "moonshot-v1-8k",
+    "kimi_k3_model": "kimi-k3",
     "preferred_provider": "auto",
 }
 
@@ -85,18 +86,18 @@ async def test_chat_completion_kimi_only():
             mock_call.return_value = "hello kimi"
             text = await ai_svc.chat_completion([{"role": "user", "content": "hi"}], db=None, task_kind="text")
             assert text == "hello kimi"
-            assert mock_call.await_args[0][2] == "kimi-k3"
+            assert mock_call.await_args[0][2] == "moonshot-v1-8k"
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_vision_no_multimodal_returns_empty():
+async def test_chat_completion_vision_no_multimodal_raises():
     with patch.object(settings_svc, "resolve_ai_config", return_value=BASE_CFG):
-        text = await ai_svc.chat_completion_vision(
-            [{"role": "user", "content": "看图片"}],
-            image_data_urls=["data:image/png;base64,abc"],
-            db=None,
-        )
-        assert text == ""
+        with pytest.raises(ai_svc.MultimodalRequiredError):
+            await ai_svc.chat_completion_vision(
+                [{"role": "user", "content": "看图片"}],
+                image_data_urls=["data:image/png;base64,abc"],
+                db=None,
+            )
 
 
 @pytest.mark.asyncio
@@ -112,6 +113,20 @@ async def test_chat_completion_vision_uses_qwen_vl():
             )
             assert text == "vl ok"
             assert mock_call.await_args[0][2] == "qwen-vl-plus"
+
+
+@pytest.mark.asyncio
+async def test_import_qual_folder_gate_payload():
+    with patch.object(settings_svc, "resolve_ai_config", return_value={
+        "qwen_api_key": "",
+        "qwen_vl_model": "qwen-vl-plus",
+        "kimi_api_key": "",
+        "kimi_k3_model": "kimi-k3",
+    }):
+        from app.services.agent_qual_folder import import_qual_folder_pipeline
+        with pytest.raises(ai_svc.MultimodalRequiredError) as exc:
+            await import_qual_folder_pipeline(None, "/tmp/x")
+        assert exc.value.payload().get("settings_url") == "/settings"
 
 
 @pytest.mark.asyncio

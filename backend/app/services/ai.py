@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.services import settings_svc
 
-TEXT_TASK_KINDS = frozenset({"text", "text_batch"})
-MULTIMODAL_TASK_KINDS = frozenset({"multimodal", "vision", "qual_folder_classify"})
+TEXT_TASK_KINDS = frozenset({"text", "text_batch", "chat"})
+MULTIMODAL_TASK_KINDS = frozenset({"multimodal", "vision", "qual_folder_classify", "qual_folder"})
 SETTINGS_PATH = "/settings"
 
 
@@ -20,6 +20,9 @@ class MultimodalRequiredError(Exception):
         return [
             {"type": "link", "label": "打开系统设置", "url": SETTINGS_PATH, "primary": True},
         ]
+
+    def payload(self) -> dict:
+        return settings_svc.multimodal_gate_payload()
 
 
 def is_multimodal_ready(db: Session | None = None) -> bool:
@@ -80,8 +83,11 @@ def _provider_call(slug: str, cfg: dict, *, vision: bool = False) -> tuple[str, 
             cfg["qwen_api_key"],
             cfg.get("qwen_vl_model") or settings_svc.QWEN_VL_DEFAULT_MODEL,
         )
-    if slug in ("kimi", "kimi_k3") and cfg.get("kimi_api_key"):
-        model = cfg.get("kimi_model") or settings_svc.KIMI_K3_DEFAULT_MODEL
+    if slug == "kimi" and cfg.get("kimi_api_key"):
+        model = cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL
+        return (cfg["kimi_base_url"], cfg["kimi_api_key"], model)
+    if slug == "kimi_k3" and cfg.get("kimi_api_key"):
+        model = cfg.get("kimi_k3_model") or settings_svc.KIMI_K3_DEFAULT_MODEL
         return (cfg["kimi_base_url"], cfg["kimi_api_key"], model)
     return None
 
@@ -135,7 +141,7 @@ async def chat_completion(
         slug_map = {
             "deepseek": "deepseek",
             "qwen": "qwen",
-            "kimi": "kimi_k3",
+            "kimi": "kimi",
             "kimi_k3": "kimi_k3",
             "qwen_vl": "qwen_vl",
         }
@@ -191,7 +197,7 @@ async def chat_completion_vision(
 
     cfg = settings_svc.resolve_ai_config(db)
     if not settings_svc.multimodal_ready(cfg):
-        return ""
+        raise MultimodalRequiredError()
 
     user_content: list[dict] = []
     for m in messages:
@@ -502,17 +508,30 @@ async def test_provider(provider: str, db: Session | None = None) -> dict:
             return {"ok": True, "message": "通义千问 VL 连接成功", "sample": (text or "")[:80]}
         except Exception as e:
             return {"ok": False, "message": f"通义千问 VL 连接失败：{e}"}
-    if provider in ("kimi", "kimi_k3"):
+    if provider == "kimi":
         if not cfg.get("kimi_api_key"):
             return {"ok": False, "message": "未配置 Kimi API Key"}
         try:
             text = await _openai_compat(
                 cfg["kimi_base_url"],
                 cfg["kimi_api_key"],
-                cfg.get("kimi_model") or settings_svc.KIMI_K3_DEFAULT_MODEL,
+                cfg.get("kimi_model") or settings_svc.KIMI_DEFAULT_MODEL,
+                [{"role": "user", "content": "请只回复：ok"}],
+            )
+            return {"ok": True, "message": "Kimi 文本连接成功", "sample": (text or "")[:80]}
+        except Exception as e:
+            return {"ok": False, "message": f"Kimi 连接失败：{e}"}
+    if provider == "kimi_k3":
+        if not settings_svc.kimi_k3_ready(cfg):
+            return {"ok": False, "message": "未配置 Kimi K3（需 API Key 与 K3 模型）"}
+        try:
+            text = await _openai_compat(
+                cfg["kimi_base_url"],
+                cfg["kimi_api_key"],
+                cfg.get("kimi_k3_model") or settings_svc.KIMI_K3_DEFAULT_MODEL,
                 [{"role": "user", "content": "请只回复：ok"}],
             )
             return {"ok": True, "message": "Kimi K3 连接成功", "sample": (text or "")[:80]}
         except Exception as e:
-            return {"ok": False, "message": f"Kimi 连接失败：{e}"}
+            return {"ok": False, "message": f"Kimi K3 连接失败：{e}"}
     return {"ok": False, "message": "未知供应商"}

@@ -47,6 +47,7 @@ class SettingsUpdate(BaseModel):
     kimi_api_key: str | None = None
     kimi_base_url: str | None = None
     kimi_model: str | None = None
+    kimi_k3_model: str | None = None
     preferred_provider: str | None = None
     clear_deepseek_api_key: bool = False
     clear_qwen_api_key: bool = False
