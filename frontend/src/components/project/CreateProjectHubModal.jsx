@@ -110,9 +110,9 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
         <div className="create-hub-workspace" style={{ marginTop: 12 }}>
           <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
             <button type="button" className="secondary" onClick={pickWorkspaceDir} disabled={busy}>
-              选择工程目录（推荐）
+              选择工作目录（推荐）
             </button>
-            <span className="muted tiny">产出默认写入「过程资料 / 产出」子文件夹</span>
+            <span className="muted tiny">未选择时使用服务端默认目录；选定后 Agent 以该文件夹为工程根目录</span>
           </div>
           {workspaceDir ? (
             <p className="tiny muted" style={{ marginTop: 6, wordBreak: 'break-all' }}>{workspaceDir}</p>

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { formatTime } from '../utils/format'
 import ChatMessageBubble from './chat/ChatMessageBubble'
 import ChatAttachmentControls from './chat/ChatAttachmentControls'
+import ChatComposer from './chat/ChatComposer'
 
 export default function ChatDrawer({
   open,
@@ -93,26 +94,24 @@ export default function ChatDrawer({
               ))}
               {loading && <div className="msg bot">思考中…</div>}
             </div>
-            <div className="chat-drawer-input">
-              <ChatAttachmentControls
-                compact
-                disabled={loading}
-                showToast={showToast}
-                onUploadFiles={onUploadFiles}
-                onImportFolderPath={onImportFolderPath}
-                onImportFolderZip={(file) => onUploadFiles?.([file])}
-              />
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && askChat()}
-                placeholder="可粘贴文件夹路径并说明「读取录入」…"
-                disabled={loading}
-              />
-              <button onClick={askChat} disabled={loading || !chatInput.trim()}>
-                发送
-              </button>
-            </div>
+            <ChatComposer
+              className="chat-drawer-input"
+              value={chatInput}
+              onChange={setChatInput}
+              onSend={askChat}
+              loading={loading}
+              placeholder="可粘贴文件夹路径并说明「读取录入」…"
+              left={(
+                <ChatAttachmentControls
+                  compact
+                  disabled={loading}
+                  showToast={showToast}
+                  onUploadFiles={onUploadFiles}
+                  onImportFolderPath={onImportFolderPath}
+                  onImportFolderZip={(file) => onUploadFiles?.([file])}
+                />
+              )}
+            />
           </>
         )}
       </aside>

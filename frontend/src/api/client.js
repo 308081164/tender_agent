@@ -186,6 +186,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ folder_path, label }),
     }),
+  listWorkspaceTree: (sessionId, path = '') =>
+    request(`/chat/sessions/${sessionId}/workspace/tree`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
   readWorkspaceFile: (sessionId, path) =>
     request(`/chat/sessions/${sessionId}/workspace/files/read`, {
       method: 'POST',

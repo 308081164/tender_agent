@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { api } from './api/client'
-import FloatingChat from './components/FloatingChat'
 import CreateProjectHubModal from './components/project/CreateProjectHubModal'
 import Toast from './components/Toast'
 import { useToast } from './hooks/useToast'
@@ -16,8 +15,6 @@ export function useApp() {
 
 export default function App() {
   const location = useLocation()
-  const hideFloatingChat = location.pathname.startsWith('/chat')
-    || location.pathname.includes('/workspace')
   const [createHubOpen, setCreateHubOpen] = useState(false)
   const { toast, showToast } = useToast()
   const chat = useChatSessions(showToast)
@@ -109,7 +106,6 @@ export default function App() {
   return (
     <AppContext.Provider value={ctx}>
       <Outlet />
-      {!hideFloatingChat ? <FloatingChat chat={chat} projectPath={location.pathname} /> : null}
       <CreateProjectHubModal
         open={createHubOpen}
         templates={templates}

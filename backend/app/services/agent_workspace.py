@@ -83,6 +83,44 @@ def normalize_relative_path(root: Path, relative: str) -> Path:
     return target
 
 
+def list_workspace_dir(
+    db: Session,
+    session,
+    relative_path: str = "",
+) -> dict[str, Any]:
+    """列出工程目录下某路径的直接子项（用于文件树懒加载）。"""
+    root = resolve_session_workspace_root(db, session)
+    rel = (relative_path or "").replace("\\", "/").strip().lstrip("/")
+    if rel:
+        base = normalize_relative_path(root, rel)
+        if not base.is_dir():
+            raise NotADirectoryError(f"不是文件夹：{relative_path}")
+    else:
+        base = root.resolve()
+
+    entries: list[dict[str, Any]] = []
+    try:
+        children = sorted(base.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError as err:
+        raise FileNotFoundError(str(err)) from err
+
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        rel_child = child.relative_to(root.resolve()).as_posix()
+        entries.append({
+            "name": child.name,
+            "path": rel_child,
+            "type": "dir" if child.is_dir() else "file",
+        })
+
+    return {
+        "path": rel,
+        "workspace_root": str(root),
+        "entries": entries,
+    }
+
+
 def read_workspace_file(db: Session, session, relative_path: str) -> dict[str, Any]:
     root = resolve_session_workspace_root(db, session)
     target = normalize_relative_path(root, relative_path)
