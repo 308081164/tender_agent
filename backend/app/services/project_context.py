@@ -65,12 +65,21 @@ def build_field_checklist(
             "required": bool(fd.required),
         }
         if is_verify_field(fd):
-            if not has_val or fd.key not in confirmed:
+            from app.services.field_verify import trust_wizard_filled_verify_field
+
+            pending_reverify = fd.key in (
+                (project.fields or {}).get("_field_reverify") or []
+            )
+            trusted = trust_wizard_filled_verify_field(
+                project, fd.key, confirmed=confirmed, has_value=has_val,
+            )
+            if pending_reverify or (not has_val) or (not trusted and fd.key not in confirmed):
                 needs_verify.append({
                     **entry_base,
                     "value": str(val) if has_val else "",
                     "reason": verify_reason(fd),
-                    "confirmed": fd.key in confirmed,
+                    "confirmed": trusted or fd.key in confirmed,
+                    "pending_reverify": pending_reverify,
                 })
         if fd.required and not has_val:
             missing_required.append(entry_base)

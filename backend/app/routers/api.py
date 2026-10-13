@@ -679,10 +679,16 @@ async def draft_preview_pdf(project_id: int, force: bool = False, db: Session = 
         raise HTTPException(404, "项目不存在")
     from app.services import pdf_convert
 
+    import logging
+
+    log = logging.getLogger(__name__)
     try:
         pdf_bytes = await get_draft_preview_pdf(db, project_id, force_render=force)
     except ValueError as err:
         raise HTTPException(400, str(err)) from err
+    except Exception as err:
+        log.exception("draft-preview.pdf failed project_id=%s", project_id)
+        raise HTTPException(500, str(err) or "预览生成失败") from err
     title = (p.fields or {}).get("project_name") or p.title or "draft"
     pdf_name = f"{title}.pdf"
     engine = pdf_convert.get_pdf_engine() or "unknown"
@@ -900,6 +906,12 @@ def save_progress(project_id: int, body: SaveProgressRequest, db: Session = Depe
     elif body.current_step is not None and body.current_step > (p.current_step or 1):
         p.current_step = min(6, body.current_step)
 
+    if (p.current_step or 1) >= 3:
+        from app.services.field_verify import auto_confirm_wizard_verify_fields
+
+        auto_confirm_wizard_verify_fields(db, p)
+        flag_modified(p, "fields")
+
     if (p.current_step or 1) >= 2:
         filled = _fill_field_defaults(db, p.fields or {})
         if filled != (p.fields or {}):
@@ -950,17 +962,24 @@ def update_fields(project_id: int, body: FieldsUpdate, db: Session = Depends(get
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
+    from app.services.field_verify import mark_fields_for_reverify
+
     incoming = dict(body.fields or {})
     old = dict(p.fields or {})
     confirmed = dict(old.get("_sensitive_confirmed") or {})
     blocked: list[str] = []
+    reverify_keys: list[str] = []
     for fd in db.query(FieldDef).all():
         if fd.key not in incoming or incoming.get(fd.key) == old.get(fd.key):
             continue
-        if is_verify_field(fd) and fd.key not in confirmed:
-            blocked.append(fd.key)
-            incoming[fd.key] = old.get(fd.key)
+        if is_verify_field(fd):
+            reverify_keys.append(fd.key)
+            if fd.key not in confirmed and not body.confirm:
+                blocked.append(fd.key)
+                incoming[fd.key] = old.get(fd.key)
     merged = _fill_field_defaults(db, incoming)
+    if reverify_keys:
+        merged = mark_fields_for_reverify(merged, reverify_keys)
     p.fields = merged
     flag_modified(p, "fields")
     if p.fields.get("project_name"):
@@ -1395,7 +1414,7 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
 
     from app.services.field_verify import unconfirmed_sensitive_keys
 
-    pending_sensitive = unconfirmed_sensitive_keys(p.fields, db)
+    pending_sensitive = unconfirmed_sensitive_keys(p.fields, db, project=p)
     if pending_sensitive:
         raise HTTPException(
             400,
@@ -1891,7 +1910,9 @@ async def _finalize_chat_message_turn(
             tpl = ctx_pack.get("template") or {}
             cl = ctx_pack.get("field_checklist") or {}
             missing_n = len(cl.get("missing_required") or [])
-            verify_n = len(cl.get("needs_verify") or [])
+            verify_n = len([
+                v for v in (cl.get("needs_verify") or []) if not v.get("confirmed")
+            ])
             if tpl.get("name") and not meta.get("project_context_hint"):
                 hint = f"当前模板：{tpl.get('name')}（{tpl.get('mode')}）"
                 if missing_n or verify_n:

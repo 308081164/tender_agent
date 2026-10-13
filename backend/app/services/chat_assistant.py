@@ -620,6 +620,15 @@ async def process_chat_message(
     session=None,
     stream: bool = False,
 ) -> dict[str, Any]:
+    if session is not None and (workspace or {}).get("project_id"):
+        from app.services.project_export_flow import try_handle_export_flow
+
+        export_hit = await try_handle_export_flow(
+            text, db, session, workspace,
+        )
+        if export_hit is not None:
+            return export_hit
+
     # 流程状态机优先：进行中的多轮任务由卡片驱动，文本仅支持取消
     if session is not None:
         pa = (workspace or {}).get("pending_action")

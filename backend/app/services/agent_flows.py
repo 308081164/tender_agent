@@ -491,8 +491,21 @@ async def _on_confirm_fields(
         p = db.query(TenderProject).filter(TenderProject.id == int(bound_pid)).first()
         if not p:
             return "", _result("绑定的项目不存在。", intent="error"), False
+        from app.models import FieldDef
+        from app.services.field_verify import is_verify_field, mark_fields_for_reverify
+
         patch = {str(k): str(v) for k, v in (payload.get("fields") or {}).items()}
-        merged = fill_field_defaults(db, {**(p.fields or {}), **patch})
+        old = dict(p.fields or {})
+        reverify_keys = []
+        for key, val in patch.items():
+            if str(old.get(key)) == str(val):
+                continue
+            fd = db.query(FieldDef).filter(FieldDef.key == key).first()
+            if fd and is_verify_field(fd):
+                reverify_keys.append(key)
+        merged = fill_field_defaults(db, {**old, **patch})
+        if reverify_keys:
+            merged = mark_fields_for_reverify(merged, reverify_keys)
         p.fields = merged
         flag_modified(p, "fields")
         db.commit()

@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import React, { useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import BackChevron from '../components/chat/BackChevron'
@@ -8,18 +8,14 @@ import ProjectContextBar from '../components/project/ProjectContextBar'
 import FieldChecklistPanel from '../components/project/FieldChecklistPanel'
 import ProjectDocumentPane from '../components/project/ProjectDocumentPane'
 import WorkspaceDeliveryDrawer from '../components/project/WorkspaceDeliveryDrawer'
-import WorkspaceStepBar from '../components/project/WorkspaceStepBar'
-import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
 import ChatComposer from '../components/chat/ChatComposer'
 import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
 import ComposerContextBar from '../components/chat/ComposerContextBar'
 import { useProjectContext } from '../hooks/useProjectContext'
-import { stepForWorkspacePhase, workspacePhaseFromStep } from '../utils/projectRouting'
 
 export default function ProjectWorkspacePage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
   const projectId = Number(id)
   const { showToast, quals } = useApp()
   const { context, refresh: refreshContext } = useProjectContext(projectId)
@@ -33,7 +29,7 @@ export default function ProjectWorkspacePage() {
   const [checklistOpen, setChecklistOpen] = useState(true)
   const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [previewToken, setPreviewToken] = useState(Date.now())
-  const [features, setFeatures] = useState({ onlyoffice: { enabled: false } })
+  const [features, setFeatures] = useState({ onlyoffice: { enabled: false }, suggested_prompts: [] })
   const [guidedIntake, setGuidedIntake] = useState(true)
   const [referenceText, setReferenceText] = useState('')
   const [reviewHighlights, setReviewHighlights] = useState([])
@@ -44,13 +40,12 @@ export default function ProjectWorkspacePage() {
   const boundProjectTitle =
     project?.fields?.project_name || project?.title || (projectId ? `项目 #${projectId}` : '')
 
-  const activePhase = searchParams.get('phase')
-    || (project ? workspacePhaseFromStep(project.current_step, project.status) : 'create')
-
-  const setPhase = useCallback((phaseId) => {
-    setSearchParams({ phase: phaseId }, { replace: true })
-    if (phaseId === 'export') setDeliveryOpen(true)
-  }, [setSearchParams])
+  useEffect(() => {
+    const hl = workspace?.review_highlight_texts
+    if (Array.isArray(hl) && hl.length) {
+      setReviewHighlights(hl)
+    }
+  }, [workspace?.review_highlight_texts])
 
   useEffect(() => {
     ;(async () => {
@@ -137,6 +132,10 @@ export default function ProjectWorkspacePage() {
       ])
       if (res.session) setWorkspace(res.session.workspace || {})
       if (res.metadata?.project_context) await refreshContext()
+      if (res.metadata?.export_result || res.metadata?.export_flow === 'done') {
+        const p = await api.getProject(projectId)
+        setProject(p)
+      }
       bumpPreview()
     } catch (e) {
       showToast(e.message)
@@ -225,6 +224,12 @@ export default function ProjectWorkspacePage() {
     }
   }
 
+  const workspacePrompts = [
+    '请帮我导出标书',
+    '审查一下文档有没有矛盾',
+    '按左侧选中内容改写',
+  ]
+
   return (
     <div className="chat-workspace-page project-workspace-page">
       <header className="chat-workspace-topbar">
@@ -233,7 +238,7 @@ export default function ProjectWorkspacePage() {
         </Link>
         <strong>{project?.title || '创作工作台'}</strong>
         <div className="chat-workspace-top-actions">
-          <button type="button" className="ghost" onClick={() => setDeliveryOpen(true)}>交付</button>
+          <button type="button" className="ghost" onClick={() => setDeliveryOpen(true)}>交付与资质</button>
           <Link to="/" className="ghost">工作台</Link>
         </div>
       </header>
@@ -244,33 +249,10 @@ export default function ProjectWorkspacePage() {
         onToggleChecklist={() => setChecklistOpen((v) => !v)}
       />
 
-      <WorkspaceStepBar
-        project={project}
-        activePhase={activePhase}
-        onPhaseClick={(phaseId) => {
-          setPhase(phaseId)
-          api.saveProgress(projectId, { current_step: stepForWorkspacePhase(phaseId), advance: false })
-            .then(setProject)
-            .catch((e) => showToast(e.message))
-        }}
-      />
-
       <div className="chat-workspace-split">
         <section className="chat-workspace-doc">
-          {checklistOpen && activePhase === 'create' ? (
+          {checklistOpen ? (
             <FieldChecklistPanel context={context} onConfirmSensitive={confirmSensitive} />
-          ) : null}
-          {activePhase === 'review' ? (
-            <WorkspaceReviewPanel
-              projectId={projectId}
-              showToast={showToast}
-              onHighlightTexts={setReviewHighlights}
-              onReviewComplete={async () => {
-                const p = await api.getProject(projectId)
-                setProject(p)
-                bumpPreview()
-              }}
-            />
           ) : null}
           <ProjectDocumentPane
             projectId={projectId}
@@ -279,7 +261,7 @@ export default function ProjectWorkspacePage() {
             context={context}
             onlyOfficeEnabled={!!features.onlyoffice?.enabled}
             refreshToken={previewToken}
-            highlightTexts={activePhase === 'review' ? reviewHighlights : []}
+            highlightTexts={reviewHighlights}
             showToast={showToast}
             onPreviewError={(msg) => showToast(msg || '预览失败')}
             onFieldsSaved={refreshContext}
@@ -289,21 +271,35 @@ export default function ProjectWorkspacePage() {
 
         <aside className="chat-workspace-panel">
           <div className="chat-panel-head">
-            <h3>{activePhase === 'review' ? '审查助手' : '项目 Agent'}</h3>
+            <h3>项目 Agent</h3>
+            <p className="muted">语义理解 → 调用系统能力 → 结合项目上下文精准回复</p>
             <label className="check-row tiny">
               <input type="checkbox" checked={guidedIntake} onChange={(e) => setGuidedIntake(e.target.checked)} />
               引导补全
             </label>
           </div>
           <div className="chat-messages-area compact" ref={messagesRef}>
-            {messages.map((m, i) => (
-              <ChatMessageBubble
-                key={m.id || i}
-                message={m}
-                onCardAction={handleCardAction}
-                actingCardId={actingCardId}
-              />
-            ))}
+            {messages.length === 0 && !loading ? (
+              <div className="chat-empty compact">
+                <p className="muted chat-empty-hint">
+                  可修改字段、上传材料解析、对话中说「请帮我导出标书」完成审查与导出。
+                </p>
+                <div className="chat-prompt-chips">
+                  {workspacePrompts.map((p) => (
+                    <button key={p} type="button" className="chip" onClick={() => send(p)}>{p}</button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              messages.map((m, i) => (
+                <ChatMessageBubble
+                  key={m.id || i}
+                  message={m}
+                  onCardAction={handleCardAction}
+                  actingCardId={actingCardId}
+                />
+              ))
+            )}
             {loading ? <div className="chat-msg bot">思考中…</div> : null}
           </div>
           <ChatComposer
@@ -313,7 +309,7 @@ export default function ProjectWorkspacePage() {
             onSend={() => send()}
             loading={loading}
             loadingHint={loading ? '思考中…' : null}
-            placeholder="修改字段、提问、按参照改写…"
+            placeholder="修改字段、提问、导出标书…"
             contextBar={(
               <ComposerContextBar
                 workspaceDir={workspaceDir}
