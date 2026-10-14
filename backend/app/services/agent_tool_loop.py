@@ -61,6 +61,38 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "web_search",
+            "description": (
+                "检索公开互联网资料（招标惯例、保证金、中标公告等）。"
+                "用户说联网、网上查、搜索一下、查资料、公开资料时使用。"
+                "只根据返回的 title 与 url 引用，禁止编造链接。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "检索关键词"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "打开用户指定的单个 http 或 https 链接并提取正文。不要用于本地文件。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "http(s) URL"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_project_fields",
             "description": "更新标书项目 fields 字典中的字段（键值对）",
             "parameters": {
@@ -76,7 +108,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
 ]
 
 
-def _execute_tool(
+async def _execute_tool(
     db: Session,
     session,
     name: str,
@@ -123,6 +155,37 @@ def _execute_tool(
             p.title = str(merged["project_name"])[:180]
         db.commit()
         return {"ok": True, "project_id": pid, "updated_keys": list(fields.keys())}
+    if name == "web_search":
+        from app.services.web_search import search_web
+
+        query = str(args.get("query") or "").strip()
+        found = await search_web(query, db=db)
+        public = {
+            "ok": bool(found.get("ok")),
+            "provider": found.get("provider") or "",
+            "query": found.get("query") or query,
+            "results": found.get("results") or [],
+            "offline": bool(found.get("offline")),
+            "empty_state": bool(found.get("empty_state")),
+            "error": found.get("error") or "",
+            "message": found.get("message") or "",
+        }
+        return public
+    if name == "fetch_url":
+        from app.services.web_search import fetch_url
+
+        page = await fetch_url(str(args.get("url") or ""))
+        text = page.get("text") or ""
+        if len(text) > 4000:
+            text = text[:3999] + "…"
+        return {
+            "ok": bool(page.get("ok")),
+            "url": page.get("url") or "",
+            "title": page.get("title") or "",
+            "text": text,
+            "error": page.get("error") or "",
+            "message": page.get("message") or "",
+        }
     return {"ok": False, "error": f"未知工具：{name}"}
 
 
@@ -167,6 +230,23 @@ async def _openai_tools_round(
         return resp.json()
 
 
+def _sources_from_tool_log(tool_log: list[dict]) -> list[dict[str, str]]:
+    from app.services.web_search import sources_payload
+
+    rows: list[dict[str, str]] = []
+    for entry in tool_log:
+        result = entry.get("result") or {}
+        if entry.get("tool") == "web_search":
+            rows.extend(result.get("results") or [])
+        elif entry.get("tool") == "fetch_url" and result.get("ok") and result.get("url"):
+            rows.append({
+                "title": result.get("title") or result.get("url"),
+                "url": result.get("url"),
+                "snippet": (result.get("text") or "")[:320],
+            })
+    return sources_payload(rows)
+
+
 async def run_tool_loop(
     *,
     db: Session,
@@ -175,7 +255,7 @@ async def run_tool_loop(
     workspace: dict | None,
     context: dict | None,
     max_steps: int = 3,
-) -> str | None:
+) -> dict[str, Any] | None:
     """若 LLM 返回最终文本则输出；否则 None 表示应回退普通对话。"""
     if not tool_loop_enabled() or session is None:
         return None
@@ -204,7 +284,7 @@ async def run_tool_loop(
                     args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = _execute_tool(db, session, name, args, default_project_id=pid)
+                result = await _execute_tool(db, session, name, args, default_project_id=pid)
                 tool_log.append({"tool": name, "result": result})
                 working.append({
                     "role": "tool",
@@ -214,8 +294,45 @@ async def run_tool_loop(
             continue
         content = (msg.get("content") or "").strip()
         if content:
-            if tool_log:
-                content += "\n\n<!-- tools:" + json.dumps(tool_log, ensure_ascii=False)[:500] + " -->"
-            return content
+            sources = _sources_from_tool_log(tool_log)
+            web_attempts = [item for item in tool_log if item.get("tool") in ("web_search", "fetch_url")]
+            meta: dict[str, Any] = {}
+            if sources:
+                from app.services.web_search import format_sources_block, strip_unknown_urls
+
+                allowed = {item["url"] for item in sources}
+                content = strip_unknown_urls(content, allowed).strip()
+                block = format_sources_block(sources)
+                if block and block not in content:
+                    content = f"{content.rstrip()}\n\n{block}"
+                meta = {
+                    "intent": "web_search",
+                    "sources": sources,
+                    "web_search": {"ok": True, "searched": True},
+                }
+            elif web_attempts:
+                failed = next(
+                    (
+                        (item.get("result") or {})
+                        for item in web_attempts
+                        if not (item.get("result") or {}).get("ok")
+                    ),
+                    web_attempts[-1].get("result") or {},
+                )
+                note = (failed.get("message") or "联网检索没有返回可引用的公开来源。").strip()
+                if note not in content:
+                    content = f"{content.rstrip()}\n\n{note}"
+                meta = {
+                    "intent": "web_search",
+                    "sources": [],
+                    "web_search": {
+                        "ok": False,
+                        "offline": bool(failed.get("offline")),
+                        "empty_state": bool(failed.get("empty_state")),
+                        "error": failed.get("error") or "",
+                        "message": note,
+                    },
+                }
+            return {"answer": content, "metadata": meta}
         return None
     return None

@@ -1125,6 +1125,11 @@ def _runtime_env(install_dir: Path, data_dir: Path | None = None) -> dict[str, s
         env["TENDER_DATA_DIR"] = str(data_dir)
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # 嵌入式 Python 访问公网（联网搜索）时使用 certifi 的 CA 包。
+    ca_bundle = runtime / "Lib" / "site-packages" / "certifi" / "cacert.pem"
+    if ca_bundle.is_file():
+        env.setdefault("SSL_CERT_FILE", str(ca_bundle))
+        env.setdefault("REQUESTS_CA_BUNDLE", str(ca_bundle))
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     if data_dir is not None:
         env["PYTHONPYCACHEPREFIX"] = str(data_dir / "pycache")

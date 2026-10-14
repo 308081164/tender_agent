@@ -82,9 +82,12 @@ class SettingsUpdate(BaseModel):
     kimi_model: str | None = None
     kimi_k3_model: str | None = None
     preferred_provider: str | None = None
+    web_search_provider: str | None = None
+    web_search_api_key: str | None = None
     clear_deepseek_api_key: bool = False
     clear_qwen_api_key: bool = False
     clear_kimi_api_key: bool = False
+    clear_web_search_api_key: bool = False
 
 
 class TestProviderRequest(BaseModel):

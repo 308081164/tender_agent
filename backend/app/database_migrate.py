@@ -39,6 +39,8 @@ ALTERS = [
     "AND kimi_model IN ('kimi-k3', 'kimi-k2.6', 'kimi-k2-0905-preview')",
     "UPDATE system_settings SET kimi_model = 'moonshot-v1-8k' "
     "WHERE kimi_model IN ('kimi-k3', 'kimi-k2.6', 'kimi-k2-0905-preview')",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS web_search_provider VARCHAR(40) DEFAULT 'duckduckgo'",
+    "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS web_search_api_key TEXT DEFAULT ''",
 ]
 
 

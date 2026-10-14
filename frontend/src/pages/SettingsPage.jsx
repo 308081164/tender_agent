@@ -78,6 +78,67 @@ export default function SettingsPage() {
         </select>
       </div>
 
+      <div className="chapter">
+        <div className="chapter-head">
+          <h4>联网搜索</h4>
+          <span className="badge">
+            {(settingsForm.web_search_provider || 'duckduckgo') === 'duckduckgo'
+              ? 'DuckDuckGo · 无需密钥'
+              : settingsInfo?.web_search_api_key_set
+                ? `已配置 ${settingsInfo.web_search_api_key_masked}`
+                : '未配置密钥'}
+          </span>
+        </div>
+        <p className="lead" style={{ marginBottom: 10 }}>
+          对话里说「联网查一下」或打开输入框的「联网」，会检索公开网页并附上来源。默认 DuckDuckGo，不需要另买 API Key。
+        </p>
+        <div className="form-grid">
+          <div className="field">
+            <label>搜索来源</label>
+            <select
+              value={settingsForm.web_search_provider || 'duckduckgo'}
+              onChange={(e) => setSettingsForm({ ...settingsForm, web_search_provider: e.target.value })}
+            >
+              <option value="duckduckgo">DuckDuckGo（默认，无需密钥）</option>
+              <option value="tavily">Tavily（需要 API Key）</option>
+              <option value="bing">Bing Web Search（需要 API Key）</option>
+              <option value="serpapi">SerpAPI（需要 API Key）</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>可选 API Key</label>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={settingsInfo?.web_search_api_key_set ? '已配置，留空则保持不变' : '仅 Tavily / Bing / SerpAPI 需要'}
+              value={settingsForm.web_search_api_key}
+              onChange={(e) => setSettingsForm({ ...settingsForm, web_search_api_key: e.target.value })}
+              disabled={(settingsForm.web_search_provider || 'duckduckgo') === 'duckduckgo'}
+            />
+          </div>
+        </div>
+        {(settingsForm.web_search_provider || 'duckduckgo') !== 'duckduckgo'
+          && !settingsForm.web_search_api_key.trim()
+          && !settingsInfo?.web_search_api_key_set ? (
+          <div className="card-block" style={{ marginTop: 12, borderColor: 'var(--warn, #c9a227)' }}>
+            <strong>密钥为空</strong>
+            <p className="muted" style={{ margin: '8px 0 0', fontSize: 13 }}>
+              {settingsInfo?.web_search_empty_state
+                || '已选择付费搜索，但尚未填写 API Key。未保存密钥前不会调用该服务，也不会假装已经搜过网。请填写密钥，或改回 DuckDuckGo（无需密钥）。'}
+            </p>
+          </div>
+        ) : null}
+        <div className="actions">
+          <button
+            className="secondary"
+            onClick={() => clearKey('web_search')}
+            disabled={loading || !settingsInfo?.web_search_api_key_set}
+          >
+            清除搜索 Key
+          </button>
+        </div>
+      </div>
+
       <div className={`chapter${settingsInfo?.deepseek_api_key_set ? ' chapter-configured' : ''}`}>
         <div className="chapter-head">
           <h4>DeepSeek</h4>

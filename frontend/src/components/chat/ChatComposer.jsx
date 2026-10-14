@@ -17,6 +17,8 @@ export default function ChatComposer({
   contextBar = null,
   loadingHint = null,
   innerPrefix = null,
+  webSearch = false,
+  onToggleWebSearch,
 }) {
   const textareaRef = useAutoResizeTextarea(value, { minRows: 2, maxRows: 12 })
 
@@ -44,7 +46,19 @@ export default function ChatComposer({
           aria-label="对话输入"
         />
         <div className="composer-card-toolbar">
-          <div className="composer-card-toolbar-left">{left}</div>
+          <div className="composer-card-toolbar-left">
+            <button
+              type="button"
+              className={`composer-web-toggle${webSearch ? ' on' : ''}`}
+              aria-pressed={webSearch ? 'true' : 'false'}
+              title="开启后，这条消息会联网检索公开资料，并在回复里附上标题和链接"
+              disabled={loading}
+              onClick={() => onToggleWebSearch?.(!webSearch)}
+            >
+              联网
+            </button>
+            {left}
+          </div>
           <button
             type="button"
             className="composer-card-send"

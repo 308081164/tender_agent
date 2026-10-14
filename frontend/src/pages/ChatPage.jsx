@@ -22,6 +22,7 @@ export default function ChatPage() {
   const [workspace, setWorkspace] = useState({})
   const [paragraphs, setParagraphs] = useState([])
   const [input, setInput] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [features, setFeatures] = useState({ feature_cards: [], suggested_prompts: [] })
   const [selectedText, setSelectedText] = useState('')
@@ -122,6 +123,7 @@ export default function ChatPage() {
     try {
       const id = await ensureSession()
       const ctx = { selected_text: selectedText, ...buildFileContext() }
+      if (webSearch) ctx.web_search = true
       const res = await api.sendChatMessage(id, q, ctx)
       setMessages((m) => [
         ...m.filter((x) => x.id !== optimisticId),
@@ -426,7 +428,9 @@ export default function ChatPage() {
             onSend={() => send()}
             loading={loading}
             loadingHint={loading ? '思考中…' : fileLoading ? '正在读取工程文件…' : null}
-            placeholder="提问、检索标书、编写/替换指令…"
+            placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '提问、检索标书、编写/替换指令…'}
+            webSearch={webSearch}
+            onToggleWebSearch={setWebSearch}
             contextBar={(
               <ComposerContextBar
                 workspaceDir={workspaceDir}
