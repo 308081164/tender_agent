@@ -147,7 +147,7 @@ def _project_brief(p: TenderProject, db: Session, include_exports: bool = False)
         "created_at": p.created_at.isoformat() if p.created_at else "",
         "updated_at": p.updated_at.isoformat() if p.updated_at else "",
         "edit_url": (
-            f"/projects/{p.id}/workspace"
+            "/chat"
             if (p.current_step or 1) >= 3
             else f"/projects/{p.id}/step/{p.current_step or 1}"
         ),

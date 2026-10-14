@@ -595,7 +595,7 @@ async def open_project_workspace(
     body: WorkspaceOpenIn | None = None,
     db: Session = Depends(get_db),
 ):
-    """进入创作工作台：绑定会话并注入主动开场 assistant 消息（幂等）。"""
+    """绑定项目会话并注入主动开场（幂等）。"""
     from app.services.project_sessions import get_or_create_project_session
     from app.services import project_workspace_agent
 
@@ -638,7 +638,7 @@ async def project_workspace_followup(
         return {"assistant_message": None, "created": False}
     s = find_bound_session(db, project_id)
     if not s:
-        raise HTTPException(404, "请先打开创作工作台以创建项目会话")
+        raise HTTPException(404, "还没有绑定的项目会话。")
     msg = await project_workspace_agent.append_workspace_followup_message(
         db, s, p, guided=True,
     )
@@ -2088,34 +2088,36 @@ async def _finalize_chat_message_turn(
 
             ctx_pack = build_project_context(db, int(pid))
             meta["project_context"] = ctx_pack
-            tpl = ctx_pack.get("template") or {}
-            cl = ctx_pack.get("field_checklist") or {}
-            missing_n = len(cl.get("missing_required") or [])
-            verify_n = len([
-                v for v in (cl.get("needs_verify") or []) if not v.get("confirmed")
-            ])
-            if tpl.get("name") and not meta.get("project_context_hint"):
-                hint = f"当前模板：{tpl.get('name')}（{tpl.get('mode')}）"
-                if missing_n or verify_n:
-                    hint += f"；待填 {missing_n} 项，待核实 {verify_n} 项"
-                result["answer"] = ((result.get("answer") or "").strip() + f"\n\n_{hint}_").strip()
-            guided = ws.get("guided_intake", True)
-            ctx_body = body.context or {}
-            if ctx_body.get("guided_intake") is False:
-                guided = False
-            if guided and not meta.get("cards"):
-                guided_meta = await project_workspace_agent.build_guided_intake_metadata(
-                    db, int(pid), guided=True,
-                )
-                for card in guided_meta.get("cards") or []:
-                    meta.setdefault("cards", []).append(card)
-                follow = guided_meta.get("guided_followup_text")
-                if follow and not meta.get("cards"):
-                    result["answer"] = ((result.get("answer") or "") + f"\n\n{follow}").strip()
-            if guided and not meta.get("cards"):
-                tail = await project_workspace_agent.build_workspace_followup(db, int(pid), guided=True)
-                if tail and tail not in (result.get("answer") or ""):
-                    result["answer"] = ((result.get("answer") or "").strip() + f"\n\n{tail}").strip()
+            # 一般问题、联网检索只回答问题本身，不把待填卡片和模板进度脚注拼进回复。
+            if chat_assistant.should_attach_bid_intake_chrome(content, meta, body.context):
+                tpl = ctx_pack.get("template") or {}
+                cl = ctx_pack.get("field_checklist") or {}
+                missing_n = len(cl.get("missing_required") or [])
+                verify_n = len([
+                    v for v in (cl.get("needs_verify") or []) if not v.get("confirmed")
+                ])
+                if tpl.get("name") and not meta.get("project_context_hint"):
+                    hint = f"当前模板：{tpl.get('name')}（{tpl.get('mode')}）"
+                    if missing_n or verify_n:
+                        hint += f"；待填 {missing_n} 项，待核实 {verify_n} 项"
+                    result["answer"] = ((result.get("answer") or "").strip() + f"\n\n_{hint}_").strip()
+                guided = ws.get("guided_intake", True)
+                ctx_body = body.context or {}
+                if ctx_body.get("guided_intake") is False:
+                    guided = False
+                if guided and not meta.get("cards"):
+                    guided_meta = await project_workspace_agent.build_guided_intake_metadata(
+                        db, int(pid), guided=True,
+                    )
+                    for card in guided_meta.get("cards") or []:
+                        meta.setdefault("cards", []).append(card)
+                    follow = guided_meta.get("guided_followup_text")
+                    if follow and not meta.get("cards"):
+                        result["answer"] = ((result.get("answer") or "") + f"\n\n{follow}").strip()
+                if guided and not meta.get("cards"):
+                    tail = await project_workspace_agent.build_workspace_followup(db, int(pid), guided=True)
+                    if tail and tail not in (result.get("answer") or ""):
+                        result["answer"] = ((result.get("answer") or "").strip() + f"\n\n{tail}").strip()
         except Exception as err:
             import logging
 

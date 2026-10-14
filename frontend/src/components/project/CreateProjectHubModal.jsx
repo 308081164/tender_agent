@@ -105,7 +105,7 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal panel create-hub-modal" role="dialog" onClick={(e) => e.stopPropagation()}>
         <h3>新建标书</h3>
-        <p className="muted">选择模板后从「选择起点」开始；完成信息录入后进入创作工作台（左文档、右 Agent）。</p>
+        <p className="muted">选择模板后从「选择起点」开始；完成信息录入后留在 Agent 对话里编写、审查和导出。</p>
         <Step1TemplatePicker templates={sortedTemplates} selectedId={selectedId} onSelect={setSelectedId} />
         <div className="create-hub-workspace" style={{ marginTop: 12 }}>
           <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>

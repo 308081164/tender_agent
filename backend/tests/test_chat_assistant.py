@@ -46,6 +46,46 @@ def test_faq_match_hits_domain_question():
     assert score >= 0.35
 
 
+def test_fallback_and_project_links_do_not_send_users_to_removed_workspace(monkeypatch):
+    """答非所问和项目链接不再写出「打开/进入创作工作台」，也不再指向该页面。"""
+    from app.services.agent_query_tools import _project_brief
+    from app.services.chat_assistant import _handle_draft_create, _handle_edit_project
+
+    async def empty(messages, db=None, **kwargs):
+        return ""
+
+    monkeypatch.setattr("app.services.ai.chat_completion", empty)
+
+    class _Project:
+        id = 7
+        title = "新建标书"
+        current_step = 3
+        status = "draft"
+        fields = {}
+        created_at = None
+        updated_at = None
+
+    monkeypatch.setattr("app.services.chat_assistant._latest_project", lambda db: _Project())
+
+    fallback = asyncio.run(process_chat_message("zzz无关问题", db=None, faq_items=[]))
+    draft = asyncio.run(_handle_draft_create(None))
+    edited = asyncio.run(_handle_edit_project(None))
+    brief = _project_brief(_Project(), None)
+    blobs = [
+        fallback["answer"],
+        draft["answer"],
+        edited["answer"],
+        brief["edit_url"],
+    ]
+    for item in (fallback, draft, edited):
+        blobs.append(__import__("json").dumps(item.get("metadata") or {}, ensure_ascii=False))
+    text = "\n".join(blobs)
+    assert "创作工作台" not in text
+    assert "/workspace" not in text
+    assert "暂未匹配到明确答案" in fallback["answer"]
+    assert "打开 Agent 对话" in text
+
+
 def test_process_meta_question_without_llm():
     async def _run():
         with __import__("unittest.mock").mock.patch(

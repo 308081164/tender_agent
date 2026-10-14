@@ -4,10 +4,13 @@
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import html
 import ipaddress
 import json
 import re
+import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -15,6 +18,9 @@ import httpx
 from sqlalchemy.orm import Session
 
 SEARCH_TIMEOUT_SECONDS = 15.0
+# 单个端点的上限。默认检索会并行尝试多个无密钥端点，避免某一个挂满 15 秒就整次失败。
+ENDPOINT_TIMEOUT_SECONDS = 8.0
+_DDG_GRACE_SECONDS = 1.5
 MAX_RESULTS = 5
 MAX_FETCH_BYTES = 200_000
 MAX_QUERY_CHARS = 180
@@ -210,6 +216,50 @@ def parse_duckduckgo_instant(payload: dict[str, Any]) -> list[dict[str, str]]:
     return items[:MAX_RESULTS]
 
 
+_BING_H2_RE = re.compile(
+    r"<h2[^>]*>\s*<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>\s*</h2>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _unwrap_bing_href(href: str) -> str:
+    """Bing 结果链接经常包在 /ck/a 跳转里，u=a1 后面是目标网址的 base64。"""
+    href = html.unescape((href or "").strip())
+    parsed = urlparse(href)
+    host = (parsed.hostname or "").lower()
+    if not host.endswith("bing.com") or not parsed.path.startswith("/ck/"):
+        return href
+    raw = (parse_qs(parsed.query).get("u") or [""])[0]
+    if not raw.startswith("a1"):
+        return ""
+    blob = raw[2:]
+    blob += "=" * ((4 - len(blob) % 4) % 4)
+    try:
+        decoded = base64.b64decode(blob).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    return decoded if decoded.startswith("http") else ""
+
+
+def parse_bing_html(raw: str) -> list[dict[str, str]]:
+    """从 Bing 搜索页抽出最多 5 条公开结果。跳转跟踪链接还原成目标 URL。"""
+    page = raw or ""
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    matches = list(_BING_H2_RE.finditer(page))
+    for index, match in enumerate(matches):
+        href = _unwrap_bing_href(match.group(1))
+        title = match.group(2)
+        end = matches[index + 1].start() if index + 1 < len(matches) else match.end() + 800
+        window = page[match.end():end]
+        snippet_match = re.search(r"<p[^>]*>(.*?)</p>", window, re.IGNORECASE | re.DOTALL)
+        snippet = snippet_match.group(1) if snippet_match else ""
+        _push_result(items, seen, title, href, snippet)
+        if len(items) >= MAX_RESULTS:
+            break
+    return items
+
+
 def _httpx_client(timeout: float = SEARCH_TIMEOUT_SECONDS) -> httpx.AsyncClient:
     verify: bool | str = True
     try:
@@ -218,8 +268,19 @@ def _httpx_client(timeout: float = SEARCH_TIMEOUT_SECONDS) -> httpx.AsyncClient:
         verify = certifi.where()
     except Exception:
         verify = True
+    budget = float(timeout or SEARCH_TIMEOUT_SECONDS)
+    # 连接阶段单独收紧，避免坏掉的 IPv6 路由把整次检索拖到读超时。
+    request_timeout = httpx.Timeout(budget, connect=min(5.0, budget))
+    transport = None
+    try:
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=0)
+    except Exception:
+        transport = None
+    kwargs: dict[str, Any] = {}
+    if transport is not None:
+        kwargs["transport"] = transport
     return httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
+        timeout=request_timeout,
         follow_redirects=True,
         verify=verify,
         headers={
@@ -229,6 +290,7 @@ def _httpx_client(timeout: float = SEARCH_TIMEOUT_SECONDS) -> httpx.AsyncClient:
             ),
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         },
+        **kwargs,
     )
 
 
@@ -314,34 +376,133 @@ def _error_message(exc: Exception) -> tuple[str, str, bool]:
     return "error", "联网搜索失败，没有拿到公开结果。本次检索未完成。", False
 
 
+def _pick_search_error(errors: list[BaseException]) -> BaseException:
+    """全部端点都失败时，保留真实的超时或断网原因，不把空结果说成已经搜过。"""
+    timeouts = [err for err in errors if isinstance(err, httpx.TimeoutException)]
+    statuses = [err for err in errors if isinstance(err, httpx.HTTPStatusError)]
+    connects = [
+        err for err in errors
+        if isinstance(err, (httpx.ConnectError, httpx.NetworkError, OSError))
+        and not isinstance(err, httpx.TimeoutException)
+    ]
+    if statuses and not timeouts:
+        return statuses[-1]
+    if timeouts and not statuses:
+        return timeouts[-1]
+    if connects and len(connects) == len(errors):
+        return connects[-1]
+    if timeouts:
+        return timeouts[-1]
+    return errors[-1]
+
+
+async def _fetch_ddg_html(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
+    resp = await client.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query, "kl": "cn-zh"},
+    )
+    resp.raise_for_status()
+    return parse_duckduckgo_html(resp.text)
+
+
+async def _fetch_ddg_lite(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
+    resp = await client.get(
+        "https://lite.duckduckgo.com/lite/",
+        params={"q": query},
+    )
+    resp.raise_for_status()
+    return parse_duckduckgo_html(resp.text)
+
+
+async def _fetch_ddg_instant(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
+    resp = await client.get(
+        "https://api.duckduckgo.com/",
+        params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+    )
+    resp.raise_for_status()
+    try:
+        payload = resp.json()
+    except json.JSONDecodeError:
+        payload = {}
+    return parse_duckduckgo_instant(payload if isinstance(payload, dict) else {})
+
+
+async def _fetch_bing(client: httpx.AsyncClient, query: str) -> list[dict[str, str]]:
+    resp = await client.get(
+        "https://www.bing.com/search",
+        params={"q": query, "setlang": "zh-Hans", "count": str(MAX_RESULTS)},
+    )
+    resp.raise_for_status()
+    return parse_bing_html(resp.text)
+
+
 async def _search_duckduckgo(query: str) -> list[dict[str, str]]:
-    async with _httpx_client() as client:
-        html_resp = await client.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query, "kl": "cn-zh"},
-        )
-        html_resp.raise_for_status()
-        parsed = parse_duckduckgo_html(html_resp.text)
-        if parsed:
-            return parsed
-        lite = await client.get(
-            "https://lite.duckduckgo.com/lite/",
-            params={"q": query},
-        )
-        lite.raise_for_status()
-        parsed = parse_duckduckgo_html(lite.text)
-        if parsed:
-            return parsed
-        instant = await client.get(
-            "https://api.duckduckgo.com/",
-            params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-        )
-        instant.raise_for_status()
-        try:
-            payload = instant.json()
-        except json.JSONDecodeError:
-            payload = {}
-        return parse_duckduckgo_instant(payload if isinstance(payload, dict) else {})
+    """默认无密钥检索。
+
+    DuckDuckGo HTML / Lite / Instant 与 Bing 页面并行尝试。某个端点读超时不再中断其余端点；
+    只有全部失败时才把超时或断网上报给对话。
+    """
+
+    async def attempt(fn):
+        async with _httpx_client(ENDPOINT_TIMEOUT_SECONDS) as client:
+            return await fn(client, query)
+
+    jobs = (
+        ("ddg", _fetch_ddg_html),
+        ("ddg", _fetch_ddg_lite),
+        ("ddg", _fetch_ddg_instant),
+        ("bing", _fetch_bing),
+    )
+    task_labels: dict[asyncio.Task, str] = {}
+    for label, fn in jobs:
+        task_labels[asyncio.create_task(attempt(fn))] = label
+
+    errors: list[BaseException] = []
+    bing_rows: list[dict[str, str]] | None = None
+    grace_deadline: float | None = None
+    try:
+        pending = set(task_labels)
+        while pending:
+            grace = None
+            if bing_rows is not None and grace_deadline is not None:
+                grace = max(0.0, grace_deadline - time.monotonic())
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=grace,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                if bing_rows:
+                    return bing_rows
+                continue
+            for task in done:
+                label = task_labels[task]
+                exc = task.exception()
+                if exc is not None:
+                    errors.append(exc)
+                    continue
+                rows = task.result() or []
+                if not rows:
+                    continue
+                if label == "ddg":
+                    return rows
+                bing_rows = rows
+                if grace_deadline is None:
+                    grace_deadline = time.monotonic() + _DDG_GRACE_SECONDS
+            ddg_left = any(task_labels[task] == "ddg" for task in pending)
+            if bing_rows and not ddg_left:
+                return bing_rows
+        if bing_rows:
+            return bing_rows
+    finally:
+        for task in task_labels:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*task_labels, return_exceptions=True)
+
+    if errors:
+        raise _pick_search_error(errors)
+    return []
 
 
 async def _search_tavily(query: str, api_key: str) -> list[dict[str, str]]:

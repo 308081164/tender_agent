@@ -477,8 +477,8 @@ export default function WizardPage() {
             <div className="actions">
               <button className="secondary" onClick={() => goStep(1)}>返回上一步</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
-              <Link className="button secondary linkish" to={`/projects/${project.id}/workspace`}>进入创作工作台</Link>
-              <button onClick={confirmFields} disabled={loading}>保存并进入创作工作台</button>
+              <Link className="button secondary linkish" to="/chat">打开 Agent 对话</Link>
+              <button onClick={confirmFields} disabled={loading}>保存并继续</button>
             </div>
           </>
         )}
