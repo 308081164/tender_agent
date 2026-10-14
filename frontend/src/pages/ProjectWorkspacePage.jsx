@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
@@ -44,7 +44,17 @@ export default function ProjectWorkspacePage() {
   const [referenceOpen, setReferenceOpen] = useState(false)
   const messagesRef = useRef(null)
   const materials = usePendingMaterials()
-  const mentions = useChatMentions(sessionId)
+  const ensureRef = useRef(null)
+  const ensureForMentions = useCallback(() => ensureRef.current?.(), [])
+  const mentions = useChatMentions(sessionId, ensureForMentions)
+  const ensureSession = async () => {
+    if (sessionId) return sessionId
+    const opened = await api.openProjectWorkspace(projectId, true)
+    setSessionId(opened.session.id)
+    setWorkspace(opened.session.workspace || {})
+    return opened.session.id
+  }
+  ensureRef.current = ensureSession
   const [anchor, setAnchor] = useState(null)
   const [memos, setMemos] = useState([])
 

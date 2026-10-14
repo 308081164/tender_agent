@@ -88,6 +88,42 @@ def document_text(docx_bytes: bytes) -> str:
     return "\n".join(lines)
 
 
+def document_blocks(docx_bytes: bytes) -> list[dict]:
+    """按文档顺序交出正文段落和表格。表格单元格单独成行，不并进顶层段落。"""
+    root = _document_root(docx_bytes)
+    blocks: list[dict] = []
+    paragraph_index = 0
+    table_index = 0
+    for child in list(_body(root)):
+        if child.tag == f"{{{W}}}p":
+            blocks.append({
+                "kind": "paragraph",
+                "index": paragraph_index,
+                "text": _paragraph_text(child).strip(),
+                "source": f"paragraph:{paragraph_index}",
+            })
+            paragraph_index += 1
+        elif child.tag == f"{{{W}}}tbl":
+            rows: list[list[str]] = []
+            for tr in child.findall(f"{{{W}}}tr"):
+                cells: list[str] = []
+                for tc in tr.findall(f"{{{W}}}tc"):
+                    parts = [
+                        _paragraph_text(p).strip()
+                        for p in tc.findall(f"{{{W}}}p")
+                    ]
+                    cells.append("".join(part for part in parts if part))
+                rows.append(cells)
+            blocks.append({
+                "kind": "table",
+                "index": table_index,
+                "rows": rows,
+                "source": f"table:{table_index}",
+            })
+            table_index += 1
+    return blocks
+
+
 def replace_text(docx_bytes: bytes, old: str, new: str, *, paragraph_index: int | None = None) -> bytes:
     """替换选中文字或指定段落。找不到原文时抛错，不改到文首。"""
     if not old and paragraph_index is None:

@@ -464,9 +464,9 @@ def test_review_fix_patches_docx_and_rereviews_that_issue(monkeypatch):
     assert issue["suggestion"] == "180天"
     db = _db()
     project = _project(db, chapters={"_plain": "计划工期 90天。另有未盖章页。"}, checklist_result={"doc_review": review})
-    fixed = fix_review_issue(project, issue["id"], docx_bytes=doc)
+    fixed = asyncio.run(fix_review_issue(project, issue["id"], docx_bytes=doc, db=db))
     db.commit()
-    assert fixed["rereview"]["checked_on"] == "document"
+    assert fixed["rereview"]["checked_on"] == "review_document"
     assert fixed["rereview"]["ok"] is True
     assert "180天" in plain_text(fixed["docx_bytes"])
     assert "90天" not in plain_text(fixed["docx_bytes"])
@@ -547,12 +547,58 @@ def test_docx_tender_table_is_parsed_and_pdf_bytes_are_not_text():
     )
     assert uploaded.status_code == 200
     tender = uploaded.json()["tender"]
-    assert any("技术方案" in item for item in tender["scoring_points"])
-    assert any("市政公用" in item for item in tender["qualifications"])
-    assert any("2026-11-02" in item for item in tender["key_dates"])
+
+    def shown(item):
+        return json.dumps(item, ensure_ascii=False) if isinstance(item, dict) else str(item)
+
+    assert any(item.get("title") == "技术方案" and str(item.get("source") or "").startswith("table:") for item in tender["scoring_points"])
+    assert any("市政公用" in shown(item) for item in tender["qualifications"])
+    assert any("2026-11-02" in shown(item) for item in tender["key_dates"])
+    checked = check_against_tender("投标截止时间：2026-12-01。资质写了二级。工期180天。", tender)
+    failed = {item["item"] for item in checked["conflicts"]}
+    assert "技术方案" in failed
+    assert any("市政公用" in name for name in failed)
+    assert any("投标截止" in name for name in failed)
     noise = client.post(
         f"/api/projects/{pid}/tender-file",
         files={"file": ("noise.pdf", "\xff\xfe评分办法".encode("utf-8", errors="surrogateescape"), "application/pdf")},
     )
     assert noise.status_code == 200
-    assert not any("评分" in item for item in noise.json()["tender"]["scoring_points"])
+    assert not any("评分" in shown(item) for item in noise.json()["tender"]["scoring_points"])
+
+
+def test_workspace_fix_passes_open_docx_and_reruns_review(monkeypatch):
+    async def no_llm(*args, **kwargs):
+        return "[]"
+
+    monkeypatch.setattr("app.services.ai.chat_completion", no_llm)
+    _memory_storage(monkeypatch)
+    doc = build_docx(["计划工期 90天。", "另有未盖章页。"])
+    BLOB["projects/open.docx"] = doc
+    db = _db()
+    project = _project(db, fields={
+        "duration": "180天",
+        "_draft_object_key": "projects/open.docx",
+    }, checklist_result={"doc_review": {"issues": [{
+        "id": "rv-9",
+        "code": "stale_value",
+        "field": "duration",
+        "message": "文档中仍残留旧工期",
+        "suggestion": "180天",
+    }]}})
+    session = _session(db, {"project_id": project.id, "draft_object_key": "projects/open.docx"})
+    pid = project.id
+    sid = session.id
+    db.commit()
+    db.close()
+    fixed = client.post(f"/api/projects/{pid}/review-issues/rv-9/fix")
+    assert fixed.status_code == 200
+    body = fixed.json()
+    assert body["rereview"]["checked_on"] == "review_document"
+    assert body["ok"] is True
+    key = body["draft_object_key"]
+    assert "180天" in plain_text(BLOB[key])
+    assert "90天" not in plain_text(BLOB[key])
+    assert "未盖章" in plain_text(BLOB[key])
+    loaded = client.get(f"/api/chat/sessions/{sid}")
+    assert loaded.json()["workspace"]["draft_object_key"] == key

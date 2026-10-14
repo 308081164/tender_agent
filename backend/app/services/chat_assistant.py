@@ -940,7 +940,9 @@ async def process_chat_message(
                     "metadata": {"intent": "fix_review_issue", "review_issues": open_issues},
                 }
         if issue_id:
-            fixed = fix_review_issue(project, issue_id, docx_bytes=_open_session_docx(session))
+            fixed = await fix_review_issue(
+                project, issue_id, docx_bytes=_open_session_docx(session), db=db,
+            )
             _store_fixed_docx(db, session, fixed)
             db.commit()
             if session is not None and fixed.get("highlight_texts") is not None:

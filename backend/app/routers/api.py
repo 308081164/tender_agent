@@ -821,7 +821,12 @@ async def upload_project_tender_file(
     db: Session = Depends(get_db),
 ):
     """把招标 PDF/Word 解析进项目上下文，供写作中对照。"""
-    from app.services.agent_capabilities import parse_tender_text, store_tender_record
+    from app.services.agent_capabilities import (
+        parse_tender_docx,
+        parse_tender_text,
+        store_tender_record,
+        tender_has_items,
+    )
 
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
@@ -833,18 +838,16 @@ async def upload_project_tender_file(
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext not in ("pdf", "doc", "docx", "txt"):
         raise HTTPException(400, "请上传招标 PDF 或 Word")
-    text = ""
+    parsed = None
     if ext in ("txt", "md"):
-        text = data.decode("utf-8", errors="ignore")
+        parsed = parse_tender_text(data.decode("utf-8", errors="ignore"))
     elif ext == "docx":
-        text = ""
         try:
-            from app.services.docx_ooxml import document_text
-
-            text = document_text(data)
+            parsed = parse_tender_docx(data)
         except Exception:
+            parsed = None
+        if not tender_has_items(parsed):
             text = ""
-        if not text.strip():
             try:
                 preview = word.extract_preview(data, max_paragraphs=400)
                 text = "\n".join(
@@ -854,6 +857,10 @@ async def upload_project_tender_file(
                 )
             except Exception:
                 text = ""
+            if isinstance(text, str) and text.strip():
+                parsed = parse_tender_text(text)
+        if parsed is None:
+            parsed = parse_tender_text("")
     else:
         text = ""
         if ext == "pdf":
@@ -866,7 +873,7 @@ async def upload_project_tender_file(
                 text = "\n".join((page.extract_text() or "") for page in reader.pages)
             except Exception:
                 text = ""
-        if not text.strip():
+        if not str(text or "").strip():
             try:
                 from io import BytesIO
 
@@ -877,7 +884,7 @@ async def upload_project_tender_file(
                 text = raw if isinstance(raw, str) else ""
             except Exception:
                 text = ""
-    parsed = parse_tender_text(text)
+        parsed = parse_tender_text(text if isinstance(text, str) else "")
     key = f"projects/{p.id}/tender/{name}"
     try:
         storage.upload_bytes(key, data, file.content_type or "application/octet-stream")
@@ -914,13 +921,16 @@ def delete_project_memo(project_id: int, memo_id: str, db: Session = Depends(get
 
 
 @router.post("/projects/{project_id}/review-issues/{issue_id}/fix")
-def fix_project_review_issue(project_id: int, issue_id: str, db: Session = Depends(get_db)):
-    from app.services.agent_capabilities import fix_review_issue
+async def fix_project_review_issue(project_id: int, issue_id: str, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import fix_review_issue, open_bound_docx
+    from app.services.project_sessions import find_bound_session
 
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
-    result = fix_review_issue(p, issue_id)
+    result = await fix_review_issue(
+        p, issue_id, docx_bytes=open_bound_docx(db, p), db=db,
+    )
     blob = result.pop("docx_bytes", None)
     if isinstance(blob, (bytes, bytearray)):
         try:
@@ -933,6 +943,12 @@ def fix_project_review_issue(project_id: int, issue_id: str, db: Session = Depen
             fields["_draft_object_key"] = key
             p.fields = fields
             flag_modified(p, "fields")
+            bound = find_bound_session(db, p.id)
+            if bound is not None:
+                ws = dict(bound.workspace or {})
+                ws["draft_object_key"] = key
+                ws["version"] = int(ws.get("version") or 0) + 1
+                bound.workspace = ws
             result["draft_object_key"] = key
         except Exception:
             result["draft_saved"] = False

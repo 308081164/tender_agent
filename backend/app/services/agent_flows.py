@@ -406,7 +406,11 @@ async def handle_action(
         project = db.query(TenderProject).filter(TenderProject.id == int(pid)).first()
         if not project:
             return "", _result("项目不存在。", intent="error"), False
-        fixed = fix_review_issue(project, issue_id)
+        from app.services.agent_capabilities import open_bound_docx
+
+        fixed = await fix_review_issue(
+            project, issue_id, docx_bytes=open_bound_docx(db, project, session), db=db,
+        )
         blob = fixed.pop("docx_bytes", None)
         ws_next = dict(ws)
         if isinstance(blob, (bytes, bytearray)):

@@ -54,28 +54,40 @@ export function appendStreamToken(message, token, event) {
   return { ...message, content: `${message.content || ''}${token}` }
 }
 
-export const ONLYOFFICE_SELECTION_EVENTS = ['onTargetPositionChanged', 'onSelectionChanged']
+export const ONLYOFFICE_SELECTION_EVENTS = ['onTargetPositionChanged', 'onClick']
 
 export function onlyOfficeSelectionCommand() {
-  var root = typeof globalThis !== 'undefined' ? globalThis : {}
-  var api = root.Api || null
-  if (!api || !api.GetDocument) return ''
-  var doc = api.GetDocument()
+  var doc = Api.GetDocument()
   var selected = ''
+  var paragraph = null
+  var range = null
   try {
-    var range = doc.GetRangeBySelect && doc.GetRangeBySelect()
+    range = doc.GetRangeBySelect && doc.GetRangeBySelect()
     if (range && range.GetText) selected = String(range.GetText() || '')
+    if (range && range.GetParagraph) paragraph = range.GetParagraph(0) || range.GetParagraph()
   } catch (err) {
     selected = ''
   }
+  if (!paragraph && doc.GetCurrentParagraph) paragraph = doc.GetCurrentParagraph()
   var index = -1
-  var all = doc.GetAllParagraphs ? doc.GetAllParagraphs() : []
-  var current = doc.GetCurrentParagraph ? doc.GetCurrentParagraph() : null
-  for (var i = 0; i < all.length; i += 1) {
-    if (current && all[i] === current) index = i
+  if (paragraph && paragraph.GetPosInParent) {
+    var pos = paragraph.GetPosInParent()
+    var all = doc.GetAllParagraphs ? doc.GetAllParagraphs() : []
+    var posKey = String(pos)
+    var textKey = paragraph.GetText ? String(paragraph.GetText() || '') : ''
+    for (var i = 0; i < all.length; i += 1) {
+      var item = all[i]
+      if (!item || !item.GetPosInParent) continue
+      if (String(item.GetPosInParent()) !== posKey) continue
+      var itemText = item.GetText ? String(item.GetText() || '') : ''
+      if (itemText === textKey) {
+        index = i
+        break
+      }
+    }
   }
-  var blockId = index >= 0 ? `p:${index}` : ''
   if (!String(selected).trim() && index < 0) return ''
+  var blockId = index >= 0 ? ('p:' + index) : ''
   return JSON.stringify({
     selected_text: String(selected || '').trim(),
     paragraph_index: index >= 0 ? index : null,
@@ -108,26 +120,15 @@ export function onlyOfficeAnchorFromCommand(raw) {
 
 export function readOnlyOfficeSelection(connector, onAnchor) {
   if (!connector || !onAnchor) return
-  if (typeof connector.callCommand === 'function') {
-    connector.callCommand(onlyOfficeSelectionCommand, (raw) => {
-      const anchor = onlyOfficeAnchorFromCommand(raw)
-      if (anchor) onAnchor(anchor)
-    })
-    return
-  }
-  connector.executeMethod?.('GetSelectedText', null, (text) => {
-    const anchor = onlyOfficeAnchorFromCommand({ selected_text: text })
-    if (anchor) onAnchor(anchor)
+  if (typeof connector.callCommand !== 'function') return
+  connector.callCommand(onlyOfficeSelectionCommand, (raw) => {
+    onAnchor(onlyOfficeAnchorFromCommand(raw))
   })
 }
 
 export function onlyOfficeHighlightCommand() {
-  var root = typeof globalThis !== 'undefined' ? globalThis : {}
-  var scope = (root.Asc && root.Asc.scope) || {}
-  var phrases = scope.texts || []
-  var api = root.Api
-  if (!api || !api.GetDocument) return 0
-  var doc = api.GetDocument()
+  var phrases = (typeof Asc !== 'undefined' && Asc.scope && Asc.scope.texts) || []
+  var doc = Api.GetDocument()
   if (!doc.Search) return 0
   var marked = 0
   for (var i = 0; i < phrases.length; i += 1) {

@@ -365,7 +365,7 @@ def test_click_or_say_fix_reviews_only_that_issue():
         ]}},
     )
     db.commit()
-    fixed = fix_review_issue(project, "rv-1")
+    fixed = asyncio.run(fix_review_issue(project, "rv-1", db=db))
     db.commit()
     db.refresh(project)
     assert fixed["resolved"] is True
