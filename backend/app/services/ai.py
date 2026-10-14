@@ -230,11 +230,15 @@ async def chat_completion_stream(
         if not call:
             continue
         base_url, api_key, model = call
+        started = False
         try:
             async for tok in _openai_compat_stream(base_url, api_key, model, messages):
+                started = True
                 yield tok
             return
         except Exception:
+            if started:
+                raise
             continue
 
 

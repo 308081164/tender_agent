@@ -1,4 +1,4 @@
-"""最小 Agent tool-calling 循环（MVP，最多 3 步）。"""
+"""Agent tool-calling 循环。默认开启，每轮最多 8 步，并留下可见工具轨迹。"""
 from __future__ import annotations
 
 import json
@@ -7,15 +7,25 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.services import agent_tools, ai
+from app.services.agent_capabilities import (
+    ANCHOR_MISSING,
+    MAX_TOOL_STEPS,
+    apply_project_field_patch,
+    check_against_tender,
+    public_tool_trace,
+    resolve_document_anchor,
+    tender_record,
+    trace_sentence,
+)
 
 
 def tool_loop_enabled() -> bool:
+    """默认开启。只有显式 AGENT_TOOL_LOOP=0/false/off 才关闭。"""
     flag = os.environ.get("AGENT_TOOL_LOOP", "").strip().lower()
-    if flag in ("1", "true", "yes", "on"):
-        return True
-    return bool(get_settings().agent_tool_loop)
+    if flag in ("0", "false", "no", "off"):
+        return False
+    return True
 
 
 TOOL_SPECS: list[dict[str, Any]] = [
@@ -105,6 +115,67 @@ TOOL_SPECS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_project_attachment",
+            "description": "读取当前标书项目已上传附件的解析摘录",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "integer"},
+                    "name": {"type": "string", "description": "可选，按文件名过滤"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_tender_excerpt",
+            "description": "读取项目招标文件解析出的评分点、废标项、工期、资质和关键日期",
+            "parameters": {"type": "object", "properties": {"project_id": {"type": "integer"}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_document_anchor",
+            "description": "按用户选中的文字、章节或段落锚点改写文档。没有锚点时不要改到文首。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {"type": "string"},
+                    "paragraph_index": {"type": "integer"},
+                    "block_id": {"type": "string"},
+                    "selected_text": {"type": "string"},
+                },
+                "required": ["instruction"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_preview_status",
+            "description": "查询当前文档预览与 OnlyOffice 是否可用，不打开编辑器页面",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_against_tender",
+            "description": "把当前文稿或给定段落对照招标文件摘录，发现工期或废标冲突",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "project_id": {"type": "integer"},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -115,6 +186,7 @@ async def _execute_tool(
     arguments: dict[str, Any],
     *,
     default_project_id: int | None,
+    context: dict | None = None,
 ) -> dict[str, Any]:
     args = arguments or {}
     if name == "read_workspace_file":
@@ -142,19 +214,103 @@ async def _execute_tool(
 
         pid = int(args.get("project_id") or default_project_id or 0)
         fields = args.get("fields") or {}
-        if pid <= 0 or not isinstance(fields, dict):
+        if pid <= 0 or not isinstance(fields, dict) or db is None:
             return {"ok": False, "error": "参数无效"}
         p = db.query(TenderProject).filter(TenderProject.id == pid).first()
         if not p:
             return {"ok": False, "error": "项目不存在"}
-        merged = dict(p.fields or {})
-        for k, v in fields.items():
-            merged[str(k)] = str(v) if v is not None else ""
-        p.fields = merged
-        if merged.get("project_name"):
-            p.title = str(merged["project_name"])[:180]
+        applied = apply_project_field_patch(db, p, fields)
         db.commit()
-        return {"ok": True, "project_id": pid, "updated_keys": list(fields.keys())}
+        return {"ok": True, "project_id": pid, **applied}
+    if name == "read_project_attachment":
+        from app.models import TenderProject
+
+        pid = int(args.get("project_id") or default_project_id or 0)
+        if pid <= 0 or db is None:
+            return {"ok": False, "error": "未绑定 project_id"}
+        p = db.query(TenderProject).filter(TenderProject.id == pid).first()
+        if not p:
+            return {"ok": False, "error": "项目不存在"}
+        want = str(args.get("name") or "").strip()
+        rows = []
+        for item in (p.fields or {}).get("_attachments") or []:
+            if not isinstance(item, dict):
+                continue
+            if want and want not in str(item.get("name") or ""):
+                continue
+            rows.append({
+                "name": item.get("name") or "",
+                "type": item.get("type") or "",
+                "excerpt": (item.get("extracted_text") or "")[:2000],
+            })
+        return {"ok": True, "attachments": rows[:12]}
+    if name == "read_tender_excerpt":
+        from app.models import TenderProject
+
+        pid = int(args.get("project_id") or default_project_id or 0)
+        if pid <= 0 or db is None:
+            return {"ok": False, "error": "未绑定 project_id"}
+        p = db.query(TenderProject).filter(TenderProject.id == pid).first()
+        if not p:
+            return {"ok": False, "error": "项目不存在"}
+        tender = tender_record(p.fields)
+        if not tender:
+            return {"ok": False, "error": "项目未挂招标文件"}
+        public = {k: tender.get(k) for k in (
+            "name", "scoring_points", "disqualification", "duration", "qualifications", "key_dates", "excerpt",
+        )}
+        return {"ok": True, "tender": public}
+    if name == "edit_document_anchor":
+        anchor = resolve_document_anchor(context, args)
+        if not anchor.get("ok"):
+            return {"ok": False, "error": ANCHOR_MISSING}
+        return {
+            "ok": True,
+            "anchor": {
+                "paragraph_index": anchor.get("paragraph_index"),
+                "block_id": anchor.get("block_id") or "",
+                "selected_text": anchor.get("selected_text") or "",
+            },
+            "instruction": str(args.get("instruction") or ""),
+            "message": "已按锚点定位，不会插入到文首。",
+        }
+    if name == "get_preview_status":
+        ws = getattr(session, "workspace", None) or {}
+        onlyoffice = {"enabled": False, "healthy": False, "message": ""}
+        try:
+            from app.services.onlyoffice import status_payload
+
+            raw = status_payload()
+            onlyoffice = {
+                "enabled": bool(raw.get("enabled")),
+                "healthy": bool(raw.get("healthy")),
+                "message": raw.get("message") or "",
+            }
+        except Exception as exc:
+            onlyoffice = {"enabled": False, "healthy": False, "message": str(exc)}
+        doc_key = bool(ws.get("draft_object_key") or ws.get("template_object_key"))
+        return {
+            "ok": True,
+            "has_document": doc_key,
+            "version": int(ws.get("version") or 0),
+            "onlyoffice": onlyoffice,
+        }
+    if name == "check_against_tender":
+        from app.models import TenderProject
+
+        pid = int(args.get("project_id") or default_project_id or 0)
+        if pid <= 0 or db is None:
+            return {"ok": False, "error": "未绑定 project_id", "conflicts": []}
+        p = db.query(TenderProject).filter(TenderProject.id == pid).first()
+        if not p:
+            return {"ok": False, "error": "项目不存在", "conflicts": []}
+        draft = str(args.get("text") or "").strip()
+        if not draft:
+            from app.services.agent_capabilities import collect_document_text
+
+            draft = collect_document_text(p)
+        checked = check_against_tender(draft, tender_record(p.fields))
+        return checked
     if name == "web_search":
         from app.services.web_search import search_web
 
@@ -247,6 +403,33 @@ def _sources_from_tool_log(tool_log: list[dict]) -> list[dict[str, str]]:
     return sources_payload(rows)
 
 
+def _with_tool_trace(content: str, tool_log: list[dict], meta: dict[str, Any]) -> dict[str, Any]:
+    trace = public_tool_trace(tool_log)
+    if trace:
+        meta = {**meta, "tool_loop": True, "tool_trace": trace}
+        line = trace_sentence(trace)
+        if line and line not in content:
+            content = f"{content.rstrip()}\n\n{line}"
+    for entry in tool_log:
+        if entry.get("tool") != "edit_document_anchor":
+            continue
+        result = entry.get("result") or {}
+        if not result.get("ok"):
+            if ANCHOR_MISSING not in content:
+                content = f"{content.rstrip()}\n\n{ANCHOR_MISSING}".strip()
+            meta["anchor_missing"] = True
+            continue
+        anchor = result.get("anchor") or {}
+        meta["needs_workspace_edit"] = True
+        meta["instruction"] = result.get("instruction") or meta.get("instruction") or ""
+        meta["selected_text"] = anchor.get("selected_text") or ""
+        if anchor.get("paragraph_index") is not None:
+            meta["paragraph_index"] = anchor.get("paragraph_index")
+        if anchor.get("block_id"):
+            meta["block_id"] = anchor.get("block_id")
+    return {"answer": content, "metadata": meta}
+
+
 async def run_tool_loop(
     *,
     db: Session,
@@ -254,7 +437,7 @@ async def run_tool_loop(
     messages: list[dict],
     workspace: dict | None,
     context: dict | None,
-    max_steps: int = 3,
+    max_steps: int = MAX_TOOL_STEPS,
 ) -> dict[str, Any] | None:
     """若 LLM 返回最终文本则输出；否则 None 表示应回退普通对话。"""
     if not tool_loop_enabled() or session is None:
@@ -267,24 +450,29 @@ async def run_tool_loop(
     pid = agent_runtime.resolve_project_id(ws, ctx)
     working = list(messages)
     tool_log: list[dict] = []
+    limit = max(1, min(int(max_steps or MAX_TOOL_STEPS), MAX_TOOL_STEPS))
 
-    for _ in range(max_steps):
+    for _ in range(limit):
         data = await _chat_with_tools(working, db)
         if not data:
+            if tool_log:
+                return _with_tool_trace("工具调用没有得到模型的后续回复。", tool_log, {"intent": "general"})
             return None
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         tool_calls = msg.get("tool_calls") or []
         if tool_calls:
             working.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
-            for tc in tool_calls[:2]:
+            for tc in tool_calls[:4]:
                 fn = tc.get("function") or {}
                 name = fn.get("name") or ""
                 try:
                     args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = await _execute_tool(db, session, name, args, default_project_id=pid)
+                result = await _execute_tool(
+                    db, session, name, args, default_project_id=pid, context=ctx,
+                )
                 tool_log.append({"tool": name, "result": result})
                 working.append({
                     "role": "tool",
@@ -333,6 +521,14 @@ async def run_tool_loop(
                         "message": note,
                     },
                 }
-            return {"answer": content, "metadata": meta}
+            return _with_tool_trace(content, tool_log, meta)
+        if tool_log:
+            return _with_tool_trace("工具已执行，但模型没有给出文字回复。", tool_log, {"intent": "general"})
         return None
+    if tool_log:
+        return _with_tool_trace(
+            f"已达到每轮 {limit} 步工具上限。",
+            tool_log,
+            {"intent": "general", "tool_limit": True},
+        )
     return None

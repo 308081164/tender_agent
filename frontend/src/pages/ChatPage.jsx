@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
@@ -15,6 +15,8 @@ import { useDocWorkspaceTreeOpen } from '../hooks/useDocWorkspaceTreeOpen'
 import { useWorkspaceFileSelection } from '../hooks/useWorkspaceFileSelection'
 import { usePendingMaterials } from '../components/chat/usePendingMaterials'
 import { deliverChatMaterials } from '../components/chat/deliverChatMaterials'
+import { appendStreamToken, buildAnchorPayload, keepStreamedReply } from '../components/chat/agentChatRuntime'
+import { useChatMentions } from '../hooks/useChatMentions'
 
 export default function ChatPage() {
   const { showToast } = useApp()
@@ -28,6 +30,8 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false)
   const [features, setFeatures] = useState({ feature_cards: [], suggested_prompts: [] })
   const [selectedText, setSelectedText] = useState('')
+  const [anchor, setAnchor] = useState(null)
+  const [replyStreaming, setReplyStreaming] = useState(false)
   const [showSessions, setShowSessions] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [creatingChat, setCreatingChat] = useState(false)
@@ -35,6 +39,12 @@ export default function ChatPage() {
   const [projects, setProjects] = useState([])
   const messagesRef = useRef(null)
   const materials = usePendingMaterials()
+  const mentions = useChatMentions(sessionId)
+
+  const rememberAnchor = useCallback((next) => {
+    setAnchor(next)
+    setSelectedText(next?.selected_text || '')
+  }, [])
 
   const {
     selectedPath: selectedWorkspaceFile,
@@ -126,18 +136,28 @@ export default function ChatPage() {
     if (loading) return
     const staged = withMaterials ? materials.consume() : []
     const q = (text ?? input).trim()
-    if (!q && !staged.length) return
-    const draft = input
+    if (!q && !staged.length && !mentions.mentions.length) return
     setInput('')
     setLoading(true)
     const optimisticId = `tmp-${Date.now()}`
+    const assistantId = `tmp-bot-${Date.now()}`
+    const sentMentions = mentions.mentions
     const optimistic = {
       id: optimisticId,
       role: 'user',
       content: q,
-      metadata: staged.length ? { attachments: staged.map(({ name, kind, type }) => ({ name, kind, type })) } : {},
+      metadata: {
+        ...(staged.length ? { attachments: staged.map(({ name, kind, type }) => ({ name, kind, type })) } : {}),
+        ...(sentMentions.length ? { mentions: sentMentions } : {}),
+      },
     }
-    setMessages((m) => [...m, optimistic])
+    setMessages((m) => [
+      ...m,
+      optimistic,
+      ...(q ? [{ id: assistantId, role: 'assistant', content: '' }] : []),
+    ])
+    if (q) setReplyStreaming(true)
+    mentions.clearMentions()
     let delivered = []
     try {
       const id = await ensureSession()
@@ -149,37 +169,51 @@ export default function ChatPage() {
         await refreshWorkspace(id)
       }
       let textTurn = []
-      if (q) {
-        const ctx = { selected_text: selectedText, ...buildFileContext() }
+      if (q || sentMentions.length) {
+        const ctx = {
+          ...buildAnchorPayload(anchor || (selectedText ? { selected_text: selectedText } : null)),
+          ...buildFileContext(),
+        }
         if (webSearch) ctx.web_search = true
-        const res = await api.sendChatMessage(id, q, ctx)
+        if (sentMentions.length) ctx.mentions = sentMentions
+        const res = await api.sendChatMessageStream(id, q, ctx, (tok, event) => {
+          setMessages((m) => m.map((item) => (
+            item.id === assistantId ? appendStreamToken(item, tok, event) : item
+          )))
+        })
         if (res.user_message) textTurn.push(res.user_message)
         if (res.assistant_message) textTurn.push(res.assistant_message)
         applySession(res.session)
-        if (res.metadata?.workspace_updated || res.session?.workspace) {
+        if (res.metadata?.workspace_updated || res.session?.workspace || res.metadata?.highlight_texts) {
           await refreshWorkspace(id)
         }
       }
       setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
+        ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
         ...delivered,
         ...textTurn,
       ])
     } catch (e) {
-      if (!delivered.length) {
-        materials.restore(staged)
-        setInput(draft)
-        setMessages((m) => m.filter((x) => x.id !== optimisticId))
-      } else {
-        setInput(q)
-        setMessages((m) => [
-          ...m.filter((x) => x.id !== optimisticId),
+      setMessages((m) => {
+        const partial = m.find((x) => x.id === assistantId)
+        const kept = keepStreamedReply(partial?.content, e.message)
+        const base = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
+        return [
+          ...base,
           ...delivered,
-          { role: 'assistant', content: `发送失败：${e.message}` },
-        ])
-      }
+          optimistic,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: kept,
+            metadata: { ...(partial?.metadata || {}), stream_error: e.message },
+          },
+        ]
+      })
+      if (!delivered.length) materials.restore(staged)
       showToast(e.message)
     } finally {
+      setReplyStreaming(false)
       setLoading(false)
     }
   }
@@ -194,6 +228,8 @@ export default function ChatPage() {
       setWorkspace({})
       setParagraphs([])
       setSelectedText('')
+      setAnchor(null)
+      mentions.clearMentions()
       materials.clear()
       clearFile()
       setSessions((list) => [s, ...list.filter((x) => x.id !== s.id)])
@@ -334,7 +370,8 @@ export default function ChatPage() {
                   workspace={workspace}
                   paragraphs={paragraphs}
                   selectedText={selectedText}
-                  onSelectText={setSelectedText}
+                  onSelectText={(text) => rememberAnchor({ ...(anchor || {}), selected_text: text, source: 'document' })}
+                  onSelectAnchor={rememberAnchor}
                   onParagraphEdit={onParagraphEdit}
                   onRefresh={() => refreshWorkspace(sessionId)}
                   onlyOfficeEnabled={!!features.onlyoffice?.enabled}
@@ -369,6 +406,7 @@ export default function ChatPage() {
             <ChatTranscript
               messages={messages}
               loading={loading}
+              streaming={replyStreaming}
               onCardAction={handleCardAction}
               actingCardId={actingCardId}
               empty={(
@@ -402,6 +440,11 @@ export default function ChatPage() {
             loadingHint={fileLoading ? '正在读取工程文件…' : null}
             attachments={materials.items}
             onRemoveAttachment={materials.remove}
+            mentions={mentions.mentions}
+            onRemoveMention={mentions.removeMention}
+            mentionItems={mentions.mentionItems}
+            onMentionQuery={mentions.onMentionQuery}
+            onPickMention={mentions.pickMention}
             placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '提问、检索标书、编写/替换指令…'}
             webSearch={webSearch}
             onToggleWebSearch={setWebSearch}

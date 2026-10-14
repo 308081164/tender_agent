@@ -92,6 +92,17 @@ def build_context_system_block(
         if miss:
             names = [m.get("name") or m.get("key") for m in miss[:8]]
             parts.append("优先待填字段：" + "、".join(str(n) for n in names if n))
+        tender_block = str(ctx_pack.get("tender_prompt") or "").strip()
+        if tender_block:
+            parts.append(tender_block)
+        memo_block = str(ctx_pack.get("memo_prompt") or "").strip()
+        if memo_block:
+            parts.append(memo_block)
+    from app.services.agent_capabilities import mention_prompt_block
+
+    mentioned = mention_prompt_block(ctx.get("mentions"))
+    if mentioned:
+        parts.append(mentioned)
     return "\n\n".join(parts)
 
 

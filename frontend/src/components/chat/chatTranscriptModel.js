@@ -93,6 +93,14 @@ export function resolveUserTurn(message) {
     const chip = normalizeChip({ name: meta.attachment.filename, kind: 'file' })
     if (chip) chips = [chip]
   }
+  if (Array.isArray(meta.mentions) && meta.mentions.length) {
+    const mentioned = meta.mentions.map((item) => normalizeChip({
+      name: item.label || item.name,
+      kind: 'file',
+      type: item.kind === 'section' ? '章节' : '文件',
+    })).filter(Boolean)
+    chips = [...chips, ...mentioned]
+  }
   const legacy = parseLegacyAttachmentContent(content)
   if (!chips.length) chips = legacy.chips
   const text = legacy.hideText ? '' : content

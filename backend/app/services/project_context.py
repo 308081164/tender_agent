@@ -111,7 +111,10 @@ def build_project_context(db: Session, project_id: int) -> dict[str, Any]:
     checklist = build_field_checklist(db, project)
     chapters = _chapter_summary(project.chapters, blocks)
 
+    from app.services.agent_capabilities import memo_prompt_block, tender_prompt_block, tender_record
+
     mode = workflow.get("mode") or "compose"
+    tender = tender_record(project.fields)
     return {
         "project_id": project.id,
         "project_title": project.title,
@@ -134,7 +137,24 @@ def build_project_context(db: Session, project_id: int) -> dict[str, Any]:
             "parse_attachment",
             "insert_qual",
             "reference_rewrite",
+            "check_against_tender",
+            "project_memos",
         ],
+        "tender": {
+            "name": tender.get("name") or "",
+            "duration": tender.get("duration") or "",
+            "scoring_points": tender.get("scoring_points") or [],
+            "disqualification": tender.get("disqualification") or [],
+            "qualifications": tender.get("qualifications") or [],
+            "key_dates": tender.get("key_dates") or [],
+        } if tender else None,
+        "tender_prompt": tender_prompt_block(project.fields),
+        "memos": [
+            {"id": item.get("id"), "text": item.get("text")}
+            for item in ((project.fields or {}).get("_agent_memos") or [])
+            if isinstance(item, dict) and item.get("text")
+        ],
+        "memo_prompt": memo_prompt_block(project.fields),
         "guided_intake_enabled": bool((project.fields or {}).get("_guided_intake", True)),
     }
 

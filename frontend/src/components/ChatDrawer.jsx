@@ -35,6 +35,11 @@ export default function ChatDrawer({
   boundProjectId = null,
   workspace = {},
   onWorkspaceDirChange,
+  mentions = [],
+  mentionItems = [],
+  onMentionQuery,
+  onPickMention,
+  onRemoveMention,
 }) {
   const workspaceDir = (workspace?.workspace_dir || '').trim()
   if (!open) return null
@@ -110,6 +115,11 @@ export default function ChatDrawer({
               loading={loading}
               attachments={pendingMaterials}
               onRemoveAttachment={onRemoveAttachment}
+              mentions={mentions}
+              mentionItems={mentionItems}
+              onMentionQuery={onMentionQuery}
+              onPickMention={onPickMention}
+              onRemoveMention={onRemoveMention}
               placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '可粘贴文件夹路径并说明「读取录入」…'}
               webSearch={webSearch}
               onToggleWebSearch={onToggleWebSearch}

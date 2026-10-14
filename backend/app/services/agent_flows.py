@@ -392,6 +392,36 @@ async def handle_action(
     if action == "confirm_qual_folder_import":
         return await _on_confirm_qual_folder_import(db, session, pa)
 
+    if action == "fix_review_issue":
+        from app.services.agent_capabilities import fix_review_issue
+
+        ws = getattr(session, "workspace", None) or {}
+        pid = ws.get("project_id") or (payload or {}).get("project_id")
+        issue_id = str((payload or {}).get("issue_id") or "")
+        if not pid or not issue_id:
+            return "", _result("请先选定一条审查问题。", intent="fix_review_issue"), False
+        from app.models import TenderProject
+
+        project = db.query(TenderProject).filter(TenderProject.id == int(pid)).first()
+        if not project:
+            return "", _result("项目不存在。", intent="error"), False
+        fixed = fix_review_issue(project, issue_id)
+        ws_next = dict(ws)
+        if fixed.get("highlight_texts"):
+            ws_next["review_highlight_texts"] = fixed["highlight_texts"]
+        else:
+            ws_next.pop("review_highlight_texts", None)
+        session.workspace = ws_next
+        db.commit()
+        return "改这一条", _result(
+            fixed.get("answer") or fixed.get("error") or "未能修改这一条。",
+            intent="fix_review_issue",
+            review_issue_id=issue_id,
+            highlight_texts=fixed.get("highlight_texts") or [],
+            rereview=fixed.get("rereview"),
+            workspace_updated=True,
+        ), True
+
     return "", _result("未知操作，请重试。", intent="error"), False
 
 

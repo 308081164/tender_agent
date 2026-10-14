@@ -28,6 +28,7 @@ export default function ProjectDocumentPane({
   onFieldsSaved,
   onAgentFollowup,
   showToast,
+  onAnchor,
 }) {
   const [pdfFailed, setPdfFailed] = useState(false)
   const [previewError, setPreviewError] = useState('')
@@ -175,7 +176,12 @@ export default function ProjectDocumentPane({
       ) : null}
       <div className="doc-workspace-body">
         {mode === 'onlyoffice' && sessionId ? (
-          <OnlyOfficeEditor sessionId={sessionId} workspace={workspace} onSaved={() => runPreviewFetch(true)} />
+          <OnlyOfficeEditor
+            sessionId={sessionId}
+            workspace={workspace}
+            onSaved={() => runPreviewFetch(true)}
+            onAnchor={onAnchor}
+          />
         ) : mode === 'edit' ? (
           <ProjectFieldEditorPane
             projectId={projectId}

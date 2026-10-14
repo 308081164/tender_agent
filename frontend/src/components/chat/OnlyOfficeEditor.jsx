@@ -22,9 +22,25 @@ function loadOnlyOfficeApi(documentServerUrl) {
   return scriptPromise
 }
 
-export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
+function readOnlyOfficeSelection(editor, onAnchor) {
+  if (!editor || !onAnchor) return
+  try {
+    const connector = editor.createConnector?.()
+    if (!connector?.executeMethod) return
+    connector.executeMethod('GetSelectedText', null, (text) => {
+      const selected = String(text || '').trim()
+      if (selected) onAnchor({ selected_text: selected, source: 'onlyoffice' })
+    })
+  } catch {
+    // 编辑器未就绪或测试环境没有 OnlyOffice，不把光标默认为文首。
+  }
+}
+
+export default function OnlyOfficeEditor({ sessionId, workspace, onSaved, onAnchor }) {
   const containerRef = useRef(null)
   const editorRef = useRef(null)
+  const onAnchorRef = useRef(onAnchor)
+  onAnchorRef.current = onAnchor
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -68,6 +84,7 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
           },
         })
         editorRef.current = editor
+        readOnlyOfficeSelection(editor, onAnchorRef.current)
       } catch (e) {
         if (!cancelled) setError(e.message || '加载编辑器失败')
       } finally {
@@ -84,6 +101,13 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
       }
     }
   }, [sessionId, docKey, version, onSaved])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      readOnlyOfficeSelection(editorRef.current, onAnchorRef.current)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [sessionId, docKey])
 
   if (!docKey) {
     return <div className="onlyoffice-empty muted">请先上传 DOCX 文档</div>

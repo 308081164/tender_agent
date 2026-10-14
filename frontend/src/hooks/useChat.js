@@ -1,7 +1,9 @@
 import { useCallback, useState } from 'react'
 import { api } from '../api/client'
+import { appendStreamToken, keepStreamedReply } from '../components/chat/agentChatRuntime'
 import { deliverChatMaterials } from '../components/chat/deliverChatMaterials'
 import { usePendingMaterials } from '../components/chat/usePendingMaterials'
+import { useChatMentions } from './useChatMentions'
 
 export function useChatSessions(showToast) {
   const [open, setOpen] = useState(false)
@@ -18,6 +20,7 @@ export function useChatSessions(showToast) {
   const [workspace, setWorkspace] = useState({})
   const [replyStreaming, setReplyStreaming] = useState(false)
   const materials = usePendingMaterials()
+  const mentions = useChatMentions(sessionId)
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listChatSessions()
@@ -136,7 +139,8 @@ export function useChatSessions(showToast) {
     if (loading) return
     const q = chatInput.trim()
     const staged = materials.consume()
-    if (!q && !staged.length) return
+    const sentMentions = mentions.mentions
+    if (!q && !staged.length && !sentMentions.length) return
     const draft = chatInput
     setChatInput('')
     setLoading(true)
@@ -146,8 +150,12 @@ export function useChatSessions(showToast) {
       id: optimisticId,
       role: 'user',
       content: q,
-      metadata: staged.length ? { attachments: staged.map(({ name, kind, type }) => ({ name, kind, type })) } : {},
+      metadata: {
+        ...(staged.length ? { attachments: staged.map(({ name, kind, type }) => ({ name, kind, type })) } : {}),
+        ...(sentMentions.length ? { mentions: sentMentions } : {}),
+      },
     }
+    mentions.clearMentions()
     setMessages((m) => [...m, optimistic])
     let delivered = []
     try {
@@ -159,19 +167,20 @@ export function useChatSessions(showToast) {
         if (uploaded.workspace) setWorkspace(uploaded.workspace)
       }
       let textTurn = []
-      if (q) {
+      if (q || sentMentions.length) {
         setReplyStreaming(true)
         setMessages((m) => [
           ...m.filter((x) => x.id !== optimisticId),
           ...delivered,
-          { id: optimisticId, role: 'user', content: q },
+          { id: optimisticId, role: 'user', content: q, metadata: optimistic.metadata },
           { id: assistantId, role: 'assistant', content: '' },
         ])
         const ctx = { ...(chatContext || {}) }
         if (webSearch) ctx.web_search = true
-        const res = await api.sendChatMessageStream(id, q, ctx, (tok) => {
+        if (sentMentions.length) ctx.mentions = sentMentions
+        const res = await api.sendChatMessageStream(id, q, ctx, (tok, event) => {
           setMessages((m) => m.map((x) => (
-            x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
+            x.id === assistantId ? appendStreamToken(x, tok, event) : x
           )))
         })
         if (res.user_message) textTurn.push(res.user_message)
@@ -184,27 +193,29 @@ export function useChatSessions(showToast) {
         return [...(already ? base : [...base, ...delivered]), ...textTurn]
       })
     } catch (e) {
-      if (!delivered.length) {
-        materials.restore(staged)
-        setChatInput(draft)
-        setMessages((m) => m.filter((x) => x.id !== optimisticId && x.id !== assistantId))
-      } else {
-        setChatInput(q)
-        setMessages((m) => {
-          const base = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
-          const already = delivered[0]?.id && base.some((item) => item.id === delivered[0].id)
-          return [
-            ...(already ? base : [...base, ...delivered]),
-            { role: 'assistant', content: `提问失败：${e.message}` },
-          ]
-        })
-      }
+      setMessages((m) => {
+        const partial = m.find((x) => x.id === assistantId)
+        const kept = keepStreamedReply(partial?.content, e.message)
+        const base = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
+        const already = delivered[0]?.id && base.some((item) => item.id === delivered[0].id)
+        return [
+          ...(already ? base : [...base, ...delivered]),
+          optimistic,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: kept,
+            metadata: { ...(partial?.metadata || {}), stream_error: e.message },
+          },
+        ]
+      })
+      if (!delivered.length) materials.restore(staged)
       showToast?.(e.message)
     } finally {
       setReplyStreaming(false)
       setLoading(false)
     }
-  }, [chatInput, loading, materials, ensureSession, chatContext, webSearch, rememberSession, showToast])
+  }, [chatInput, loading, materials, mentions, ensureSession, chatContext, webSearch, rememberSession, showToast])
 
   const patchWorkspaceDir = useCallback(async (dir) => {
     try {
@@ -250,5 +261,10 @@ export function useChatSessions(showToast) {
     chatContext,
     workspace,
     patchWorkspaceDir,
+    mentions: mentions.mentions,
+    mentionItems: mentions.mentionItems,
+    onMentionQuery: mentions.onMentionQuery,
+    pickMention: mentions.pickMention,
+    removeMention: mentions.removeMention,
   }
 }

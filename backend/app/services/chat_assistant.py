@@ -287,22 +287,32 @@ def _parse_table_shape(text: str) -> tuple[int, int]:
 
 
 async def _handle_insert_table(text: str, context: dict | None, workspace: dict | None) -> dict[str, Any]:
+    from app.services.agent_capabilities import ANCHOR_MISSING, anchor_can_insert, resolve_document_anchor
+
     ws = workspace or {}
     if not ws.get("draft_object_key") and not ws.get("template_object_key"):
         return {
-            "answer": "请先在左侧打开标书草稿，再告诉我插入位置（可选段落索引）与表格行列数，例如「在第 5 段后插入 4x3 表格」。",
+            "answer": "请先在左侧打开标书草稿，再选中插入位置，并说明表格行列数，例如「在选中位置插入 4x3 表格」。",
             "mode": "action",
             "metadata": {"intent": "insert_table"},
         }
+    anchor = resolve_document_anchor(context)
+    if not anchor_can_insert(anchor):
+        return {
+            "answer": ANCHOR_MISSING,
+            "mode": "action",
+            "metadata": {"intent": "insert_table", "anchor_missing": True},
+        }
     rows, cols = _parse_table_shape(text)
-    ctx = context or {}
     return {
-        "answer": f"将在文档第 {ctx.get('paragraph_index', 0)} 段附近插入 {rows}×{cols} 表格…",
+        "answer": f"将在选中位置（第 {anchor['paragraph_index']} 段）插入 {rows}×{cols} 表格…",
         "mode": "action",
         "metadata": {
             "intent": "insert_table",
             "needs_workspace_insert_table": True,
-            "paragraph_index": ctx.get("paragraph_index", 0),
+            "paragraph_index": anchor["paragraph_index"],
+            "block_id": anchor.get("block_id") or "",
+            "selected_text": anchor.get("selected_text") or "",
             "rows": rows,
             "cols": cols,
         },
@@ -317,6 +327,8 @@ async def _handle_insert_image(text: str, context: dict | None, workspace: dict 
             "mode": "action",
             "metadata": {"intent": "insert_image"},
         }
+    from app.services.agent_capabilities import ANCHOR_MISSING, anchor_can_insert, resolve_document_anchor
+
     ctx = context or {}
     if not ctx.get("attachment_object_key") and not ctx.get("image_attachment_id"):
         return {
@@ -324,40 +336,57 @@ async def _handle_insert_image(text: str, context: dict | None, workspace: dict 
             "mode": "action",
             "metadata": {"intent": "insert_image"},
         }
+    anchor = resolve_document_anchor(ctx)
+    if not anchor_can_insert(anchor):
+        return {
+            "answer": ANCHOR_MISSING,
+            "mode": "action",
+            "metadata": {"intent": "insert_image", "anchor_missing": True},
+        }
     return {
-        "answer": "正在将图片插入文档指定位置…",
+        "answer": f"正在将图片插入选中位置（第 {anchor['paragraph_index']} 段）…",
         "mode": "action",
         "metadata": {
             "intent": "insert_image",
             "needs_workspace_insert_image": True,
-            "paragraph_index": ctx.get("paragraph_index", 0),
+            "paragraph_index": anchor["paragraph_index"],
+            "block_id": anchor.get("block_id") or "",
+            "selected_text": anchor.get("selected_text") or "",
             "attachment_object_key": ctx.get("attachment_object_key"),
         },
     }
 
 
 async def _handle_edit_fragment(text: str, context: dict | None) -> dict[str, Any]:
-    ctx = context or {}
-    selected = ctx.get("selected_text") or ""
-    if not selected:
+    from app.services.agent_capabilities import ANCHOR_MISSING, resolve_document_anchor
+
+    anchor = resolve_document_anchor(context)
+    if not anchor.get("ok"):
         return {
-            "answer": "请先在左侧文档中选中需要修改的文本，再发送修改指令（如「改为更正式的表述」）。",
+            "answer": ANCHOR_MISSING,
             "mode": "action",
             "metadata": {
                 "intent": "edit_fragment",
+                "anchor_missing": True,
                 "actions": [{"type": "link", "label": "打开文档工作区", "url": "/chat", "primary": True}],
             },
         }
+    selected = anchor.get("selected_text") or ""
+    preview = selected[:120] + ("…" if len(selected) > 120 else "")
+    where = f"「{preview}」" if selected else f"第 {anchor.get('paragraph_index')} 段"
+    meta = {
+        "intent": "edit_fragment",
+        "needs_workspace_edit": True,
+        "instruction": text,
+        "selected_text": selected,
+        "block_id": anchor.get("block_id") or "",
+    }
+    if anchor.get("paragraph_index") is not None:
+        meta["paragraph_index"] = anchor["paragraph_index"]
     return {
-        "answer": f"将对选中文本执行修改：\n「{selected[:120]}{'…' if len(selected) > 120 else ''}」\n\n正在调用 Aspose 引擎应用修订…",
+        "answer": f"将对选中位置执行修改：{where}\n\n正在调用 Aspose 引擎应用修订…",
         "mode": "action",
-        "metadata": {
-            "intent": "edit_fragment",
-            "needs_workspace_edit": True,
-            "instruction": text,
-            "selected_text": selected,
-            "paragraph_index": ctx.get("paragraph_index"),
-        },
+        "metadata": meta,
     }
 
 
@@ -575,7 +604,7 @@ async def _handle_general_conversation(
         workspace=workspace,
         context=context,
     )
-    if session is not None and not stream:
+    if session is not None:
         from app.services import agent_tool_loop
 
         try:
@@ -622,6 +651,96 @@ async def _handle_general_conversation(
     return {"answer": answer.strip(), "mode": "ai", "metadata": meta}
 
 
+async def _answer_readonly_side_question(
+    text: str,
+    db: Session,
+    history: list[dict] | None,
+    faq_items: list[dict] | None,
+    *,
+    workspace: dict | None,
+    context: dict | None,
+    session,
+) -> dict[str, Any]:
+    """流程卡片还在时回答只读问题，不清除 pending_action。"""
+    from app.services.agent_capabilities import progress_reply
+    from app.services.web_search import explicit_fetch_url, run_web_research, should_search
+
+    q = (text or "").strip()
+    meta = {"intent": "side_question", "readonly": True, "flow_continued": True}
+    if re.search(r"(进度|到哪了|进行到哪|现在哪一步|流程到哪)", q):
+        project = _latest_bound_project(db, workspace, context)
+        return {
+            "answer": progress_reply(getattr(session, "workspace", None) or workspace, project),
+            "mode": "action",
+            "metadata": meta,
+        }
+    if should_search(q, context) or explicit_fetch_url(q):
+        found = await run_web_research(q, db, history, workspace=workspace, context=context)
+        found_meta = dict(found.get("metadata") or {})
+        found_meta.update(meta)
+        found["metadata"] = found_meta
+        return found
+    if re.search(r"(读(一下)?文件|看看文件|打开文件|文件内容)", q):
+        path = ""
+        ctx = context or {}
+        path = str(ctx.get("workspace_file") or ctx.get("selected_workspace_file") or "").strip()
+        matched = re.search(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,8})", q)
+        if matched:
+            path = matched.group(1).replace("\\", "/")
+        if not path:
+            return {"answer": "请说明要读的相对路径，例如「读一下 技术方案.txt」。", "mode": "action", "metadata": meta}
+        try:
+            from app.services import agent_tools
+
+            data = agent_tools.read_workspace_file(db, session, path)
+        except Exception as exc:
+            return {"answer": f"没有读到该文件：{exc}", "mode": "action", "metadata": meta}
+        content = data.get("content") or ""
+        if data.get("binary"):
+            content = f"（二进制文件，{data.get('size_bytes') or 0} 字节）"
+        return {
+            "answer": f"已读取 `{data.get('path') or path}`：\n\n{(content or '文件为空')[:2000]}",
+            "mode": "action",
+            "metadata": {**meta, "tool_trace": [{"tool": "read_workspace_file", "ok": True}]},
+        }
+    if re.search(r"(预览状态|预览好了)", q):
+        from app.services.agent_tool_loop import _execute_tool
+
+        status = await _execute_tool(db, session, "get_preview_status", {}, default_project_id=None, context=context)
+        oo = status.get("onlyoffice") or {}
+        return {
+            "answer": (
+                f"预览状态：{'已有文档' if status.get('has_document') else '还没有文档'}，"
+                f"版本 v{status.get('version') or 0}。"
+                f"OnlyOffice：{oo.get('message') or '未连接'}。"
+            ),
+            "mode": "action",
+            "metadata": {**meta, "tool_trace": [{"tool": "get_preview_status", "ok": True}], "preview_status": status},
+        }
+
+    from app.services.agent_query_tools import get_company_summary
+
+    summary = get_company_summary(db) if db is not None else {"found": False}
+    quals = []
+    if db is not None:
+        quals = db.query(Qualification).order_by(Qualification.sort_order.asc()).limit(8).all()
+    if summary.get("found"):
+        answer = f"公司全称：{summary.get('full_name') or '未填写'}。"
+    else:
+        answer = "系统中尚未录入企业档案。"
+    if quals and re.search(r"资质", q):
+        answer += "\n资质：" + "、".join(q.name for q in quals[:8])
+    return {"answer": answer, "mode": "query", "metadata": meta}
+
+
+def _latest_bound_project(db: Session, workspace: dict | None, context: dict | None):
+    from app.services.agent_capabilities import bound_project
+
+    if db is None:
+        return None
+    return bound_project(db, workspace, context)
+
+
 async def process_chat_message(
     text: str,
     db: Session,
@@ -633,6 +752,79 @@ async def process_chat_message(
     session=None,
     stream: bool = False,
 ) -> dict[str, Any]:
+    from app.services.agent_capabilities import (
+        bound_project,
+        extract_decision,
+        fix_review_issue,
+        memo_prompt_block,
+        mutating_flow_reply,
+        progress_reply,
+        remember_decision,
+        side_question_kind,
+        unresolved_issues,
+        wants_single_issue_fix,
+    )
+
+    project = bound_project(db, workspace, context) if db is not None else None
+    memo = None
+    if project is not None and extract_decision(text):
+        memo = remember_decision(project, text)
+        if memo is not None:
+            db.commit()
+
+    if wants_single_issue_fix(text) and project is not None:
+        review = (project.checklist_result or {}).get("doc_review") or {}
+        issue_id = str((context or {}).get("review_issue_id") or "").strip()
+        if not issue_id:
+            open_issues = unresolved_issues(review)
+            if len(open_issues) == 1:
+                issue_id = str(open_issues[0].get("id") or "")
+            elif len(open_issues) > 1:
+                return {
+                    "answer": "有多条审查问题。请点选其中一条，或在消息里带上要改的那一条。",
+                    "mode": "action",
+                    "metadata": {"intent": "fix_review_issue", "review_issues": open_issues},
+                }
+        if issue_id:
+            fixed = fix_review_issue(project, issue_id)
+            db.commit()
+            if session is not None and fixed.get("highlight_texts") is not None:
+                ws_fix = dict(getattr(session, "workspace", None) or {})
+                if fixed["highlight_texts"]:
+                    ws_fix["review_highlight_texts"] = fixed["highlight_texts"]
+                else:
+                    ws_fix.pop("review_highlight_texts", None)
+                session.workspace = ws_fix
+                db.commit()
+            return {
+                "answer": fixed.get("answer") or fixed.get("error") or "未能修改这一条。",
+                "mode": "action",
+                "metadata": {
+                    "intent": "fix_review_issue",
+                    "review_issue_id": issue_id,
+                    "highlight_texts": fixed.get("highlight_texts") or [],
+                    "rereview": fixed.get("rereview"),
+                    "workspace_updated": True,
+                },
+            }
+
+    raw_decision = (text or "").strip()
+    decision_text = extract_decision(text)
+    decision_only = bool(
+        memo is not None
+        and decision_text
+        and (raw_decision[:240] == decision_text or raw_decision.startswith(("记住", "决定", "备忘")))
+    )
+    if decision_only:
+        kept = ""
+        if session is not None and isinstance((workspace or {}).get("pending_action"), dict):
+            kept = "当前卡片流程仍在进行，只读问题可以继续问。"
+        return {
+            "answer": f"已写入项目备忘：{memo['text']}\n\n{memo_prompt_block(project.fields) if project else ''}\n{kept}".strip(),
+            "mode": "action",
+            "metadata": {"intent": "project_memo", "memo": memo, "project_id": project.id if project else None},
+        }
+
     if session is not None and (workspace or {}).get("project_id"):
         from app.services.project_export_flow import try_handle_export_flow
 
@@ -642,7 +834,7 @@ async def process_chat_message(
         if export_hit is not None:
             return export_hit
 
-    # 流程状态机优先：进行中的多轮任务由卡片驱动，文本仅支持取消
+    # 流程进行中：取消和修订仍优先；只读旁路可以回答，破坏流程的写操作要确认或取消。
     if session is not None:
         pa = (workspace or {}).get("pending_action")
         if isinstance(pa, dict) and pa.get("flow"):
@@ -651,8 +843,19 @@ async def process_chat_message(
             if pa.get("stage") == "revise_document":
                 if any(w in text for w in ("完成", "结束修订", "好了", "可以了")):
                     return agent_flows.finish_revision(db, session)
-                if text.strip():
+                if text.strip() and side_question_kind(text, context) != "readonly":
                     return await agent_flows.handle_revision_text(db, session, text.strip())
+            kind = side_question_kind(text, context)
+            if kind == "readonly":
+                return await _answer_readonly_side_question(
+                    text, db, history, faq_items, workspace=workspace, context=context, session=session,
+                )
+            if kind == "mutating":
+                return {
+                    "answer": mutating_flow_reply(),
+                    "mode": "action",
+                    "metadata": {"intent": "flow_pending", "blocked_write": True},
+                }
             hint = agent_flows.pending_hint(session)
             if hint:
                 return hint

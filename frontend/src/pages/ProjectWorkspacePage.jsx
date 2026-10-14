@@ -14,6 +14,9 @@ import ComposerContextBar from '../components/chat/ComposerContextBar'
 import { useProjectContext } from '../hooks/useProjectContext'
 import { usePendingMaterials } from '../components/chat/usePendingMaterials'
 import { chipPayload } from '../components/chat/chatTranscriptModel'
+import { appendStreamToken, buildAnchorPayload, keepStreamedReply } from '../components/chat/agentChatRuntime'
+import { useChatMentions } from '../hooks/useChatMentions'
+import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
 
 export default function ProjectWorkspacePage() {
   const { id } = useParams()
@@ -41,6 +44,9 @@ export default function ProjectWorkspacePage() {
   const [referenceOpen, setReferenceOpen] = useState(false)
   const messagesRef = useRef(null)
   const materials = usePendingMaterials()
+  const mentions = useChatMentions(sessionId)
+  const [anchor, setAnchor] = useState(null)
+  const [memos, setMemos] = useState([])
 
   const boundProjectTitle =
     project?.fields?.project_name || project?.title || (projectId ? `项目 #${projectId}` : '')
@@ -71,6 +77,8 @@ export default function ProjectWorkspacePage() {
           if (!hasOpening) msgs = [...msgs, opened.assistant_message]
         }
         setMessages(msgs)
+        const memoRes = await api.listProjectMemos(projectId).catch(() => ({ memos: [] }))
+        setMemos(memoRes.memos || [])
       } catch (e) {
         showToast(e.message)
       }
@@ -131,8 +139,8 @@ export default function ProjectWorkspacePage() {
     if (loading || !sessionId) return
     const staged = withMaterials ? materials.consume() : []
     const q = (text ?? input).trim()
-    if (!q && !staged.length) return
-    const draft = input
+    const sentMentions = mentions.mentions
+    if (!q && !staged.length && !sentMentions.length) return
     setInput('')
     setLoading(true)
     const inlineItems = staged.filter((item) => !item.path)
@@ -140,14 +148,18 @@ export default function ProjectWorkspacePage() {
     const inlineChips = chipPayload(inlineItems)
     const optimisticId = `tmp-${Date.now()}`
     const assistantId = `tmp-bot-${Date.now()}`
-    const streamReply = Boolean(q)
+    const streamReply = Boolean(q || sentMentions.length)
     if (streamReply) setReplyStreaming(true)
     const optimisticUser = {
       id: optimisticId,
       role: 'user',
       content: q,
-      metadata: inlineChips.length ? { attachments: inlineChips } : {},
+      metadata: {
+        ...(inlineChips.length ? { attachments: inlineChips } : {}),
+        ...(sentMentions.length ? { mentions: sentMentions } : {}),
+      },
     }
+    mentions.clearMentions()
     setMessages((m) => [
       ...m,
       optimisticUser,
@@ -176,23 +188,31 @@ export default function ProjectWorkspacePage() {
         if (imported.assistant_message) folderMessages.push(imported.assistant_message)
       }
       let textTurn = []
-      if (q || inlineChips.length) {
-        const ctx = { project_id: projectId, guided_intake: guidedIntake }
+      if (q || inlineChips.length || sentMentions.length) {
+        const ctx = {
+          project_id: projectId,
+          guided_intake: guidedIntake,
+          ...buildAnchorPayload(anchor),
+        }
         if (webSearch) ctx.web_search = true
         if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
         if (imageKey) ctx.attachment_object_key = imageKey
         if (inlineChips.length) ctx.attachments = inlineChips
-        const res = q
-          ? await api.sendChatMessageStream(sessionId, q, ctx, (tok) => {
-            setMessages((m) => m.map((x) => (
-              x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
-            )))
-          })
-          : await api.sendChatMessageStream(sessionId, '', ctx)
+        if (sentMentions.length) ctx.mentions = sentMentions
+        const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok, event) => {
+          setMessages((m) => m.map((x) => (
+            x.id === assistantId ? appendStreamToken(x, tok, event) : x
+          )))
+        })
         if (res.user_message) textTurn.push(res.user_message)
         if (res.assistant_message) textTurn.push(res.assistant_message)
         if (res.session) setWorkspace(res.session.workspace || {})
-        if (res.metadata?.project_context) await refreshContext()
+        if (res.metadata?.project_context || res.metadata?.intent === 'project_memo') {
+          await refreshContext()
+          const memoRes = await api.listProjectMemos(projectId).catch(() => ({ memos: [] }))
+          setMemos(memoRes.memos || [])
+        }
+        if (res.metadata?.highlight_texts) setReviewHighlights(res.metadata.highlight_texts)
         if (res.metadata?.export_result || res.metadata?.export_flow === 'done') {
           const p = await api.getProject(projectId)
           setProject(p)
@@ -205,18 +225,22 @@ export default function ProjectWorkspacePage() {
         ...textTurn,
       ])
     } catch (e) {
-      if (!progressed) {
-        materials.restore(staged)
-        setInput(draft)
-        setMessages((m) => m.filter((x) => x.id !== optimisticId && x.id !== assistantId))
-      } else {
-        setMessages((m) => [
+      setMessages((m) => {
+        const partial = m.find((x) => x.id === assistantId)
+        const kept = keepStreamedReply(partial?.content, e.message)
+        return [
           ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
           ...folderMessages,
-          ...(q || inlineChips.length ? [optimisticUser] : []),
-          { role: 'assistant', content: `发送失败：${e.message}` },
-        ])
-      }
+          optimisticUser,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: kept,
+            metadata: { ...(partial?.metadata || {}), stream_error: e.message },
+          },
+        ]
+      })
+      if (!progressed) materials.restore(staged)
       showToast(e.message)
     } finally {
       setReplyStreaming(false)
@@ -306,6 +330,22 @@ export default function ProjectWorkspacePage() {
             onPreviewError={(msg) => showToast(msg || '预览失败')}
             onFieldsSaved={refreshContext}
             onAgentFollowup={(msg) => setMessages((m) => [...m, msg])}
+            onAnchor={setAnchor}
+          />
+          <WorkspaceReviewPanel
+            projectId={projectId}
+            onReviewComplete={() => bumpPreview()}
+            onHighlightTexts={setReviewHighlights}
+            showToast={showToast}
+            onFixed={(result) => {
+              setReviewHighlights(result.highlight_texts || [])
+              setMessages((m) => [...m, {
+                role: 'assistant',
+                content: result.answer || '已复审这一条。',
+                metadata: { tool_trace: [{ tool: 'fix_review_issue', ok: !!result.ok }], highlight_texts: result.highlight_texts || [] },
+              }])
+              bumpPreview()
+            }}
           />
         </section>
 
@@ -317,6 +357,29 @@ export default function ProjectWorkspacePage() {
               <input type="checkbox" checked={guidedIntake} onChange={(e) => setGuidedIntake(e.target.checked)} />
               引导补全
             </label>
+            {memos.length ? (
+              <ul className="project-memo-list">
+                {memos.map((memo) => (
+                  <li key={memo.id}>
+                    <span>{memo.text}</span>
+                    <button
+                      type="button"
+                      className="ghost tiny"
+                      onClick={async () => {
+                        try {
+                          const res = await api.deleteProjectMemo(projectId, memo.id)
+                          setMemos(res.memos || [])
+                        } catch (err) {
+                          showToast(err.message)
+                        }
+                      }}
+                    >
+                      删除
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
           <div className="chat-messages-area compact" ref={messagesRef}>
             <ChatTranscript
@@ -347,6 +410,11 @@ export default function ProjectWorkspacePage() {
             loading={loading}
             attachments={materials.items}
             onRemoveAttachment={materials.remove}
+            mentions={mentions.mentions}
+            onRemoveMention={mentions.removeMention}
+            mentionItems={mentions.mentionItems}
+            onMentionQuery={mentions.onMentionQuery}
+            onPickMention={mentions.pickMention}
             placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '修改字段、提问、导出标书…'}
             webSearch={webSearch}
             onToggleWebSearch={setWebSearch}
@@ -391,6 +459,27 @@ export default function ProjectWorkspacePage() {
                 >
                   参照
                 </button>
+                <label className="ghost tiny tender-upload">
+                  招标文件
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx,application/pdf"
+                    hidden
+                    disabled={loading}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0]
+                      e.target.value = ''
+                      if (!file) return
+                      try {
+                        await api.uploadTenderFile(projectId, file)
+                        await refreshContext()
+                        showToast('已解析招标文件')
+                      } catch (err) {
+                        showToast(err.message)
+                      }
+                    }}
+                  />
+                </label>
                 <ChatAttachmentControls
                   compact
                   disabled={loading}

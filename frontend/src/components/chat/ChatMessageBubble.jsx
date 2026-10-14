@@ -74,11 +74,19 @@ export default function ChatMessageBubble({ message, onCardAction, actingCardId,
   }
 
   const provenance = visibleProvenance(message.source)
-  const showBody = Boolean(content) || streaming
+  const toolTrace = message.metadata?.tool_trace || []
+  const showBody = Boolean(content) || streaming || toolTrace.length > 0
 
   return (
     <article className={`chat-turn assistant${streaming ? ' is-streaming' : ''}`}>
       <div className="chat-reading">
+        {toolTrace.length ? (
+          <div className="chat-tool-trace">
+            {toolTrace.map((item, index) => (
+              <span key={`${item.tool}-${index}`} className="chat-tool-chip">调用了工具：{item.tool}</span>
+            ))}
+          </div>
+        ) : null}
         {content ? <ChatMarkdown text={content} /> : null}
         {streaming && !content ? <div className="chat-inline-status" role="status">思考中</div> : null}
         {!streaming || content ? <SourceList sources={message.metadata?.sources} /> : null}

@@ -24,6 +24,7 @@ export default function SelectableDocPreview({
   paragraphs = [],
   mappings = [],
   onSelectText,
+  onSelectAnchor,
   selectedText = '',
   selectedMappingId = '',
   activePlaceholderKey = '',
@@ -38,10 +39,25 @@ export default function SelectableDocPreview({
     [mappings],
   )
 
+  const anchorFromNode = (node, text) => {
+    const el = node?.nodeType === 1 ? node : node?.parentElement
+    const host = el?.closest?.('[data-paragraph-index]')
+    if (!host && !text) return null
+    const index = host ? Number(host.getAttribute('data-paragraph-index')) : undefined
+    return {
+      selected_text: text || '',
+      paragraph_index: Number.isNaN(index) ? undefined : index,
+      block_id: host?.getAttribute('data-block-id') || '',
+      source: 'document',
+    }
+  }
+
   const handleMouseUp = () => {
     const sel = window.getSelection()
     const text = (sel?.toString() || '').trim()
     if (text.length >= 2) onSelectText?.(text)
+    const anchor = anchorFromNode(sel?.anchorNode, text)
+    if (anchor && (text.length >= 2 || anchor.block_id)) onSelectAnchor?.(anchor)
   }
 
   const handlePlaceholderClick = (key) => {
@@ -56,11 +72,25 @@ export default function SelectableDocPreview({
 
   return (
     <div className="selectable-doc-preview" onMouseUp={handleMouseUp}>
-      {paragraphs.map((p, i) => renderPreviewBlock(p, i, {
-        highlightTexts,
-        activePlaceholderKey,
-        onPlaceholderClick: handlePlaceholderClick,
-      }))}
+      {paragraphs.map((p, i) => (
+        <div
+          key={p.index ?? i}
+          data-paragraph-index={p.index}
+          data-block-id={p.is_heading ? `section:${p.index}` : `p:${p.index}`}
+          onClick={() => onSelectAnchor?.({
+            selected_text: selectedText || p.text || '',
+            paragraph_index: p.index,
+            block_id: p.is_heading ? `section:${p.index}` : `p:${p.index}`,
+            source: 'document',
+          })}
+        >
+          {renderPreviewBlock(p, i, {
+            highlightTexts,
+            activePlaceholderKey,
+            onPlaceholderClick: handlePlaceholderClick,
+          })}
+        </div>
+      ))}
       {selectedText ? (
         <div className="selection-toolbar">
           已选中：「{selectedText.slice(0, 80)}{selectedText.length > 80 ? '…' : ''}」

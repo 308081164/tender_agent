@@ -55,6 +55,11 @@ export default function FloatingChat({ chat, projectPath = '' }) {
         boundProjectId={chat.boundProjectId}
         workspace={chat.workspace}
         onWorkspaceDirChange={chat.patchWorkspaceDir}
+        mentions={chat.mentions}
+        mentionItems={chat.mentionItems}
+        onMentionQuery={chat.onMentionQuery}
+        onPickMention={chat.pickMention}
+        onRemoveMention={chat.removeMention}
       />
     </>
   )

@@ -813,6 +813,92 @@ async def upload_project_attachment(
     return await ingest_attachment(db, p, name, data, file.content_type or "")
 
 
+@router.post("/projects/{project_id}/tender-file")
+async def upload_project_tender_file(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """把招标 PDF/Word 解析进项目上下文，供写作中对照。"""
+    from app.services.agent_capabilities import parse_tender_text, store_tender_record
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "文件为空")
+    name = file.filename or "tender.docx"
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext not in ("pdf", "doc", "docx", "txt"):
+        raise HTTPException(400, "请上传招标 PDF 或 Word")
+    text = ""
+    if ext in ("txt", "md"):
+        text = data.decode("utf-8", errors="ignore")
+    elif ext == "docx":
+        preview = word.extract_preview(data, max_paragraphs=400)
+        text = "\n".join(item.get("text") or "" for item in preview.get("paragraphs") or [])
+    else:
+        try:
+            from io import BytesIO
+
+            import aspose.words as aw
+
+            doc = aw.Document(BytesIO(data))
+            text = doc.to_string(aw.SaveFormat.TEXT)
+        except Exception:
+            text = data.decode("utf-8", errors="ignore")
+    parsed = parse_tender_text(text)
+    key = f"projects/{p.id}/tender/{name}"
+    try:
+        storage.upload_bytes(key, data, file.content_type or "application/octet-stream")
+    except Exception:
+        key = ""
+    record = store_tender_record(p, parsed, name=name, object_key=key)
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"tender": record}
+
+
+@router.get("/projects/{project_id}/memos")
+def list_project_memos(project_id: int, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import project_memos
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    return {"memos": project_memos(p.fields)}
+
+
+@router.delete("/projects/{project_id}/memos/{memo_id}")
+def delete_project_memo(project_id: int, memo_id: str, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import delete_memo, project_memos
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not delete_memo(p, memo_id):
+        raise HTTPException(404, "备忘不存在")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"memos": project_memos(p.fields)}
+
+
+@router.post("/projects/{project_id}/review-issues/{issue_id}/fix")
+def fix_project_review_issue(project_id: int, issue_id: str, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import fix_review_issue
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    result = fix_review_issue(p, issue_id)
+    if not result.get("ok") and result.get("error") == "没有这一条审查问题":
+        raise HTTPException(404, result["error"])
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return result
+
+
 @router.post("/projects/{project_id}/attachments/apply")
 def apply_attachment_field_patch(
     project_id: int,
@@ -1221,6 +1307,9 @@ async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
     review = await review_project_document(
         doc_bytes, tpl.placeholders, export_fields, snap, required, db=db
     )
+    from app.services.agent_capabilities import stamp_review_issues
+
+    review = stamp_review_issues(review)
     merged = dict(p.checklist_result or {})
     merged["doc_review"] = review
     merged["can_export"] = review.get("can_export", False) and merged.get("can_export", True)
@@ -1766,6 +1855,14 @@ def list_chat_messages(session_id: int, db: Session = Depends(get_db)):
     return [message_to_dict(m) for m in (s.messages or [])]
 
 
+@router.get("/chat/sessions/{session_id}/mentions")
+def list_chat_mentions(session_id: int, q: str = "", db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import mention_candidates
+
+    s = get_session_or_404(db, session_id)
+    return {"items": mention_candidates(db, s, q)}
+
+
 async def _finalize_chat_message_turn(
     session_id: int,
     s: ChatSession,
@@ -1826,12 +1923,17 @@ async def _finalize_chat_message_turn(
             )
             meta["workspace_updated"] = True
 
-    # 工作区：插入表格
+    # 工作区：插入表格（必须有明确锚点，不用段落 0 兜底）
     if meta.get("needs_workspace_insert_table"):
+        from app.services.agent_capabilities import ANCHOR_MISSING
+
         doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
-        if doc_key:
+        raw_idx = meta.get("paragraph_index")
+        if raw_idx is None:
+            raw_idx = (body.context or {}).get("paragraph_index")
+        if doc_key and raw_idx is not None and str(raw_idx) != "":
             doc_bytes = storage.download_bytes(doc_key)
-            pidx = int(meta.get("paragraph_index") or (body.context or {}).get("paragraph_index") or 0)
+            pidx = int(raw_idx)
             rows = int(meta.get("rows") or 3)
             cols = int(meta.get("cols") or 3)
             new_bytes, ins_meta = document_agent.insert_table_in_document(
@@ -1846,15 +1948,23 @@ async def _finalize_chat_message_turn(
             result["answer"] = f"✅ 已插入 {rows}×{cols} 表格（版本 v{ws['version']}），请在左侧预览确认。"
             meta["workspace_updated"] = True
             meta["insert_meta"] = ins_meta
+        else:
+            result["answer"] = ANCHOR_MISSING
+            meta["anchor_missing"] = True
 
-    # 工作区：插入图片
+    # 工作区：插入图片（必须有明确锚点，不用段落 0 兜底）
     if meta.get("needs_workspace_insert_image"):
+        from app.services.agent_capabilities import ANCHOR_MISSING as _ANCHOR_MISSING
+
         doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
         att_key = meta.get("attachment_object_key") or (body.context or {}).get("attachment_object_key")
-        if doc_key and att_key:
+        raw_idx = meta.get("paragraph_index")
+        if raw_idx is None:
+            raw_idx = (body.context or {}).get("paragraph_index")
+        if doc_key and att_key and raw_idx is not None and str(raw_idx) != "":
             doc_bytes = storage.download_bytes(doc_key)
             img_bytes = storage.download_bytes(att_key)
-            pidx = int(meta.get("paragraph_index") or (body.context or {}).get("paragraph_index") or 0)
+            pidx = int(raw_idx)
             new_bytes, ins_meta = document_agent.insert_image_in_document(
                 doc_bytes, img_bytes, paragraph_index=pidx,
             )
@@ -1867,6 +1977,11 @@ async def _finalize_chat_message_turn(
             result["answer"] = f"✅ 图片已插入文档（版本 v{ws['version']}）。"
             meta["workspace_updated"] = True
             meta["insert_meta"] = ins_meta
+        elif not att_key:
+            result["answer"] = "请先通过 📎 上传图片，再选中插入位置。"
+        else:
+            result["answer"] = _ANCHOR_MISSING
+            meta["anchor_missing"] = True
 
     # 工作区：局部修改
     if meta.get("needs_workspace_edit"):
@@ -2016,15 +2131,32 @@ def sanitize_attachment_chips(raw) -> list[dict]:
     return chips
 
 
-def prepare_chat_turn(body: ChatMessageCreate) -> tuple[str, dict, list[dict]]:
+def prepare_chat_turn(body: ChatMessageCreate) -> tuple[str, dict, list[dict], list[dict]]:
+    from app.services.agent_capabilities import normalize_mentions
+
     ctx = dict(body.context or {})
     chips = sanitize_attachment_chips(ctx.pop("attachments", None))
+    mentions = normalize_mentions(ctx.get("mentions"))
+    if mentions:
+        ctx["mentions"] = mentions
+    else:
+        ctx.pop("mentions", None)
     content = (body.content or "").strip()
-    return content, ctx, chips
+    return content, ctx, chips, mentions
 
 
-def _user_message_with_chips(session_id: int, content: str, chips: list[dict]) -> ChatMessage:
-    kwargs = {"metadata_json": {"attachments": chips}} if chips else {}
+def _user_message_with_chips(
+    session_id: int,
+    content: str,
+    chips: list[dict],
+    mentions: list[dict] | None = None,
+) -> ChatMessage:
+    meta: dict = {}
+    if chips:
+        meta["attachments"] = chips
+    if mentions:
+        meta["mentions"] = mentions
+    kwargs = {"metadata_json": meta} if meta else {}
     return ChatMessage(session_id=session_id, role="user", content=content, **kwargs)
 
 
@@ -2048,12 +2180,12 @@ def _attachment_only_payload(db: Session, s: ChatSession, user_msg: ChatMessage)
 @router.post("/chat/sessions/{session_id}/messages")
 async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
     s = get_session_or_404(db, session_id)
-    content, ctx, chips = prepare_chat_turn(body)
-    if not content and not chips:
+    content, ctx, chips, mentions = prepare_chat_turn(body)
+    if not content and not chips and not mentions:
         raise HTTPException(400, "消息不能为空")
     body.context = ctx or None
 
-    user_msg = _user_message_with_chips(s.id, content, chips)
+    user_msg = _user_message_with_chips(s.id, content, chips, mentions)
     if not content:
         db.add(user_msg)
         return _attachment_only_payload(db, s, user_msg)
@@ -2085,12 +2217,12 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
 @router.post("/chat/sessions/{session_id}/messages/stream")
 async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
     s = get_session_or_404(db, session_id)
-    content, ctx, chips = prepare_chat_turn(body)
-    if not content and not chips:
+    content, ctx, chips, mentions = prepare_chat_turn(body)
+    if not content and not chips and not mentions:
         raise HTTPException(400, "消息不能为空")
     body.context = ctx or None
 
-    user_msg = _user_message_with_chips(s.id, content, chips)
+    user_msg = _user_message_with_chips(s.id, content, chips, mentions)
     db.add(user_msg)
     if not content:
         payload = _attachment_only_payload(db, s, user_msg)
@@ -2127,24 +2259,10 @@ async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db:
             ]
             ws = getattr(s_live, "workspace", None) or {}
 
-            result = await chat_assistant.process_chat_message(
-                content,
-                stream_db,
-                history=history,
-                faq_items=items,
-                workspace=ws,
-                context=ctx,
-                session=s_live,
-                stream=True,
-            )
-            stream_msgs = result.pop("stream_messages", None)
-            if stream_msgs:
-                pieces: list[str] = []
-                async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
-                    pieces.append(tok)
-                    yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
-                result["answer"] = "".join(pieces)
-            else:
+            from app.services.agent_capabilities import interrupted_answer, iter_text_chunks
+
+            pieces: list[str] = []
+            try:
                 result = await chat_assistant.process_chat_message(
                     content,
                     stream_db,
@@ -2153,11 +2271,30 @@ async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db:
                     workspace=ws,
                     context=ctx,
                     session=s_live,
-                    stream=False,
+                    stream=True,
                 )
-                ans = result.get("answer") or ""
-                if ans:
-                    yield f"data: {json.dumps({'type': 'token', 'text': ans}, ensure_ascii=False)}\n\n"
+                for item in (result.get("metadata") or {}).get("tool_trace") or []:
+                    yield f"data: {json.dumps({'type': 'tool', 'tool': item.get('tool'), 'ok': item.get('ok', True)}, ensure_ascii=False)}\n\n"
+                stream_msgs = result.pop("stream_messages", None)
+                if stream_msgs:
+                    async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
+                        pieces.append(tok)
+                        yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
+                    result["answer"] = "".join(pieces)
+                else:
+                    ans = result.get("answer") or ""
+                    for tok in iter_text_chunks(ans):
+                        pieces.append(tok)
+                        yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                reason = str(exc) or exc.__class__.__name__
+                partial = "".join(pieces)
+                result = {
+                    "answer": interrupted_answer(partial, reason),
+                    "mode": "error",
+                    "metadata": {"stream_error": reason, "intent": "stream_error"},
+                }
+                yield f"data: {json.dumps({'type': 'error', 'message': reason}, ensure_ascii=False)}\n\n"
 
             payload = await _finalize_chat_message_turn(
                 session_id, s_live, user_live, content, body, result, stream_db,
