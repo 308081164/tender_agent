@@ -368,6 +368,11 @@ textarea.desensitized {
 .log-viewer-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .log-viewer-filter-label { font-size: 12px; font-weight: 750; color: var(--muted); }
 .log-viewer-filter .filter-tabs { margin: 0; }
+.log-viewer-filter .filter-tab:hover:not(:disabled) { background: var(--surface); color: var(--muted); }
+.log-viewer-filter .filter-tab.active,
+.log-viewer-filter .filter-tab.active:hover {
+  background: var(--primary-soft); color: var(--primary); border-color: transparent;
+}
 .log-viewer-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .log-viewer-custom label {
   display: flex; align-items: center; gap: 6px;

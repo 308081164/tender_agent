@@ -126,7 +126,6 @@ export default function LogViewerModal({ open, onClose, showToast }) {
                 开始
                 <input
                   type="datetime-local"
-                  step="1"
                   value={customStart}
                   onChange={(e) => setCustomStart(e.target.value)}
                 />
@@ -135,7 +134,6 @@ export default function LogViewerModal({ open, onClose, showToast }) {
                 结束
                 <input
                   type="datetime-local"
-                  step="1"
                   value={customEnd}
                   onChange={(e) => setCustomEnd(e.target.value)}
                 />
