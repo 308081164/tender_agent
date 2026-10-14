@@ -1,13 +1,13 @@
 {
-  "version": "1.2.4",
-  "display_version": "v1.2.4",
+  "version": "1.2.5",
+  "display_version": "v1.2.5",
   "product": "标书智能体 Desktop",
   "release_date": "2026-10-14",
-  "baseline_note": "含 #51 能力 1–9（联网检索 #49、对话阅读 #50）；正式发版 tag desktop-v1.2.4",
+  "baseline_note": "含 #52 新建标书会话、#53 内置 OnlyOffice、#54 一般问答与联网、#55 移除创作工作台、#56 日志周期；正式发版 tag desktop-v1.2.5",
   "artifacts": {
-    "windows_installer": "TenderAgentSetup-v1.2.4.exe",
-    "user_manual": "tender-agent-manual-v1.2.4.md",
-    "docs_zip": "tender-agent-release-v1.2.4.zip",
-    "test_materials_zip": "tender-agent-test-materials-v1.2.4.zip"
+    "windows_installer": "TenderAgentSetup-v1.2.5.exe",
+    "user_manual": "tender-agent-manual-v1.2.5.md",
+    "docs_zip": "tender-agent-release-v1.2.5.zip",
+    "test_materials_zip": "tender-agent-test-materials-v1.2.5.zip"
   }
 }
