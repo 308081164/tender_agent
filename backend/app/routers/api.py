@@ -4,7 +4,7 @@ from urllib.parse import quote
 import asyncio
 import json
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -592,7 +592,7 @@ async def open_project_workspace(
     body: WorkspaceOpenIn | None = None,
     db: Session = Depends(get_db),
 ):
-    """进入创作工作台：绑定会话并注入主动开场 assistant 消息（幂等）。"""
+    """绑定项目会话并注入主动开场（幂等）。后续工作在 Agent 对话中完成。"""
     from app.services.project_sessions import get_or_create_project_session
     from app.services import project_workspace_agent
 
@@ -635,7 +635,7 @@ async def project_workspace_followup(
         return {"assistant_message": None, "created": False}
     s = find_bound_session(db, project_id)
     if not s:
-        raise HTTPException(404, "请先打开创作工作台以创建项目会话")
+        raise HTTPException(404, "尚未绑定该项目的 Agent 对话")
     msg = await project_workspace_agent.append_workspace_followup_message(
         db, s, p, guided=True,
     )
@@ -643,16 +643,6 @@ async def project_workspace_followup(
         "assistant_message": message_to_dict(msg) if msg else None,
         "created": bool(msg),
     }
-
-
-@router.get("/projects/{project_id}/draft-preview/status")
-async def draft_preview_status(project_id: int, db: Session = Depends(get_db)):
-    from app.services.project_draft import get_draft_preview_status
-
-    try:
-        return await get_draft_preview_status(db, project_id)
-    except ValueError as err:
-        raise HTTPException(404, str(err)) from err
 
 
 @router.post("/projects/{project_id}/render")
@@ -671,82 +661,6 @@ async def render_project_draft(project_id: int, db: Session = Depends(get_db)):
         "draft_object_key": draft_key,
         "render_meta": meta,
         "project": project_to_dict(p),
-    }
-
-
-@router.get("/projects/{project_id}/draft-preview.pdf")
-async def draft_preview_pdf(project_id: int, force: bool = False, db: Session = Depends(get_db)):
-    from app.services.project_draft import get_draft_preview_pdf
-
-    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
-    if not p:
-        raise HTTPException(404, "项目不存在")
-    from app.services import pdf_convert
-
-    import logging
-
-    log = logging.getLogger(__name__)
-    try:
-        pdf_bytes = await get_draft_preview_pdf(db, project_id, force_render=force)
-    except ValueError as err:
-        raise HTTPException(400, str(err)) from err
-    except Exception as err:
-        log.exception("draft-preview.pdf failed project_id=%s", project_id)
-        raise HTTPException(500, str(err) or "预览生成失败") from err
-    title = (p.fields or {}).get("project_name") or p.title or "draft"
-    pdf_name = f"{title}.pdf"
-    engine = pdf_convert.get_pdf_engine() or "unknown"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename=\"preview.pdf\"; filename*=UTF-8''{quote(pdf_name)}",
-            "Cache-Control": "private, max-age=60",
-            "X-PDF-Engine": engine,
-        },
-    )
-
-
-@router.post("/projects/{project_id}/draft-preview/async")
-async def start_draft_preview_async(
-    project_id: int,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-):
-    from app.services import project_draft
-
-    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
-    if not p:
-        raise HTTPException(404, "项目不存在")
-    job_id = project_draft.start_async_preview_job(project_id)
-
-    async def _run():
-        from app.database import SessionLocal
-
-        session = SessionLocal()
-        try:
-            project_draft.set_preview_job(job_id, status="running")
-            await project_draft.get_draft_preview_pdf(session, project_id, force_render=True)
-            project_draft.set_preview_job(job_id, status="done", pdf_ready=True)
-        except Exception as err:
-            project_draft.set_preview_job(job_id, status="failed", error=str(err))
-        finally:
-            session.close()
-
-    background_tasks.add_task(_run)
-    return {"job_id": job_id, "status": "pending"}
-
-
-@router.get("/projects/{project_id}/draft-preview/jobs/{job_id}")
-def get_draft_preview_job(project_id: int, job_id: str):
-    from app.services import project_draft
-
-    job = project_draft.get_preview_job(job_id)
-    if not job or job.get("project_id") != project_id:
-        raise HTTPException(404, "预览任务不存在")
-    return {
-        **job,
-        "preview_url": f"/api/projects/{project_id}/draft-preview.pdf" if job.get("pdf_ready") else None,
     }
 
 

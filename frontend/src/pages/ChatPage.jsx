@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import BackChevron from '../components/chat/BackChevron'
@@ -20,6 +20,8 @@ import { useChatMentions } from '../hooks/useChatMentions'
 
 export default function ChatPage() {
   const { showToast } = useApp()
+  const [searchParams] = useSearchParams()
+  const projectParam = searchParams.get('project')
   const [sessions, setSessions] = useState([])
   const [sessionId, setSessionId] = useState(null)
   const [messages, setMessages] = useState([])
@@ -99,6 +101,7 @@ export default function ChatPage() {
   }
 
   useEffect(() => {
+    let cancelled = false
     ;(async () => {
       try {
         const [list, feat, projList] = await Promise.all([
@@ -106,14 +109,26 @@ export default function ChatPage() {
           api.getChatFeatures(),
           api.projects().catch(() => []),
         ])
+        if (cancelled) return
         setFeatures(feat)
         setProjects(projList || [])
+        const projectId = Number(projectParam)
+        if (Number.isFinite(projectId) && projectId > 0) {
+          const bound = await api.ensureProjectSession(projectId)
+          if (cancelled) return
+          const sid = bound?.session?.id
+          if (sid) {
+            await loadSession(sid)
+            return
+          }
+        }
         if (list[0]) await loadSession(list[0].id)
       } catch (e) {
-        showToast(e.message)
+        if (!cancelled) showToast(e.message)
       }
     })()
-  }, [showToast])
+    return () => { cancelled = true }
+  }, [showToast, projectParam])
 
   useEffect(() => {
     const el = messagesRef.current

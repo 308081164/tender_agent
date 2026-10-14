@@ -415,10 +415,16 @@ async def _handle_edit_project(db: Session) -> dict[str, Any]:
             },
         }
     step = project.current_step or 1
+    from app.services.project_sessions import agent_chat_path
+
+    continue_url = agent_chat_path(project.id) if step >= 3 else f"/projects/{project.id}/step/{step}"
     return {
         "answer": (
             f"已找到最近编辑的标书「{project.title}」（当前第 {step} 步）。\n"
-            "标书内容的精细调整（字段、AI 章节、资质、清单校验）请在六步向导中操作。"
+            "后续编写、审查和导出请在 Agent 对话中继续。"
+            if step >= 3 else
+            f"已找到最近编辑的标书「{project.title}」（当前第 {step} 步）。\n"
+            "请先在向导中完成起点选择和信息录入。"
         ),
         "mode": "action",
         "metadata": {
@@ -428,7 +434,7 @@ async def _handle_edit_project(db: Session) -> dict[str, Any]:
                 {
                     "type": "link",
                     "label": "继续编辑标书",
-                    "url": f"/projects/{project.id}/workspace" if step >= 3 else f"/projects/{project.id}/step/{step}",
+                    "url": continue_url,
                     "primary": True,
                 },
                 {"type": "link", "label": "预览导出", "url": f"/projects/{project.id}/preview"},
@@ -438,33 +444,35 @@ async def _handle_edit_project(db: Session) -> dict[str, Any]:
 
 
 async def _handle_draft_create(db: Session) -> dict[str, Any]:
+    from app.services.project_sessions import agent_chat_path
+
     project = _latest_project(db)
     if not project:
         result = await _handle_create_project(db, "新建标书")
         project_id = result["metadata"]["project_id"]
         return {
-            "answer": result["answer"] + "\n\n填写字段后，可在第 3 步使用 AI 生成章节初稿。",
+            "answer": result["answer"] + "\n\n填写字段后，在 Agent 对话中继续生成章节初稿。",
             "mode": "action",
             "metadata": {
                 "intent": "draft_create",
                 "project_id": project_id,
                 "actions": [
                     {"type": "link", "label": "填写字段", "url": f"/projects/{project_id}/step/2", "primary": True},
-                    {"type": "link", "label": "进入创作工作台", "url": f"/projects/{project_id}/workspace"},
+                    {"type": "link", "label": "打开 Agent 对话", "url": agent_chat_path(project_id)},
                 ],
             },
         }
     return {
         "answer": (
-            f"标书「{project.title}」可在向导第 3 步批量生成章节初稿。\n"
-            "请确保第 2 步已填写项目名称、招标编号等关键字段，以获得更准确的 AI 输出。"
+            f"标书「{project.title}」的章节初稿在 Agent 对话中生成。\n"
+            "请确保已填写项目名称、招标编号等关键字段，以获得更准确的 AI 输出。"
         ),
         "mode": "action",
         "metadata": {
             "intent": "draft_create",
             "project_id": project.id,
             "actions": [
-                {"type": "link", "label": "进入创作工作台", "url": f"/projects/{project.id}/workspace", "primary": True},
+                {"type": "link", "label": "打开 Agent 对话", "url": agent_chat_path(project.id), "primary": True},
                 {"type": "link", "label": "补充项目字段", "url": f"/projects/{project.id}/step/2"},
             ],
         },

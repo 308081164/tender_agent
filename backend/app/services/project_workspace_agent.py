@@ -40,7 +40,7 @@ def _opening_body(ctx: dict[str, Any], intake: dict[str, Any]) -> str:
     verify_n = len(verify_items)
     tpl_name = tpl.get("name") or "当前模板"
     lines = [
-        f"您好，我已接入「{tpl_name}」创作工作台。",
+        f"您好，我已接入「{tpl_name}」。编写、审查和导出都在这条 Agent 对话里完成。",
         f"进度摘要：必填待填 {missing_n} 项"
         + (f"，待核实 {verify_n} 项" if verify_n else "（基础信息已信任向导录入）"),
     ]

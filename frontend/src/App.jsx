@@ -76,7 +76,7 @@ export default function App() {
   const { bindProjectSession } = chat
   useEffect(() => {
     const m = location.pathname.match(/^\/projects\/(\d+)/)
-    if (!m || location.pathname.includes('/workspace')) {
+    if (!m) {
       bindProjectSession(null)
       return
     }

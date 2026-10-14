@@ -1,4 +1,4 @@
-"""项目草稿 PDF 预览与创作工作台开场。"""
+"""项目草稿预览路由已随创作工作台移除；项目会话开场仍可绑定。"""
 from __future__ import annotations
 
 import os
@@ -67,25 +67,19 @@ def _seed_project() -> int:
         db.close()
 
 
-def test_draft_preview_status_and_pdf_mock():
+def test_workspace_draft_preview_routes_removed():
+    """创作工作台的草稿 PDF 预览会因 docx_bytes 未定义而失败，路由应一并删除。"""
     pid = _seed_project()
     client = TestClient(app)
-
-    st = client.get(f"/api/projects/{pid}/draft-preview/status")
-    assert st.status_code == 200, st.text
-    body = st.json()
-    assert body["project_id"] == pid
-    assert "pdf_engine" in body
-
-    fake_pdf = b"%PDF-1.4 mock"
-    with patch(
-        "app.services.project_draft.get_draft_preview_pdf",
-        new=AsyncMock(return_value=fake_pdf),
+    for path in (
+        f"/api/projects/{pid}/draft-preview.pdf",
+        f"/api/projects/{pid}/draft-preview/status",
+        f"/api/projects/{pid}/draft-preview/jobs/missing",
     ):
-        r = client.get(f"/api/projects/{pid}/draft-preview.pdf")
-    assert r.status_code == 200
-    assert r.content == fake_pdf
-    assert r.headers.get("content-type", "").startswith("application/pdf")
+        response = client.get(path)
+        assert response.status_code == 404, response.text
+    started = client.post(f"/api/projects/{pid}/draft-preview/async")
+    assert started.status_code == 404, started.text
 
 
 def test_workspace_open_creates_assistant_message():
