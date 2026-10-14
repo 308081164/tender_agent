@@ -125,7 +125,10 @@ export default function LogViewerModal({ open, onClose, showToast }) {
               <label>
                 开始
                 <input
-                  type="datetime-local"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="2026-10-14 16:47"
+                  spellCheck={false}
                   value={customStart}
                   onChange={(e) => setCustomStart(e.target.value)}
                 />
@@ -133,7 +136,10 @@ export default function LogViewerModal({ open, onClose, showToast }) {
               <label>
                 结束
                 <input
-                  type="datetime-local"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="2026-10-14 16:47"
+                  spellCheck={false}
                   value={customEnd}
                   onChange={(e) => setCustomEnd(e.target.value)}
                 />
@@ -141,6 +147,7 @@ export default function LogViewerModal({ open, onClose, showToast }) {
               <button type="button" className="secondary tiny" onClick={applyCustom}>
                 应用
               </button>
+              <p className="log-viewer-filter-meta">时间格式：2026-10-14 16:47，结束这一分钟里的日志也会包含。</p>
             </div>
           ) : null}
           {selection.hint ? <p className="log-viewer-filter-meta">{selection.hint}</p> : null}

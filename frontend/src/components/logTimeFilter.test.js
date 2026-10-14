@@ -115,6 +115,7 @@ test('custom range covers the whole minute and rejects a reversed span', () => {
     '2026-10-14 16:48:00.000 INFO outside',
   ]
   assert.deepEqual(filterLogLines(lines, ok.range), [lines[0], lines[1]])
+  assert.deepEqual(customRange('2026-10-14 16:47', '2026-10-14 16:47').range, ok.range)
   assert.deepEqual(customRange('', '2026-10-14T16:47'), { ok: false, reason: 'incomplete' })
   assert.equal(customRange('2026-10-14T18:00', '2026-10-14T16:47').reason, 'order')
 })
