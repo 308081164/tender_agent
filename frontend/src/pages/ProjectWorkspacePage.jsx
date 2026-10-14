@@ -24,6 +24,7 @@ export default function ProjectWorkspacePage() {
   const [workspace, setWorkspace] = useState({})
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [checklistOpen, setChecklistOpen] = useState(true)
@@ -118,6 +119,7 @@ export default function ProjectWorkspacePage() {
     ])
     try {
       const ctx = { project_id: projectId, guided_intake: guidedIntake }
+      if (webSearch) ctx.web_search = true
       if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
       if (lastImageAttachmentKey) ctx.attachment_object_key = lastImageAttachmentKey
       const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok) => {
@@ -309,7 +311,9 @@ export default function ProjectWorkspacePage() {
             onSend={() => send()}
             loading={loading}
             loadingHint={loading ? '思考中…' : null}
-            placeholder="修改字段、提问、导出标书…"
+            placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '修改字段、提问、导出标书…'}
+            webSearch={webSearch}
+            onToggleWebSearch={setWebSearch}
             contextBar={(
               <ComposerContextBar
                 workspaceDir={workspaceDir}

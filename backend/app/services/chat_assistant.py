@@ -61,9 +61,14 @@ SUGGESTED_PROMPTS = [
     "公司的全称是什么",
     "帮我写一份标书",
     "如何使用这个系统？",
+    "联网查一下铁路投标保证金常见要求",
 ]
 
 INTENT_PATTERNS: list[tuple[str, list[str], float]] = [
+    ("web_search", [
+        "联网", "网上查", "网上看看", "网上搜索", "搜索一下", "查一下最新",
+        "公开资料", "查资料", "上网查", "中标公告",
+    ], 2.0),
     ("generate_document", [
         "按模板生成", "根据模板写", "严格按模板", "生成一份标书", "生成全新标书",
         "模板文档", "编写要求", "照模板格式", "按格式生成",
@@ -534,8 +539,9 @@ async def _handle_meta_question() -> dict[str, Any]:
             "2. **文档 Agent**：上传模板 + 编写要求，按版式生成或修订标书\n"
             "3. **企业问答**：查询资质、业绩、人员等投标资料（基于企业档案与 FAQ）\n"
             "4. **模板工程化**：把完整标书转为可复用占位符模板\n"
-            "5. **资质文件夹落库**：提供本机资质目录路径，扫描 pdf/docx/图片并写入资质库与企业档案（**务必人工核对**）\n\n"
-            "你可以直接说「帮我写一份标书」「扫描资质文件夹 C:\\\\…\\\\资质」或打开「文档工作区」上传 DOCX。"
+            "5. **资质文件夹落库**：提供本机资质目录路径，扫描 pdf/docx/图片并写入资质库与企业档案（**务必人工核对**）\n"
+            "6. **联网查资料**：说「联网查一下…」或打开输入框的「联网」，我会检索公开网页并附上标题和链接；离线时会说明，并改用本地企业/项目资料\n\n"
+            "你可以直接说「帮我写一份标书」「联网查一下铁路投标保证金常见要求」或打开「文档工作区」上传 DOCX。"
         ),
         "mode": "meta",
         "metadata": {
@@ -573,21 +579,28 @@ async def _handle_general_conversation(
         from app.services import agent_tool_loop
 
         try:
-            loop_answer = await agent_tool_loop.run_tool_loop(
+            loop_result = await agent_tool_loop.run_tool_loop(
                 db=db,
                 session=session,
                 messages=messages,
                 workspace=workspace,
                 context=context,
             )
-            if loop_answer:
-                return {"answer": loop_answer.strip(), "mode": "ai", "metadata": {
+            if loop_result and (loop_result.get("answer") or "").strip():
+                meta = {
                     "intent": "general",
                     "tool_loop": True,
                     "actions": [
                         {"type": "link", "label": "文档工作区", "url": "/chat", "primary": True},
                     ],
-                }}
+                }
+                extra = loop_result.get("metadata") or {}
+                meta.update(extra)
+                return {
+                    "answer": loop_result["answer"].strip(),
+                    "mode": "web_search" if extra.get("sources") else "ai",
+                    "metadata": meta,
+                }
         except Exception:
             pass
     meta = {
@@ -650,6 +663,17 @@ async def process_chat_message(
     if folder_path and folder_score >= 0.85 and session is not None:
         return await agent_flows.start_qual_folder_import(db, session, folder_path)
 
+    from app.services.web_search import explicit_fetch_url, run_web_research, should_search
+
+    if should_search(text, context) or explicit_fetch_url(text):
+        return await run_web_research(
+            text,
+            db,
+            history,
+            workspace=workspace,
+            context=context,
+        )
+
     from app.services import agent_semantic
 
     semantic_result = await agent_semantic.process_with_semantic_router(
@@ -689,6 +713,12 @@ async def process_chat_message(
         return await _handle_edit_project(db)
     if intent == "draft_create":
         return await _handle_draft_create(db)
+    if intent == "web_search":
+        from app.services.web_search import run_web_research
+
+        return await run_web_research(
+            text, db, hist, workspace=workspace, context=context,
+        )
     if intent == "search_info":
         return await _handle_search_info(
             db, text, hist, faqs, workspace=workspace, context=context,

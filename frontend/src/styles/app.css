@@ -664,6 +664,21 @@ textarea.desensitized {
 .chat-msg.user { align-self: flex-end; background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
 .chat-msg.bot { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
 .chat-msg-source { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.chat-msg-sources {
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  background: #f8fafc; border: 1px solid #e2e8f0; font-size: 12px;
+}
+.chat-msg-sources-title { font-weight: 600; color: var(--ink); }
+.chat-msg-sources ol { margin: 6px 0 0; padding-left: 18px; }
+.chat-msg-sources a { color: var(--primary); word-break: break-all; }
+.composer-web-toggle {
+  border: 1px solid var(--line); background: #fff; color: var(--muted);
+  border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+}
+.composer-web-toggle.on {
+  background: #ecfdf5; border-color: #6ee7b7; color: #065f46; font-weight: 600;
+}
+.composer-web-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
 .chat-action-cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .chat-action-card {
   display: inline-flex; padding: 8px 12px; border-radius: 999px; font-size: 13px;

@@ -7,6 +7,7 @@ export function useChatSessions(showToast) {
   const [sessionId, setSessionId] = useState(null)
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
@@ -184,7 +185,8 @@ export function useChatSessions(showToast) {
     setMessages((m) => [...m, optimistic, { id: assistantId, role: 'assistant', content: '' }])
     try {
       const id = await ensureSession()
-      const ctx = chatContext || undefined
+      const ctx = { ...(chatContext || {}) }
+      if (webSearch) ctx.web_search = true
       const res = await api.sendChatMessageStream(id, q, ctx, (tok) => {
         setMessages((m) => m.map((x) => (
           x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
@@ -214,7 +216,7 @@ export function useChatSessions(showToast) {
     } finally {
       setLoading(false)
     }
-  }, [chatInput, loading, ensureSession, chatContext])
+  }, [chatInput, loading, ensureSession, chatContext, webSearch])
 
   const patchWorkspaceDir = useCallback(async (dir) => {
     try {
@@ -237,6 +239,8 @@ export function useChatSessions(showToast) {
     messages,
     chatInput,
     setChatInput,
+    webSearch,
+    setWebSearch,
     loading,
     showHistory,
     setShowHistory,

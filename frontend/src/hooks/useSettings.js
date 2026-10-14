@@ -14,6 +14,8 @@ const emptyForm = {
   kimi_model: '',
   kimi_k3_model: '',
   preferred_provider: 'auto',
+  web_search_provider: 'duckduckgo',
+  web_search_api_key: '',
 }
 
 export function useSettings(showToast) {
@@ -37,6 +39,8 @@ export function useSettings(showToast) {
       kimi_model: s.kimi_model || 'moonshot-v1-8k',
       kimi_k3_model: s.kimi_k3_model || 'kimi-k3',
       preferred_provider: s.preferred_provider || 'auto',
+      web_search_provider: s.web_search_provider || 'duckduckgo',
+      web_search_api_key: '',
     })
     return s
   }, [])
@@ -54,6 +58,10 @@ export function useSettings(showToast) {
         kimi_model: settingsForm.kimi_model,
         kimi_k3_model: settingsForm.kimi_k3_model,
         preferred_provider: settingsForm.preferred_provider,
+        web_search_provider: settingsForm.web_search_provider || 'duckduckgo',
+      }
+      if (settingsForm.web_search_api_key.trim()) {
+        payload.web_search_api_key = settingsForm.web_search_api_key.trim()
       }
       if (settingsForm.deepseek_api_key.trim()) {
         payload.deepseek_api_key = settingsForm.deepseek_api_key.trim()
@@ -66,7 +74,14 @@ export function useSettings(showToast) {
       }
       const s = await api.updateSettings(payload)
       setSettingsInfo(s)
-      setSettingsForm((f) => ({ ...f, deepseek_api_key: '', qwen_api_key: '', kimi_api_key: '' }))
+      setSettingsForm((f) => ({
+        ...f,
+        deepseek_api_key: '',
+        qwen_api_key: '',
+        kimi_api_key: '',
+        web_search_api_key: '',
+        web_search_provider: s.web_search_provider || f.web_search_provider || 'duckduckgo',
+      }))
       showToast?.('系统设置已保存')
     } catch (e) {
       showToast?.(e.message)
@@ -82,14 +97,18 @@ export function useSettings(showToast) {
         ? { clear_deepseek_api_key: true }
         : provider === 'qwen'
           ? { clear_qwen_api_key: true }
-          : { clear_kimi_api_key: true }
+          : provider === 'web_search'
+            ? { clear_web_search_api_key: true }
+            : { clear_kimi_api_key: true }
       const s = await api.updateSettings(payload)
       setSettingsInfo(s)
       const cleared = provider === 'deepseek'
         ? '已清除 DeepSeek Key'
         : provider === 'qwen'
           ? '已清除通义千问 Key'
-          : '已清除 Kimi K3 Key'
+          : provider === 'web_search'
+            ? '已清除联网搜索 Key'
+            : '已清除 Kimi K3 Key'
       showToast?.(cleared)
     } catch (e) {
       showToast?.(e.message)

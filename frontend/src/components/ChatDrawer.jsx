@@ -15,6 +15,8 @@ export default function ChatDrawer({
   messages,
   chatInput,
   setChatInput,
+  webSearch = false,
+  onToggleWebSearch,
   askChat,
   loading,
   showHistory,
@@ -105,7 +107,9 @@ export default function ChatDrawer({
               onSend={askChat}
               loading={loading}
               loadingHint={loading ? '思考中…' : null}
-              placeholder="可粘贴文件夹路径并说明「读取录入」…"
+              placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '可粘贴文件夹路径并说明「读取录入」…'}
+              webSearch={webSearch}
+              onToggleWebSearch={onToggleWebSearch}
               contextBar={(
                 <ComposerContextBar
                   workspaceDir={workspaceDir}

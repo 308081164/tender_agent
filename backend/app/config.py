@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     # Document Server 容器访问后端的地址（Docker 内用 http://backend:8000，本机后端用 http://host.docker.internal:8000）
     onlyoffice_internal_url: str = "http://backend:8000"
     agent_tool_loop: bool = False
+    # 联网搜索：默认 DuckDuckGo，无需密钥。tavily / bing / serpapi 需要 web_search_api_key。
+    web_search_provider: str = "duckduckgo"
+    web_search_api_key: str = ""
 
     @model_validator(mode="before")
     @classmethod

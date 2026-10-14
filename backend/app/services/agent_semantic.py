@@ -26,6 +26,7 @@ INTENT_LABELS = [
     "edit_fragment",
     "export_project",
     "search_info",
+    "web_search",
     "general",
 ]
 
@@ -45,6 +46,11 @@ def _keyword_route(text: str) -> tuple[str, dict[str, Any], float]:
 
     if any(k in q for k in _TEACH_KEYWORDS):
         return "teach", {}, 0.92
+
+    from app.services.web_search import extract_search_query, text_requests_web_search
+
+    if text_requests_web_search(q):
+        return "web_search", {"query": extract_search_query(q)}, 0.96
 
     if re.search(r"(全称|公司名称|企业名称|叫什么)", q):
         return "query_company", {}, 0.9
@@ -112,7 +118,9 @@ async def _llm_route(
         "- 上传文件后要生成标书 → generate_document\n"
         "- 上传文件后要建模板 → create_template\n"
         "- 全文替换 → bulk_replace，params 含 old_text/new_text\n"
-        "- 企业资质业绩 → search_info\n"
+        "- 联网、网上查、搜索一下、查一下最新、公开资料、中标/招标公告 → web_search，"
+        "不要当成企业 FAQ\n"
+        "- 企业资质业绩（未要求联网） → search_info\n"
         "- 用户提供本机文件夹绝对路径并要求读取/录入/导入/落库 → import_qual_folder，"
         "params.folder_path 为路径（桌面版后端可读盘，勿回答无法访问本地目录）\n"
         "只返回 JSON。"
@@ -469,6 +477,13 @@ async def process_with_semantic_router(
     if intent == "edit_fragment" and confidence >= 0.55:
         from app.services.chat_assistant import _handle_edit_fragment
         return await _handle_edit_fragment(text, context)
+
+    if intent == "web_search" and confidence >= 0.55:
+        from app.services.web_search import run_web_research
+
+        return await run_web_research(
+            text, db, hist, workspace=ws, context=context,
+        )
 
     if intent == "search_info" and confidence >= 0.55:
         from app.services.chat_assistant import _handle_search_info
