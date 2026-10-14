@@ -141,7 +141,7 @@ async def ensure_workspace_opening_message(
     *,
     guided: bool | None = None,
 ) -> ChatMessage | None:
-    """进入创作工作台时注入首条 assistant 开场（幂等）。"""
+    """注入首条 assistant 开场（幂等）。"""
     db.refresh(session)
     if _session_has_opening(session):
         return None

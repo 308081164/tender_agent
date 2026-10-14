@@ -364,6 +364,35 @@ textarea.desensitized {
 .env-check-list { margin: 8px 0 0; padding-left: 18px; list-style: disc; }
 .env-check-list li { margin-bottom: 8px; }
 .log-viewer-modal { width: min(960px, 100%); max-height: min(90vh, 920px); }
+.log-viewer-filter { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.log-viewer-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.log-viewer-filter-label { font-size: 12px; font-weight: 750; color: var(--muted); }
+.log-viewer-filter .filter-tabs { margin: 0; }
+.log-viewer-filter .filter-tab:hover:not(:disabled) { background: var(--surface); color: var(--muted); }
+.log-viewer-filter .filter-tab.active,
+.log-viewer-filter .filter-tab.active:hover {
+  background: var(--primary-soft); color: var(--primary); border-color: transparent;
+}
+.log-viewer-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.log-viewer-custom label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 750; color: var(--muted);
+}
+.log-viewer-custom input {
+  width: 168px; border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px;
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--surface);
+}
+.log-viewer-custom .log-viewer-filter-meta { flex-basis: 100%; }
+.log-viewer-custom input:focus {
+  border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); outline: 0;
+}
+.log-viewer-filter-meta { margin: 0; font-size: 12px; color: var(--muted); }
+.log-viewer-empty {
+  margin: 0; padding: 36px 16px; text-align: center;
+  background: var(--surface-2); border: 1px dashed var(--line); border-radius: 12px;
+}
+.log-viewer-empty strong { display: block; margin-bottom: 6px; color: var(--ink); font-size: 14px; }
+.log-viewer-empty p { margin: 0; }
 .log-viewer-body { flex: 1; min-height: 200px; }
 .log-viewer-pre {
   margin: 0; padding: 12px 14px; font-size: 12px; line-height: 1.45;

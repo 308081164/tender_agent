@@ -21,7 +21,14 @@ from app.services.onlyoffice_runtime import (
     runtime_status,
 )
 from app.services.system_check import _check_onlyoffice
-from onlyoffice_sidecar import build_local_config, rewrite_nginx_conf
+from onlyoffice_sidecar import (
+    ONLYOFFICE_SCHEMA_GRANTS_SQL,
+    _ensure_database,
+    _prepare_nginx,
+    build_local_config,
+    nginx_launch_command,
+    rewrite_nginx_conf,
+)
 
 
 def _write(path: Path, text: str = "x") -> None:
@@ -126,6 +133,67 @@ def test_tender_database_create_is_its_own_statement(tmp_path: Path, monkeypatch
     assert "CREATE DATABASE" not in module.TENDER_DB_EXISTS_SQL
 
 
+class _PsqlResult:
+    def __init__(self, stdout: str = "", returncode: int = 0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+def _record_psql(calls: list[list[str]], answers: dict[str, str]):
+    def _fake(_psql, _env, args, _log):
+        calls.append(list(args))
+        joined = " ".join(args)
+        for needle, stdout in answers.items():
+            if needle in joined:
+                return _PsqlResult(stdout)
+        return _PsqlResult("")
+
+    return _fake
+
+
+def test_onlyoffice_create_database_is_not_inside_do_block(tmp_path: Path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "onlyoffice_sidecar._psql",
+        _record_psql(calls, {}),
+    )
+    psql = tmp_path / "psql.exe"
+    psql.write_text("", encoding="utf-8")
+    schema = tmp_path / "createdb.sql"
+    schema.write_text("CREATE TABLE doc_changes();", encoding="utf-8")
+    _ensure_database(psql, "127.0.0.1", 25432, {}, schema, lambda _message: None)
+    create_sql = " ".join(" ".join(args) for args in calls if any("CREATE DATABASE" in part for part in args))
+    assert "CREATE DATABASE onlyoffice OWNER onlyoffice" in create_sql
+    assert "DO" not in create_sql
+    assert "DO" not in ONLYOFFICE_SCHEMA_GRANTS_SQL
+    import_args = next(args for args in calls if "-f" in args)
+    user_flag = import_args[import_args.index("-U") + 1]
+    assert user_flag == "onlyoffice"
+
+
+def test_existing_onlyoffice_schema_still_grants_role(tmp_path: Path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "onlyoffice_sidecar._psql",
+        _record_psql(
+            calls,
+            {
+                "pg_roles": "1",
+                "pg_database": "1",
+                "to_regclass": "doc_changes",
+            },
+        ),
+    )
+    psql = tmp_path / "psql.exe"
+    psql.write_text("", encoding="utf-8")
+    _ensure_database(psql, "127.0.0.1", 25432, {}, tmp_path / "missing.sql", lambda _message: None)
+    granted = [args for args in calls if any("GRANT ALL ON ALL TABLES" in part for part in args)]
+    assert granted
+    assert not any("-f" in args for args in calls)
+    assert not any("CREATE DATABASE" in part for args in calls for part in args)
+
+
 def test_load_manifest_accepts_powershell5_utf8_bom(tmp_path: Path):
     payload = {"nginx": "nginx/nginx.exe", "docservice": "server/DocService/docservice.exe"}
     (tmp_path / "bundle.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8"))
@@ -144,6 +212,91 @@ def test_rewrite_nginx_listen_binds_loopback():
     rewritten = rewrite_nginx_conf(source, 18080, r"C:\Program Files\ONLYOFFICE\DocumentServer")
     assert "listen 127.0.0.1:18080;" in rewritten
     assert "listen 8000;" in rewritten
+
+
+def test_rewrite_nginx_collapses_windows_dual_listen():
+    """Community ds.conf listens on IPv4 and IPv6 port 80. Both must not become the same socket."""
+    source = (
+        "include includes/http-common.conf;\n"
+        "server {\n"
+        "  listen 0.0.0.0:80;\n"
+        "  listen [::]:80 default_server;\n"
+        "  include includes/ds-*.conf;\n"
+        "}\n"
+    )
+    rewritten = rewrite_nginx_conf(source, 18080, r"D:\TenderAgent\tools\onlyoffice\documentserver")
+    assert rewritten.count("listen ") == 1
+    assert "listen 127.0.0.1:18080;" in rewritten
+    assert "[::]" not in rewritten
+    assert "listen 0.0.0.0" not in rewritten
+
+
+def _windows_nginx_tree(root: Path) -> Path:
+    nginx = root / "nginx"
+    conf = nginx / "conf"
+    conf.mkdir(parents=True)
+    (conf / "nginx.conf").write_text(
+        "worker_processes 1;\n"
+        "events { worker_connections 1024; }\n"
+        "http {\n"
+        "    include mime.types;\n"
+        "    include ds.conf;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (conf / "ds.conf").write_text(
+        "include includes/http-common.conf;\n"
+        "server {\n"
+        "  listen 0.0.0.0:80;\n"
+        "  listen [::]:80 default_server;\n"
+        "  include includes/ds-*.conf;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (conf / "mime.types").write_text("types { }\n", encoding="utf-8")
+    exe = nginx / "nginx.exe"
+    exe.write_text("", encoding="utf-8")
+    return exe
+
+
+def test_prepare_nginx_uses_full_config_not_server_fragment(tmp_path: Path):
+    exe = _windows_nginx_tree(tmp_path)
+    target = _prepare_nginx(exe, 18080)
+    assert target.name == "nginx.bundled.conf"
+    main = target.read_text(encoding="utf-8")
+    assert "events" in main
+    assert "http {" in main
+    assert "include ds.bundled.conf;" in main
+    assert "include ds.conf;" not in main
+    bundled = (exe.parent / "conf" / "ds.bundled.conf").read_text(encoding="utf-8")
+    assert bundled.count("listen ") == 1
+    assert "listen 127.0.0.1:18080;" in bundled
+    assert "server {" in bundled
+    assert not bundled.lstrip().startswith("worker_processes")
+    command = nginx_launch_command(exe, target)
+    assert command[-2:] == ["-c", "conf/nginx.bundled.conf"]
+    assert (exe.parent / "logs").is_dir()
+    assert (exe.parent / "temp" / "client_body_temp").is_dir()
+    assert (exe.parent / "temp" / "proxy_temp").is_dir()
+
+
+def test_prepare_nginx_wraps_fragment_when_main_config_missing(tmp_path: Path):
+    nginx = tmp_path / "nginx"
+    conf = nginx / "conf"
+    conf.mkdir(parents=True)
+    (conf / "ds.conf").write_text(
+        "server {\n  listen 0.0.0.0:80;\n  listen [::]:80 default_server;\n}\n",
+        encoding="utf-8",
+    )
+    exe = nginx / "nginx.exe"
+    exe.write_text("", encoding="utf-8")
+    target = _prepare_nginx(exe, 18080)
+    text = target.read_text(encoding="utf-8")
+    assert "events {" in text
+    assert "http {" in text
+    assert text.count("listen ") == 1
+    assert "listen 127.0.0.1:18080;" in text
+    assert nginx_launch_command(exe, target)[-1] == "conf/nginx.bundled.conf"
 
 
 def test_rewrite_nginx_replaces_program_files_prefix():

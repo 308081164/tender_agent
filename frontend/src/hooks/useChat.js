@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { appendStreamToken, keepStreamedReply } from '../components/chat/agentChatRuntime'
+import { sessionFromProjectBind } from '../utils/projectSession'
 import { deliverChatMaterials } from '../components/chat/deliverChatMaterials'
 import { usePendingMaterials } from '../components/chat/usePendingMaterials'
 import { useChatMentions } from './useChatMentions'
@@ -126,11 +127,14 @@ export function useChatSessions(showToast) {
     setBoundProjectId(projectId)
     setChatContext({ project_id: projectId, guided_intake: true })
     try {
-      const sess = await api.ensureProjectSession(projectId)
+      const sess = sessionFromProjectBind(await api.ensureProjectSession(projectId))
+      if (!sess?.id) throw new Error('未能绑定项目会话')
       setSessionId(sess.id)
+      if (sess.workspace) setWorkspace(sess.workspace)
       await refreshSessions()
       const data = await api.getChatSession(sess.id)
       setMessages(data.messages || [])
+      if (data.workspace) setWorkspace(data.workspace)
       return sess.id
     } catch (e) {
       showToast?.(e.message)
