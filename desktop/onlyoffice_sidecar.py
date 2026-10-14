@@ -45,9 +45,36 @@ LogFn = Callable[[str], None]
 KillFn = Callable[[int], None]
 
 _PROCS: list[subprocess.Popen] = []
-_LISTEN_RE = re.compile(
-    r"^(\s*)listen\s+(?:(?:\*|0\.0\.0\.0|\[::\]|127\.0\.0\.1):)?80(\s+[^;]*)?;",
+# Port 80 on the IPv4 listen only. The Windows ds.conf has both
+# `listen 0.0.0.0:80` and `listen [::]:80`. Rewriting both to
+# 127.0.0.1:18080 makes nginx abort with "duplicate listen".
+_IPV4_LISTEN_RE = re.compile(
+    r"^([ \t]*)listen[ \t]+(?:(?:\*|0\.0\.0\.0|127\.0\.0\.1):)?80([ \t]+[^;]*)?;",
     re.MULTILINE,
+)
+_IPV6_LISTEN_RE = re.compile(
+    r"^([ \t]*)listen[ \t]+\[::\]:80([ \t]+[^;]*)?;[ \t]*\r?\n?",
+    re.MULTILINE,
+)
+_DS_INCLUDE_RE = re.compile(
+    r"""^([ \t]*)include[ \t]+(['"]?)ds\.conf\2[ \t]*;""",
+    re.MULTILINE,
+)
+_NGINX_RUNTIME_DIRS = (
+    "logs",
+    "temp/client_body_temp",
+    "temp/proxy_temp",
+    "temp/fastcgi_temp",
+    "temp/uwsgi_temp",
+    "temp/scgi_temp",
+)
+# Own statement, never a DO block. Tables created by the tender superuser
+# stay invisible to DocService until this runs, including on later startups
+# that find doc_changes already present.
+ONLYOFFICE_SCHEMA_GRANTS_SQL = (
+    "GRANT ALL ON SCHEMA public TO onlyoffice; "
+    "GRANT ALL ON ALL TABLES IN SCHEMA public TO onlyoffice; "
+    "GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO onlyoffice"
 )
 _INSTALL_PREFIXES = (
     "C:/Program Files/ONLYOFFICE/DocumentServer",
@@ -112,6 +139,20 @@ def build_local_config(
     }
 
 
+def _rewrite_listen_directives(text: str, port: int) -> str:
+    """Bind Document Server to loopback without leaving two identical listens."""
+    rewritten = _IPV4_LISTEN_RE.sub(
+        lambda match: f"{match.group(1)}listen 127.0.0.1:{port}{match.group(2) or ''};",
+        text,
+    )
+    if rewritten != text:
+        return _IPV6_LISTEN_RE.sub("", rewritten)
+    return _IPV6_LISTEN_RE.sub(
+        lambda match: f"{match.group(1)}listen 127.0.0.1:{port}{match.group(2) or ''};\n",
+        text,
+    )
+
+
 def rewrite_nginx_conf(conf: str, port: int, install_prefix: str | None = None) -> str:
     text = conf
     if install_prefix:
@@ -122,10 +163,7 @@ def rewrite_nginx_conf(conf: str, port: int, install_prefix: str | None = None) 
                 text = text.replace(needle, slash)
             else:
                 text = text.replace(needle, native)
-    return _LISTEN_RE.sub(
-        lambda match: f"{match.group(1)}listen 127.0.0.1:{port}{match.group(2) or ''};",
-        text,
-    )
+    return _rewrite_listen_directives(text, port)
 
 
 def jwt_secret() -> str:
@@ -200,17 +238,93 @@ def _write_local_json(config_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def nginx_launch_command(nginx_exe: Path, conf: Path) -> list[str]:
+    """Launch nginx with a full main config. ds.conf is only an http include."""
+    return [str(nginx_exe), "-p", str(nginx_exe.parent), "-c", f"conf/{conf.name}"]
+
+
+def _is_nginx_main_config(text: str) -> bool:
+    return bool(re.search(r"(?m)^[ \t]*(?:events|http)[ \t]*\{", text))
+
+
+def _wrap_server_fragment(fragment: str) -> str:
+    body = fragment.strip("\r\n")
+    indented = "\n".join(("    " + line) if line else line for line in body.splitlines())
+    return (
+        "worker_processes 1;\n"
+        "error_log logs/error.log;\n"
+        "pid logs/nginx.pid;\n"
+        "events {\n"
+        "    worker_connections 1024;\n"
+        "}\n"
+        "http {\n"
+        "    include mime.types;\n"
+        "    default_type application/octet-stream;\n"
+        f"{indented}\n"
+        "}\n"
+    )
+
+
+def _ensure_nginx_runtime_dirs(nginx_home: Path) -> None:
+    # The installer creates these with [Dirs]; an innounp extract does not.
+    # nginx exits before binding when logs/ or temp/ is missing.
+    for relative in _NGINX_RUNTIME_DIRS:
+        (nginx_home / relative).mkdir(parents=True, exist_ok=True)
+
+
 def _prepare_nginx(nginx_exe: Path, port: int) -> Path:
-    conf_dir = nginx_exe.parent / "conf"
-    source = conf_dir / "ds.conf"
-    if not source.is_file():
-        matches = list(conf_dir.glob("*.conf")) if conf_dir.is_dir() else []
-        source = next((path for path in matches if path.name != "ds.bundled.conf"), source)
-    if not source.is_file():
+    nginx_home = nginx_exe.parent
+    conf_dir = nginx_home / "conf"
+    _ensure_nginx_runtime_dirs(nginx_home)
+    prefix = str(nginx_home.parent)
+    ds_source = conf_dir / "ds.conf"
+    main_source = conf_dir / "nginx.conf"
+    if ds_source.is_file() and main_source.is_file():
+        # Windows ships nginx.conf (events/http) which includes ds.conf.
+        # ds.conf is a server{} fragment. `nginx -c ds.conf` exits at once,
+        # so 18080 never opens and the desktop self-check stays 异常.
+        bundled_ds = conf_dir / "ds.bundled.conf"
+        bundled_ds.write_text(
+            rewrite_nginx_conf(
+                ds_source.read_text(encoding="utf-8", errors="replace"),
+                port,
+                prefix,
+            ),
+            encoding="utf-8",
+        )
+        main_text = rewrite_nginx_conf(
+            main_source.read_text(encoding="utf-8", errors="replace"),
+            port,
+            prefix,
+        )
+        main_text = _DS_INCLUDE_RE.sub(
+            lambda match: (
+                f"{match.group(1)}include {match.group(2)}ds.bundled.conf{match.group(2)};"
+            ),
+            main_text,
+        )
+        bundled_main = conf_dir / "nginx.bundled.conf"
+        bundled_main.write_text(main_text, encoding="utf-8")
+        return bundled_main
+
+    source = ds_source if ds_source.is_file() else None
+    if source is None and conf_dir.is_dir():
+        matches = [
+            path
+            for path in sorted(conf_dir.glob("*.conf"))
+            if not path.name.endswith(".bundled.conf")
+        ]
+        source = matches[0] if matches else None
+    if source is None or not source.is_file():
         raise FileNotFoundError(f"未找到 OnlyOffice nginx 配置：{conf_dir}")
-    prefix = nginx_exe.parent.parent
-    rewritten = rewrite_nginx_conf(source.read_text(encoding="utf-8", errors="replace"), port, str(prefix))
-    target = conf_dir / "ds.bundled.conf"
+    rewritten = rewrite_nginx_conf(
+        source.read_text(encoding="utf-8", errors="replace"),
+        port,
+        prefix,
+    )
+    if not _is_nginx_main_config(rewritten):
+        rewritten = _wrap_server_fragment(rewritten)
+    target = conf_dir / "nginx.bundled.conf"
     target.write_text(rewritten, encoding="utf-8")
     return target
 
@@ -279,6 +393,14 @@ def _ensure_database(
         if created.returncode != 0:
             log(f"onlyoffice: create database failed: {(created.stderr or created.stdout).strip()}")
             return
+    granted = _psql(
+        psql,
+        pg_env,
+        [*base, "-d", ONLYOFFICE_DB_NAME, "-c", ONLYOFFICE_SCHEMA_GRANTS_SQL],
+        log,
+    )
+    if granted.returncode != 0:
+        log(f"onlyoffice: grant failed: {(granted.stderr or granted.stdout).strip()[:500]}")
     table = _psql(
         psql,
         pg_env,
@@ -291,16 +413,54 @@ def _ensure_database(
     if not schema.is_file():
         log(f"onlyoffice: schema missing: {schema}")
         return
+    # Import as the onlyoffice role so DocService owns the tables. Trust auth
+    # on the bundled cluster allows this without a password.
     applied = _psql(
         psql,
         pg_env,
-        [*base, "-d", ONLYOFFICE_DB_NAME, "-v", "ON_ERROR_STOP=1", "-f", str(schema)],
+        [
+            "-h",
+            host,
+            "-p",
+            str(pg_port),
+            "-U",
+            ONLYOFFICE_DB_USER,
+            "-d",
+            ONLYOFFICE_DB_NAME,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            str(schema),
+        ],
         log,
     )
     if applied.returncode != 0:
-        log(f"onlyoffice: schema import failed: {(applied.stderr or applied.stdout).strip()[:500]}")
-    else:
-        log("onlyoffice: schema imported")
+        log(
+            "onlyoffice: schema import as onlyoffice failed, retrying as superuser: "
+            f"{(applied.stderr or applied.stdout).strip()[:500]}"
+        )
+        applied = _psql(
+            psql,
+            pg_env,
+            [*base, "-d", ONLYOFFICE_DB_NAME, "-v", "ON_ERROR_STOP=1", "-f", str(schema)],
+            log,
+        )
+        if applied.returncode != 0:
+            log(f"onlyoffice: schema import failed: {(applied.stderr or applied.stdout).strip()[:500]}")
+            return
+        granted_again = _psql(
+            psql,
+            pg_env,
+            [*base, "-d", ONLYOFFICE_DB_NAME, "-c", ONLYOFFICE_SCHEMA_GRANTS_SQL],
+            log,
+        )
+        if granted_again.returncode != 0:
+            log(
+                "onlyoffice: grant after import failed: "
+                f"{(granted_again.stderr or granted_again.stdout).strip()[:500]}"
+            )
+            return
+    log("onlyoffice: schema imported")
 
 
 def _rabbitmq_env(erlang_home: Path, data_dir: Path) -> dict[str, str]:
@@ -478,7 +638,7 @@ def ensure_onlyoffice(
         pids["docservice"] = doc_proc.pid
         log("starting onlyoffice nginx")
         nginx_proc = _spawn(
-            [str(nginx_exe), "-p", str(nginx_exe.parent), "-c", f"conf/{nginx_conf.name}"],
+            nginx_launch_command(nginx_exe, nginx_conf),
             nginx_exe.parent,
             os.environ.copy(),
             log_file,
