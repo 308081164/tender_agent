@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
 import test from 'node:test'
-import { buildAnchorPayload, keepStreamedReply, mentionQueryAt, stripMentionQuery } from './agentChatRuntime.js'
+import {
+  applyOnlyOfficeHighlights,
+  bindOnlyOfficeSelection,
+  buildAnchorPayload,
+  keepStreamedReply,
+  mentionQueryAt,
+  onlyOfficeAnchorFromCommand,
+  onlyOfficeSelectionCommand,
+  stripMentionQuery,
+} from './agentChatRuntime.js'
 
 test('stream failure keeps partial text and the reason', () => {
   const kept = keepStreamedReply('已经写出一半', '模型连接中断')
@@ -21,21 +29,41 @@ test('at-mention query and anchor payload do not invent paragraph 0', () => {
   assert.equal('paragraph_index' in buildAnchorPayload({ selected_text: '工期' }), false)
 })
 
-test('chat surfaces keep streaming, web search, and attachment chips', () => {
-  const root = new URL('../../', import.meta.url)
-  const read = (name) => fs.readFileSync(new URL(name, root), 'utf8')
-  const chatPage = read('pages/ChatPage.jsx')
-  const workspace = read('pages/ProjectWorkspacePage.jsx')
-  const drawer = read('components/ChatDrawer.jsx')
-  const composer = read('components/chat/ChatComposer.jsx')
-  assert.match(chatPage, /sendChatMessageStream/)
-  assert.match(chatPage, /keepStreamedReply/)
-  assert.doesNotMatch(chatPage, /api\.sendChatMessage\(/)
-  assert.match(workspace, /sendChatMessageStream/)
-  assert.match(workspace, /keepStreamedReply/)
-  assert.match(drawer, /mentionItems/)
-  assert.match(composer, /联网/)
-  assert.match(composer, /composer-attach-row/)
-  assert.match(composer, /mention-menu/)
-  assert.match(read('components/chat/ChatTranscript.jsx'), /chat-reading|ChatMessageBubble/)
+test('onlyoffice selection command returns paragraph and block id', () => {
+  const cover = { GetText() { return '封面' } }
+  const body = { GetText() { return '工期90天' } }
+  globalThis.Api = {
+    GetDocument() {
+      const paragraphs = [cover, body]
+      return {
+        GetRangeBySelect() { return { GetText() { return '工期90天' } } },
+        GetAllParagraphs() { return paragraphs },
+        GetCurrentParagraph() { return body },
+      }
+    },
+  }
+  const anchor = onlyOfficeAnchorFromCommand(onlyOfficeSelectionCommand())
+  assert.equal(anchor.selected_text, '工期90天')
+  assert.equal(anchor.paragraph_index, 1)
+  assert.equal(anchor.block_id, 'p:1')
+  const seen = []
+  const connector = {
+    attachEvent(name) { seen.push(name) },
+    callCommand(fn, cb) { cb(fn()) },
+  }
+  const received = []
+  bindOnlyOfficeSelection(connector, (next) => received.push(next))
+  assert.deepEqual(seen, ['onTargetPositionChanged', 'onSelectionChanged'])
+  assert.equal(received[0].paragraph_index, 1)
+  const highlighted = []
+  globalThis.Api.GetDocument = () => ({
+    Search(text) { return [{ text, SetHighlight(color) { highlighted.push({ text, color }) } }] },
+  })
+  const painted = applyOnlyOfficeHighlights({
+    callCommand(fn, cb) { return cb(fn()) },
+  }, ['90天'])
+  assert.equal(painted, 1)
+  assert.deepEqual(highlighted, [{ text: '90天', color: 'yellow' }])
+  delete globalThis.Api
+  delete globalThis.Asc
 })

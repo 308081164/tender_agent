@@ -181,6 +181,7 @@ export default function ProjectDocumentPane({
             workspace={workspace}
             onSaved={() => runPreviewFetch(true)}
             onAnchor={onAnchor}
+            highlightTexts={highlightTexts}
           />
         ) : mode === 'edit' ? (
           <ProjectFieldEditorPane

@@ -593,6 +593,8 @@ async def _handle_general_conversation(
     context: dict | None = None,
     stream: bool = False,
     session=None,
+    on_token=None,
+    on_tool=None,
 ) -> dict[str, Any]:
     from app.services import agent_runtime
 
@@ -614,6 +616,8 @@ async def _handle_general_conversation(
                 messages=messages,
                 workspace=workspace,
                 context=context,
+                on_token=on_token,
+                on_tool=on_tool,
             )
             if loop_result and (loop_result.get("answer") or "").strip():
                 meta = {
@@ -631,7 +635,8 @@ async def _handle_general_conversation(
                     "metadata": meta,
                 }
         except Exception:
-            pass
+            if stream or on_token:
+                raise
     meta = {
         "intent": "general",
         "actions": [
@@ -684,7 +689,7 @@ async def _answer_readonly_side_question(
         path = ""
         ctx = context or {}
         path = str(ctx.get("workspace_file") or ctx.get("selected_workspace_file") or "").strip()
-        matched = re.search(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,8})", q)
+        matched = re.search(r"([^\s「」\"'，。；]+\.[A-Za-z0-9]{1,8})", q)
         if matched:
             path = matched.group(1).replace("\\", "/")
         if not path:
@@ -718,19 +723,55 @@ async def _answer_readonly_side_question(
             "metadata": {**meta, "tool_trace": [{"tool": "get_preview_status", "ok": True}], "preview_status": status},
         }
 
+    return {
+        "answer": _lookup_readonly_facts(db, q, workspace, context),
+        "mode": "query",
+        "metadata": meta,
+    }
+
+
+def _lookup_readonly_facts(db: Session | None, question: str, workspace: dict | None, context: dict | None) -> str:
+    """按问题去查人员、资质、业绩或企业档案，而不是一律回公司全称。"""
     from app.services.agent_query_tools import get_company_summary
 
+    q = question or ""
     summary = get_company_summary(db) if db is not None else {"found": False}
     quals = []
     if db is not None:
-        quals = db.query(Qualification).order_by(Qualification.sort_order.asc()).limit(8).all()
+        quals = db.query(Qualification).order_by(Qualification.sort_order.asc()).all()
+    project = _latest_bound_project(db, workspace, context) if db is not None else None
+    if re.search(r"人员|项目经理|建造师|法定代表人", q):
+        people = [
+            item for item in quals
+            if re.search(r"人员|项目经理|建造师|岗位", f"{item.category} {item.name} {item.keywords}")
+        ]
+        lines = []
+        if summary.get("legal_name"):
+            lines.append(f"法定代表人：{summary.get('legal_name')}")
+        manager = ""
+        if project is not None:
+            manager = str((project.fields or {}).get("project_manager") or "")
+        if manager:
+            lines.append(f"项目经理：{manager}")
+        for item in people[:12]:
+            lines.append(f"{item.category}：{item.name}")
+        if lines:
+            return "人员查询结果：\n" + "\n".join(f"- {line}" for line in lines)
+        return "资质库里还没有人员记录。可以到数据管理补充项目经理、建造师等人员资质。"
+    if re.search(r"资质|证书", q):
+        if quals:
+            return "资质查询结果：\n" + "\n".join(f"- {item.category}：{item.name}" for item in quals[:12])
+        return "资质库还是空的。"
+    if re.search(r"业绩|项目", q) and summary.get("typical_projects"):
+        return f"业绩：{summary.get('typical_projects')}"
     if summary.get("found"):
-        answer = f"公司全称：{summary.get('full_name') or '未填写'}。"
-    else:
-        answer = "系统中尚未录入企业档案。"
-    if quals and re.search(r"资质", q):
-        answer += "\n资质：" + "、".join(q.name for q in quals[:8])
-    return {"answer": answer, "mode": "query", "metadata": meta}
+        bits = [f"公司全称：{summary.get('full_name') or '未填写'}"]
+        if summary.get("legal_name"):
+            bits.append(f"法定代表人：{summary.get('legal_name')}")
+        if summary.get("qual_overview"):
+            bits.append(f"资质概况：{summary.get('qual_overview')}")
+        return "\n".join(bits)
+    return "系统中尚未录入企业档案。"
 
 
 def _latest_bound_project(db: Session, workspace: dict | None, context: dict | None):
@@ -739,6 +780,117 @@ def _latest_bound_project(db: Session, workspace: dict | None, context: dict | N
     if db is None:
         return None
     return bound_project(db, workspace, context)
+
+
+def _capability_loop_intent(text: str, context: dict | None) -> str | None:
+    ctx = context or {}
+    if ctx.get("web_search"):
+        return "web_search"
+    from app.services.web_search import explicit_fetch_url, should_search
+
+    if should_search(text, ctx) or explicit_fetch_url(text):
+        return "web_search"
+    if re.search(r"对照招标|符合招标|偏离招标|检查招标|对照一下招标", text or ""):
+        return "check_tender"
+    intent, score = _score_intent(text or "")
+    if intent in ("edit_fragment", "insert_table", "insert_image", "web_search") and score >= 0.45:
+        return intent
+    return None
+
+
+async def _run_capability_tool_loop(
+    text: str,
+    db: Session,
+    history: list[dict] | None,
+    faq_items: list[dict] | None,
+    *,
+    workspace: dict | None,
+    context: dict | None,
+    session,
+    on_token=None,
+    on_tool=None,
+) -> dict[str, Any] | None:
+    """改写、插表、插图、招标对照、联网都先进入工具环，而不是只在自由对话里进。"""
+    intent = _capability_loop_intent(text, context)
+    if not intent or session is None:
+        return None
+    force = {
+        "edit_fragment": "edit_document_anchor",
+        "insert_table": "insert_table",
+        "insert_image": "insert_image",
+        "web_search": "web_search",
+        "check_tender": "check_against_tender",
+    }[intent]
+    from app.services import agent_runtime, agent_tool_loop
+
+    ctx = dict(context or {})
+    ctx["instruction"] = text
+    if intent == "insert_table":
+        rows, cols = _parse_table_shape(text)
+        ctx["rows"] = rows
+        ctx["cols"] = cols
+    messages = agent_runtime.build_general_messages(
+        text, faq_items or [], history, db, workspace=workspace, context=ctx,
+    )
+    hint = f"当前要完成的动作是 {intent}。请调用工具 {force}，不要只口头答应。"
+    if messages and messages[0].get("role") == "system":
+        messages[0] = {"role": "system", "content": (messages[0].get("content") or "") + "\n\n" + hint}
+    result = await agent_tool_loop.run_tool_loop(
+        db=db,
+        session=session,
+        messages=messages,
+        workspace=workspace,
+        context=ctx,
+        on_token=on_token,
+        on_tool=on_tool,
+        force_tool=force,
+    )
+    if not result or not (result.get("answer") or "").strip():
+        return None
+    trace = (result.get("metadata") or {}).get("tool_trace") or []
+    if not any(item.get("tool") == force for item in trace):
+        return None
+    meta = {"intent": intent, "tool_loop": True}
+    meta.update(result.get("metadata") or {})
+    return {"answer": result["answer"].strip(), "mode": "ai", "metadata": meta}
+
+
+def _open_session_docx(session) -> bytes | None:
+    if session is None:
+        return None
+    ws = getattr(session, "workspace", None) or {}
+    key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if not key:
+        return None
+    try:
+        from app.services import storage
+
+        return storage.download_bytes(key)
+    except Exception:
+        return None
+
+
+def _store_fixed_docx(db: Session, session, fixed: dict) -> None:
+    blob = fixed.pop("docx_bytes", None)
+    if not isinstance(blob, (bytes, bytearray)) or session is None:
+        fixed.pop("docx_bytes", None)
+        return
+    try:
+        from datetime import datetime
+
+        from app.services import storage
+
+        key = f"chat/{session.id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_review.docx"
+        storage.upload_bytes(
+            key, bytes(blob),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        ws = dict(getattr(session, "workspace", None) or {})
+        ws["draft_object_key"] = key
+        ws["version"] = int(ws.get("version") or 0) + 1
+        session.workspace = ws
+    except Exception:
+        return
 
 
 async def process_chat_message(
@@ -751,6 +903,8 @@ async def process_chat_message(
     context: dict | None = None,
     session=None,
     stream: bool = False,
+    on_token=None,
+    on_tool=None,
 ) -> dict[str, Any]:
     from app.services.agent_capabilities import (
         bound_project,
@@ -786,7 +940,8 @@ async def process_chat_message(
                     "metadata": {"intent": "fix_review_issue", "review_issues": open_issues},
                 }
         if issue_id:
-            fixed = fix_review_issue(project, issue_id)
+            fixed = fix_review_issue(project, issue_id, docx_bytes=_open_session_docx(session))
+            _store_fixed_docx(db, session, fixed)
             db.commit()
             if session is not None and fixed.get("highlight_texts") is not None:
                 ws_fix = dict(getattr(session, "workspace", None) or {})
@@ -840,11 +995,6 @@ async def process_chat_message(
         if isinstance(pa, dict) and pa.get("flow"):
             if any(w in text for w in _CANCEL_WORDS):
                 return agent_flows.cancel_flow(db, session)
-            if pa.get("stage") == "revise_document":
-                if any(w in text for w in ("完成", "结束修订", "好了", "可以了")):
-                    return agent_flows.finish_revision(db, session)
-                if text.strip() and side_question_kind(text, context) != "readonly":
-                    return await agent_flows.handle_revision_text(db, session, text.strip())
             kind = side_question_kind(text, context)
             if kind == "readonly":
                 return await _answer_readonly_side_question(
@@ -856,6 +1006,11 @@ async def process_chat_message(
                     "mode": "action",
                     "metadata": {"intent": "flow_pending", "blocked_write": True},
                 }
+            if pa.get("stage") == "revise_document":
+                if any(w in text for w in ("完成", "结束修订", "好了", "可以了")):
+                    return agent_flows.finish_revision(db, session)
+                if text.strip():
+                    return await agent_flows.handle_revision_text(db, session, text.strip())
             hint = agent_flows.pending_hint(session)
             if hint:
                 return hint
@@ -865,6 +1020,14 @@ async def process_chat_message(
     folder_path, folder_score = detect_local_folder_import(text)
     if folder_path and folder_score >= 0.85 and session is not None:
         return await agent_flows.start_qual_folder_import(db, session, folder_path)
+
+    looped = await _run_capability_tool_loop(
+        text, db, history, faq_items,
+        workspace=workspace, context=context, session=session,
+        on_token=on_token, on_tool=on_tool,
+    )
+    if looped is not None:
+        return looped
 
     from app.services.web_search import explicit_fetch_url, run_web_research, should_search
 
@@ -936,4 +1099,6 @@ async def process_chat_message(
         context=context,
         stream=stream,
         session=session,
+        on_token=on_token,
+        on_tool=on_tool,
     )

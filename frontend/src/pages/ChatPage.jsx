@@ -39,7 +39,10 @@ export default function ChatPage() {
   const [projects, setProjects] = useState([])
   const messagesRef = useRef(null)
   const materials = usePendingMaterials()
-  const mentions = useChatMentions(sessionId)
+  const [memos, setMemos] = useState([])
+  const ensureRef = useRef(null)
+  const ensureForMentions = useCallback(() => ensureRef.current?.(), [])
+  const mentions = useChatMentions(sessionId, ensureForMentions)
 
   const rememberAnchor = useCallback((next) => {
     setAnchor(next)
@@ -125,6 +128,20 @@ export default function ChatPage() {
     await refreshSessions()
     return s.id
   }
+  ensureRef.current = ensureSession
+
+  useEffect(() => {
+    const projectId = workspace?.project_id
+    if (!projectId) {
+      setMemos([])
+      return undefined
+    }
+    let cancelled = false
+    api.listProjectMemos(projectId)
+      .then((res) => { if (!cancelled) setMemos(res.memos || []) })
+      .catch(() => { if (!cancelled) setMemos([]) })
+    return () => { cancelled = true }
+  }, [workspace?.project_id, messages])
 
   const applySession = (session) => {
     if (!session) return
@@ -375,6 +392,7 @@ export default function ChatPage() {
                   onParagraphEdit={onParagraphEdit}
                   onRefresh={() => refreshWorkspace(sessionId)}
                   onlyOfficeEnabled={!!features.onlyoffice?.enabled}
+                  highlightTexts={workspace?.review_highlight_texts || []}
                   toolbarLeading={showFileTree ? (
                     <DocWorkspaceSidebarToggle
                       active={treeOpen}
@@ -424,6 +442,25 @@ export default function ChatPage() {
             />
           </div>
 
+          {memos.length ? (
+            <ul className="project-memo-list">
+              {memos.map((memo) => (
+                <li key={memo.id}>
+                  <span>{memo.text}</span>
+                  <button
+                    type="button"
+                    className="ghost tiny"
+                    onClick={async () => {
+                      const res = await api.deleteProjectMemo(workspace.project_id, memo.id)
+                      setMemos(res.memos || [])
+                    }}
+                  >
+                    删除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {selectedText ? (
             <div className="chat-selection-hint">
               将修改选中文本：

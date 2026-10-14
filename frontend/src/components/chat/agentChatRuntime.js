@@ -54,6 +54,118 @@ export function appendStreamToken(message, token, event) {
   return { ...message, content: `${message.content || ''}${token}` }
 }
 
+export const ONLYOFFICE_SELECTION_EVENTS = ['onTargetPositionChanged', 'onSelectionChanged']
+
+export function onlyOfficeSelectionCommand() {
+  var root = typeof globalThis !== 'undefined' ? globalThis : {}
+  var api = root.Api || null
+  if (!api || !api.GetDocument) return ''
+  var doc = api.GetDocument()
+  var selected = ''
+  try {
+    var range = doc.GetRangeBySelect && doc.GetRangeBySelect()
+    if (range && range.GetText) selected = String(range.GetText() || '')
+  } catch (err) {
+    selected = ''
+  }
+  var index = -1
+  var all = doc.GetAllParagraphs ? doc.GetAllParagraphs() : []
+  var current = doc.GetCurrentParagraph ? doc.GetCurrentParagraph() : null
+  for (var i = 0; i < all.length; i += 1) {
+    if (current && all[i] === current) index = i
+  }
+  var blockId = index >= 0 ? `p:${index}` : ''
+  if (!String(selected).trim() && index < 0) return ''
+  return JSON.stringify({
+    selected_text: String(selected || '').trim(),
+    paragraph_index: index >= 0 ? index : null,
+    block_id: blockId,
+  })
+}
+
+export function onlyOfficeAnchorFromCommand(raw) {
+  let data = raw
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    if (!text) return null
+    try { data = JSON.parse(text) } catch { return null }
+  }
+  if (!data || typeof data !== 'object') return null
+  const selected = String(data.selected_text || data.text || '').trim()
+  const blockId = String(data.block_id || '').trim()
+  const hasIndex = data.paragraph_index !== undefined
+    && data.paragraph_index !== null
+    && data.paragraph_index !== ''
+    && Number(data.paragraph_index) >= 0
+  if (!selected && !blockId && !hasIndex) return null
+  return {
+    source: 'onlyoffice',
+    ...(selected ? { selected_text: selected } : {}),
+    ...(blockId ? { block_id: blockId } : {}),
+    ...(hasIndex ? { paragraph_index: Number(data.paragraph_index) } : {}),
+  }
+}
+
+export function readOnlyOfficeSelection(connector, onAnchor) {
+  if (!connector || !onAnchor) return
+  if (typeof connector.callCommand === 'function') {
+    connector.callCommand(onlyOfficeSelectionCommand, (raw) => {
+      const anchor = onlyOfficeAnchorFromCommand(raw)
+      if (anchor) onAnchor(anchor)
+    })
+    return
+  }
+  connector.executeMethod?.('GetSelectedText', null, (text) => {
+    const anchor = onlyOfficeAnchorFromCommand({ selected_text: text })
+    if (anchor) onAnchor(anchor)
+  })
+}
+
+export function onlyOfficeHighlightCommand() {
+  var root = typeof globalThis !== 'undefined' ? globalThis : {}
+  var scope = (root.Asc && root.Asc.scope) || {}
+  var phrases = scope.texts || []
+  var api = root.Api
+  if (!api || !api.GetDocument) return 0
+  var doc = api.GetDocument()
+  if (!doc.Search) return 0
+  var marked = 0
+  for (var i = 0; i < phrases.length; i += 1) {
+    var phrase = String(phrases[i] || '').trim()
+    if (phrase.length < 2) continue
+    var found = doc.Search(phrase) || []
+    for (var j = 0; j < found.length; j += 1) {
+      if (found[j] && found[j].SetHighlight) {
+        found[j].SetHighlight('yellow')
+        marked += 1
+      }
+    }
+  }
+  return marked
+}
+
+export function applyOnlyOfficeHighlights(connector, texts) {
+  const phrases = (texts || []).map((item) => String(item || '').trim()).filter((item) => item.length >= 2).slice(0, 12)
+  if (!connector || !phrases.length || typeof connector.callCommand !== 'function') return 0
+  const root = typeof globalThis !== 'undefined' ? globalThis : {}
+  root.Asc = root.Asc || {}
+  root.Asc.scope = { ...(root.Asc.scope || {}), texts: phrases }
+  return connector.callCommand(onlyOfficeHighlightCommand, (count) => count)
+}
+
+export function bindOnlyOfficeSelection(connector, onAnchor) {
+  const pull = () => readOnlyOfficeSelection(connector, onAnchor)
+  const bound = []
+  if (connector?.attachEvent) {
+    ONLYOFFICE_SELECTION_EVENTS.forEach((name) => {
+      connector.attachEvent(name, pull)
+      bound.push(name)
+    })
+  }
+  pull()
+  return bound
+}
+
 export function mentionChip(item) {
   if (!item) return null
   const name = String(item.label || item.name || '').trim()

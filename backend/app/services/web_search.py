@@ -568,6 +568,11 @@ def _local_context_text(db: Session | None, workspace: dict | None, context: dic
                             ensure_ascii=False,
                         )
                     )
+                    from app.services.agent_capabilities import memo_prompt_block
+
+                    memo = memo_prompt_block(fields)
+                    if memo:
+                        parts.append(memo)
         except Exception:
             pass
     return "\n\n".join(part for part in parts if part.strip())

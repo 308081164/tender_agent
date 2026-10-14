@@ -18,6 +18,21 @@ MAX_TOOL_STEPS = 8
 ANCHOR_MISSING = "请先选中位置"
 
 _DECISION_PREFIX = re.compile(r"^(记住|决定|备忘)\s*[:：]\s*(.+)$")
+_DECISION_FRAMES = [
+    re.compile(r"以[^。！？?\n]{1,48}为准"),
+    re.compile(r"(?:这章|本章|这一章)[^。！？?\n]{0,16}不写[^。！？?\n]{0,24}"),
+    re.compile(r"先不写[^。！？?\n]{0,24}"),
+    re.compile(r"一律[^。！？?\n]{1,40}"),
+    re.compile(r"统一(?:按|用|采用)[^。！？?\n]{1,40}"),
+    re.compile(r"口径(?:是|为|用)[^。！？?\n]{1,40}"),
+    re.compile(r"就按[^。！？?\n]{1,40}"),
+    re.compile(r"以后都[^。！？?\n]{1,40}"),
+    re.compile(r"不要(?:再)?写[^。！？?\n]{1,24}"),
+    re.compile(r"我们决定[^。！？?\n]{1,48}"),
+    re.compile(r"就这么定[:：]?[^。！？?\n]{0,48}"),
+    re.compile(r"报价[^。！？?\n]{0,16}(?:按|以|用)[^。！？?\n]{1,32}"),
+    re.compile(r"人员[^。！？?\n]{0,20}(?:按|不写|先不|就按)[^。！？?\n]{0,32}"),
+]
 _DURATION_RE = re.compile(r"(\d+\s*(?:个)?(?:日历)?(?:天|日|个月|月|年))")
 _DATE_RE = re.compile(r"\d{4}\s*[-年/.]\s*\d{1,2}\s*[-月/.]\s*\d{1,2}\s*日?")
 
@@ -78,17 +93,23 @@ def trace_sentence(trace: list[dict] | None) -> str:
 
 
 def extract_decision(text: str) -> str | None:
-    """用户说出的决定。问句不算决定，避免把追问写进备忘。"""
+    """从陈述句里抽出决定。问句整句跳过，不靠单一「以…为准」。"""
     raw = (text or "").strip()
-    if not raw or len(raw) > 400:
+    if not raw or len(raw) > 800:
         return None
-    prefixed = _DECISION_PREFIX.match(raw)
-    if prefixed and prefixed.group(2).strip():
-        return prefixed.group(2).strip()[:240]
-    if raw.endswith(("?", "？")):
-        return None
-    if re.search(r"以.{1,48}为准", raw) or "先不写" in raw:
-        return raw[:240]
+    if not re.search(r"[?？]", raw):
+        prefixed = _DECISION_PREFIX.match(raw)
+        if prefixed and prefixed.group(2).strip():
+            return prefixed.group(2).strip()[:240]
+    clauses = re.split(r"[。！\n；;]", raw)
+    for clause in clauses:
+        bit = clause.strip(" \t，,")
+        if not bit or re.search(r"[?？]", bit):
+            continue
+        for frame in _DECISION_FRAMES:
+            found = frame.search(bit)
+            if found:
+                return bit[:240]
     return None
 
 
@@ -294,7 +315,48 @@ def check_against_tender(draft: str, tender: dict[str, Any] | None) -> dict[str,
                 "draft": banned.group(1),
                 "message": f"可能触发废标项：文稿出现「{banned.group(1)}」",
             })
+    for point in record.get("scoring_points") or []:
+        token = _tender_token(str(point), drop=r"评分办法|评分标准|评分点|得分|分值|\d+\s*分")
+        if token and token not in (draft or ""):
+            conflicts.append({
+                "kind": "scoring",
+                "tender": str(point)[:180],
+                "draft": "",
+                "message": f"文稿未覆盖评分点：{token}",
+            })
+    for qual in record.get("qualifications") or []:
+        token = _tender_token(str(qual), drop=r"资质要求|投标人须具备|须具备|资质")
+        if token and token not in (draft or ""):
+            conflicts.append({
+                "kind": "qualification",
+                "tender": str(qual)[:180],
+                "draft": "",
+                "message": f"文稿未体现招标资质：{token}",
+            })
+    draft_dates = [re.sub(r"\s+", "", item) for item in _DATE_RE.findall(draft or "")]
+    for raw_date in record.get("key_dates") or []:
+        expected = re.sub(r"\s+", "", str(raw_date))
+        if not expected or expected in (draft or ""):
+            continue
+        if not re.search(r"截止|开标|日期|时间", draft or ""):
+            continue
+        if any(item != expected for item in draft_dates):
+            conflicts.append({
+                "kind": "date",
+                "tender": expected,
+                "draft": next((item for item in draft_dates if item != expected), ""),
+                "message": f"关键日期与招标文件不一致：文稿为 {draft_dates[0] if draft_dates else '未写'}，招标文件为 {expected}",
+            })
     return {"ok": not conflicts, "conflicts": conflicts, "error": ""}
+
+
+def _tender_token(line: str, *, drop: str) -> str:
+    text = re.sub(drop, "", line or "")
+    text = re.sub(r"[：:，,。；;\s]", "", text)
+    text = text.strip()
+    if len(text) < 4:
+        return ""
+    return text[:40]
 
 
 def _optional_index(value: Any) -> int | None:
@@ -311,6 +373,9 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
     ctx = context or {}
     args = arguments or {}
     nested = ctx.get("anchor") if isinstance(ctx.get("anchor"), dict) else {}
+    mentions = normalize_mentions(ctx.get("mentions"))
+    section_mention = next((item for item in mentions if item["kind"] == "section"), None)
+    file_mention = next((item for item in mentions if item["kind"] == "file" and item.get("path")), None)
     selected = str(
         args.get("selected_text")
         or ctx.get("selected_text")
@@ -326,6 +391,9 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
         or nested.get("section_id")
         or ""
     ).strip()
+    if not selected and not block_id and section_mention:
+        block_id = section_mention.get("section_id") or ""
+        selected = section_mention.get("label") or ""
     index = _optional_index(args.get("paragraph_index"))
     if index is None:
         index = _optional_index(ctx.get("paragraph_index", nested.get("paragraph_index")))
@@ -333,7 +401,10 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
         matched = re.search(r"(?:^|:)(\d+)$", block_id)
         if matched and (block_id.startswith("section:") or block_id.startswith("p:") or block_id.startswith("block:")):
             index = int(matched.group(1))
-    if not selected and not block_id and index is None:
+    path = str(args.get("path") or ctx.get("mention_path") or "").strip()
+    if not path and file_mention and not selected and not block_id and index is None:
+        path = file_mention.get("path") or ""
+    if not selected and not block_id and index is None and not path:
         return {"ok": False, "message": ANCHOR_MISSING}
     return {
         "ok": True,
@@ -341,6 +412,7 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
         "selected_text": selected,
         "block_id": block_id,
         "paragraph_index": index,
+        "path": path,
     }
 
 
@@ -381,6 +453,24 @@ def mention_prompt_block(mentions: list[dict] | None) -> str:
     return "用户本轮 @ 引用（必须纳入上下文）：\n" + "\n".join(lines)
 
 
+def _walk_workspace_files(root, limit: int = 80) -> list[str]:
+    from pathlib import Path
+
+    base = Path(root).resolve()
+    found: list[str] = []
+    if not base.is_dir():
+        return found
+    for path in sorted(base.rglob("*")):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if any(part.startswith(".") for part in path.relative_to(base).parts):
+            continue
+        found.append(path.relative_to(base).as_posix())
+        if len(found) >= limit:
+            break
+    return found
+
+
 def mention_candidates(db: Session, session, query: str = "") -> list[dict[str, str]]:
     """工作区文件 + 招标/标书章节。"""
     needle = (query or "").strip().lower()
@@ -390,24 +480,40 @@ def mention_candidates(db: Session, session, query: str = "") -> list[dict[str, 
         return not needle or needle in label.lower()
 
     try:
-        from app.services.agent_workspace import list_workspace_dir
+        from app.services.agent_workspace import resolve_session_workspace_root
 
-        listed = list_workspace_dir(db, session, "")
-        for entry in listed.get("entries") or []:
-            if entry.get("type") == "dir":
-                continue
-            label = str(entry.get("name") or "")
-            if keep(label):
+        root = resolve_session_workspace_root(db, session)
+        for path in _walk_workspace_files(root):
+            label = path.rsplit("/", 1)[-1]
+            if keep(label) or keep(path):
                 items.append({
                     "kind": "file",
                     "label": label,
-                    "path": str(entry.get("path") or label),
+                    "path": path,
                     "section_id": "",
                 })
     except Exception:
         pass
 
     ws = getattr(session, "workspace", None) or {}
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if doc_key:
+        try:
+            from app.services import storage
+            from app.services.docx_ooxml import paragraphs as docx_paragraphs
+
+            for index, line in enumerate(docx_paragraphs(storage.download_bytes(doc_key))[:40]):
+                label = (line or "").strip()
+                if len(label) < 2 or not keep(label):
+                    continue
+                items.append({
+                    "kind": "section",
+                    "label": label[:80],
+                    "path": "",
+                    "section_id": f"p:{index}",
+                })
+        except Exception:
+            pass
     pid = ws.get("project_id")
     project = None
     if pid:
@@ -545,8 +651,28 @@ def highlight_texts_for_review(review: dict[str, Any] | None) -> list[str]:
     return texts[:12]
 
 
-def fix_review_issue(project: TenderProject, issue_id: str) -> dict[str, Any]:
-    """只改指定审查问题，然后只复审这一条，并刷新高亮。"""
+def rereview_issue_text(issue: dict[str, Any], document_text: str) -> dict[str, Any]:
+    """对照更新后的文档正文复审这一条，不看修改前的章节缓存。"""
+    excerpt = str(issue.get("excerpt") or "").strip()
+    suggestion = str(issue.get("suggestion") or "").strip()
+    body = document_text or ""
+    excerpt_gone = bool(excerpt) and excerpt not in body
+    suggestion_present = bool(suggestion) and suggestion in body
+    return {
+        "issue_id": issue.get("id"),
+        "ok": excerpt_gone and suggestion_present,
+        "excerpt_gone": excerpt_gone,
+        "suggestion_present": suggestion_present,
+        "checked_on": "document",
+    }
+
+
+def fix_review_issue(
+    project: TenderProject,
+    issue_id: str,
+    docx_bytes: bytes | None = None,
+) -> dict[str, Any]:
+    """只改指定审查问题，写入打开的 docx，再按更新后的文档复审这一条。"""
     stored = dict((project.checklist_result or {}).get("doc_review") or {})
     review = stamp_review_issues(stored)
     target = None
@@ -578,8 +704,14 @@ def fix_review_issue(project: TenderProject, issue_id: str) -> dict[str, Any]:
             "highlight_texts": highlight_texts_for_review(review),
         }
 
-    before = collect_document_text(project)
-    if excerpt not in before:
+    from app.services.docx_ooxml import build_docx, plain_text, replace_text
+
+    chapter_text = collect_document_text(project)
+    source = docx_bytes
+    if source is None and excerpt in chapter_text:
+        source = build_docx([chapter_text])
+    source_text = plain_text(source) if source else ""
+    if excerpt not in source_text and excerpt not in chapter_text:
         return {
             "ok": False,
             "error": "文档里找不到这一条对应的原文",
@@ -587,15 +719,16 @@ def fix_review_issue(project: TenderProject, issue_id: str) -> dict[str, Any]:
             "highlight_texts": highlight_texts_for_review(review),
         }
 
-    _write_document_text(project, excerpt, suggestion)
-    after = collect_document_text(project)
-    resolved = excerpt not in after and suggestion in after
+    new_bytes = None
+    if source is not None and excerpt in plain_text(source):
+        new_bytes = replace_text(source, excerpt, suggestion)
+    if excerpt in chapter_text:
+        _write_document_text(project, excerpt, suggestion)
+    after = plain_text(new_bytes) if new_bytes is not None else collect_document_text(project)
+    checked = rereview_issue_text({**target, "excerpt": excerpt, "suggestion": suggestion}, after)
+    resolved = bool(checked.get("ok"))
     target["resolved"] = resolved
-    target["rereview"] = {
-        "issue_id": target.get("id"),
-        "ok": resolved,
-        "excerpt_gone": excerpt not in after,
-    }
+    target["rereview"] = checked
     if resolved:
         review[bucket_name] = [item for item in review.get(bucket_name) or [] if item.get("id") != target.get("id")]
         resolved_rows = list(review.get("resolved") or [])
@@ -612,7 +745,7 @@ def fix_review_issue(project: TenderProject, issue_id: str) -> dict[str, Any]:
     project.checklist_result = checklist
     flag_modified(project, "checklist_result")
     highlights = highlight_texts_for_review(review)
-    return {
+    payload = {
         "ok": resolved,
         "issue_id": target.get("id"),
         "resolved": resolved,
@@ -624,10 +757,22 @@ def fix_review_issue(project: TenderProject, issue_id: str) -> dict[str, Any]:
             + ("这一条已消除。" if resolved else "复审后这一条仍在。")
         ),
     }
+    if new_bytes is not None:
+        payload["docx_bytes"] = new_bytes
+    return payload
 
 
 def wants_single_issue_fix(text: str) -> bool:
     return bool(_FIX_ISSUE_RE.search(text or ""))
+
+
+def project_memory_text(db: Session | None, workspace: dict | None, context: dict | None) -> str:
+    if db is None:
+        return ""
+    project = bound_project(db, workspace, context)
+    if project is None:
+        return ""
+    return memo_prompt_block(project.fields)
 
 
 def bound_project(db: Session, workspace: dict | None, context: dict | None) -> TenderProject | None:

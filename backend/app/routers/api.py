@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
+import asyncio
 import json
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
@@ -836,18 +837,46 @@ async def upload_project_tender_file(
     if ext in ("txt", "md"):
         text = data.decode("utf-8", errors="ignore")
     elif ext == "docx":
-        preview = word.extract_preview(data, max_paragraphs=400)
-        text = "\n".join(item.get("text") or "" for item in preview.get("paragraphs") or [])
-    else:
+        text = ""
         try:
-            from io import BytesIO
+            from app.services.docx_ooxml import document_text
 
-            import aspose.words as aw
-
-            doc = aw.Document(BytesIO(data))
-            text = doc.to_string(aw.SaveFormat.TEXT)
+            text = document_text(data)
         except Exception:
-            text = data.decode("utf-8", errors="ignore")
+            text = ""
+        if not text.strip():
+            try:
+                preview = word.extract_preview(data, max_paragraphs=400)
+                text = "\n".join(
+                    item.get("text") or ""
+                    for item in (preview.get("paragraphs") or [])
+                    if isinstance(item, dict)
+                )
+            except Exception:
+                text = ""
+    else:
+        text = ""
+        if ext == "pdf":
+            try:
+                from io import BytesIO
+
+                from pypdf import PdfReader
+
+                reader = PdfReader(BytesIO(data))
+                text = "\n".join((page.extract_text() or "") for page in reader.pages)
+            except Exception:
+                text = ""
+        if not text.strip():
+            try:
+                from io import BytesIO
+
+                import aspose.words as aw
+
+                doc = aw.Document(BytesIO(data))
+                raw = doc.to_string(aw.SaveFormat.TEXT)
+                text = raw if isinstance(raw, str) else ""
+            except Exception:
+                text = ""
     parsed = parse_tender_text(text)
     key = f"projects/{p.id}/tender/{name}"
     try:
@@ -892,6 +921,21 @@ def fix_project_review_issue(project_id: int, issue_id: str, db: Session = Depen
     if not p:
         raise HTTPException(404, "项目不存在")
     result = fix_review_issue(p, issue_id)
+    blob = result.pop("docx_bytes", None)
+    if isinstance(blob, (bytes, bytearray)):
+        try:
+            key = f"projects/{p.id}/review/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.docx"
+            storage.upload_bytes(
+                key, bytes(blob),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            fields = dict(p.fields or {})
+            fields["_draft_object_key"] = key
+            p.fields = fields
+            flag_modified(p, "fields")
+            result["draft_object_key"] = key
+        except Exception:
+            result["draft_saved"] = False
     if not result.get("ok") and result.get("error") == "没有这一条审查问题":
         raise HTTPException(404, result["error"])
     p.updated_at = datetime.utcnow()
@@ -2259,42 +2303,92 @@ async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db:
             ]
             ws = getattr(s_live, "workspace", None) or {}
 
-            from app.services.agent_capabilities import interrupted_answer, iter_text_chunks
+            from app.services.agent_capabilities import interrupted_answer
 
             pieces: list[str] = []
+            tool_events: list[dict] = []
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def on_token(text: str):
+                await queue.put(("token", text))
+
+            async def on_tool(item: dict):
+                await queue.put(("tool", item))
+
+            async def runner():
+                try:
+                    result = await chat_assistant.process_chat_message(
+                        content,
+                        stream_db,
+                        history=history,
+                        faq_items=items,
+                        workspace=ws,
+                        context=ctx,
+                        session=s_live,
+                        stream=True,
+                        on_token=on_token,
+                        on_tool=on_tool,
+                    )
+                    await queue.put(("result", result))
+                except Exception as exc:
+                    await queue.put(("exc", exc))
+
+            task = asyncio.create_task(runner())
+            result = None
+            failed = None
             try:
-                result = await chat_assistant.process_chat_message(
-                    content,
-                    stream_db,
-                    history=history,
-                    faq_items=items,
-                    workspace=ws,
-                    context=ctx,
-                    session=s_live,
-                    stream=True,
-                )
-                for item in (result.get("metadata") or {}).get("tool_trace") or []:
-                    yield f"data: {json.dumps({'type': 'tool', 'tool': item.get('tool'), 'ok': item.get('ok', True)}, ensure_ascii=False)}\n\n"
-                stream_msgs = result.pop("stream_messages", None)
-                if stream_msgs:
-                    async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
-                        pieces.append(tok)
-                        yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
-                    result["answer"] = "".join(pieces)
+                while True:
+                    kind, payload = await queue.get()
+                    if kind == "token":
+                        pieces.append(payload)
+                        yield f"data: {json.dumps({'type': 'token', 'text': payload}, ensure_ascii=False)}\n\n"
+                    elif kind == "tool":
+                        tool_events.append(payload)
+                        yield f"data: {json.dumps({'type': 'tool', 'tool': payload.get('tool'), 'ok': payload.get('ok', True)}, ensure_ascii=False)}\n\n"
+                    elif kind == "exc":
+                        failed = payload
+                        break
+                    elif kind == "result":
+                        result = payload
+                        break
+                if failed is not None:
+                    reason = str(failed) or failed.__class__.__name__
+                    result = {
+                        "answer": interrupted_answer("".join(pieces), reason),
+                        "mode": "error",
+                        "metadata": {"stream_error": reason, "intent": "stream_error"},
+                    }
+                    yield f"data: {json.dumps({'type': 'error', 'message': reason}, ensure_ascii=False)}\n\n"
                 else:
-                    ans = result.get("answer") or ""
-                    for tok in iter_text_chunks(ans):
-                        pieces.append(tok)
-                        yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
-            except Exception as exc:
-                reason = str(exc) or exc.__class__.__name__
-                partial = "".join(pieces)
-                result = {
-                    "answer": interrupted_answer(partial, reason),
-                    "mode": "error",
-                    "metadata": {"stream_error": reason, "intent": "stream_error"},
-                }
-                yield f"data: {json.dumps({'type': 'error', 'message': reason}, ensure_ascii=False)}\n\n"
+                    result = result or {}
+                    streamed = bool(pieces) or bool((result.get("metadata") or {}).get("tokens_streamed"))
+                    for item in (result.get("metadata") or {}).get("tool_trace") or []:
+                        if any(ev.get("tool") == item.get("tool") for ev in tool_events):
+                            continue
+                        yield f"data: {json.dumps({'type': 'tool', 'tool': item.get('tool'), 'ok': item.get('ok', True)}, ensure_ascii=False)}\n\n"
+                    stream_msgs = result.pop("stream_messages", None)
+                    if stream_msgs and not streamed:
+                        try:
+                            async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
+                                pieces.append(tok)
+                                yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
+                            result["answer"] = "".join(pieces)
+                        except Exception as exc:
+                            reason = str(exc) or exc.__class__.__name__
+                            result["answer"] = interrupted_answer("".join(pieces), reason)
+                            result["mode"] = "error"
+                            meta = dict(result.get("metadata") or {})
+                            meta["stream_error"] = reason
+                            result["metadata"] = meta
+                            yield f"data: {json.dumps({'type': 'error', 'message': reason}, ensure_ascii=False)}\n\n"
+                    elif not streamed:
+                        ans = result.get("answer") or ""
+                        if ans:
+                            pieces.append(ans)
+                            yield f"data: {json.dumps({'type': 'token', 'text': ans}, ensure_ascii=False)}\n\n"
+            finally:
+                if not task.done():
+                    task.cancel()
 
             payload = await _finalize_chat_message_turn(
                 session_id, s_live, user_live, content, body, result, stream_db,

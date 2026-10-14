@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
 
-export function useChatMentions(sessionId) {
+export function useChatMentions(sessionId, ensureSession) {
   const [mentions, setMentions] = useState([])
   const [items, setItems] = useState([])
   const [query, setQuery] = useState(null)
@@ -11,16 +11,29 @@ export function useChatMentions(sessionId) {
   }, [])
 
   useEffect(() => {
-    if (query === null || !sessionId) {
+    if (query === null) {
       setItems([])
       return undefined
     }
     let cancelled = false
-    api.listChatMentions(sessionId, query)
-      .then((res) => { if (!cancelled) setItems(res.items || []) })
-      .catch(() => { if (!cancelled) setItems([]) })
+    ;(async () => {
+      let id = sessionId
+      if (!id && ensureSession) {
+        try { id = await ensureSession() } catch { id = null }
+      }
+      if (!id || cancelled) {
+        if (!cancelled) setItems([])
+        return
+      }
+      try {
+        const res = await api.listChatMentions(id, query)
+        if (!cancelled) setItems(res.items || [])
+      } catch {
+        if (!cancelled) setItems([])
+      }
+    })()
     return () => { cancelled = true }
-  }, [sessionId, query])
+  }, [sessionId, query, ensureSession])
 
   const pickMention = useCallback((item) => {
     if (!item?.label) return

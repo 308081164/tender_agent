@@ -201,6 +201,9 @@ async def run_pre_export_review(db: Session, project_id: int) -> dict[str, Any]:
     review = await review_project_document(
         doc_bytes, tpl.placeholders, export_fields, snap, required, db=db
     )
+    from app.services.agent_capabilities import stamp_review_issues
+
+    review = stamp_review_issues(review)
     merged = dict(p.checklist_result or {})
     merged["doc_review"] = review
     merged["can_export"] = review.get("can_export", False) and merged.get("can_export", True)

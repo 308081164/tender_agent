@@ -74,7 +74,9 @@ export default function WorkspaceReviewPanel({
           </p>
           {(review.issues || []).map((item, i) => (
             <div key={item.id || `i-${i}`} className="level-red review-issue-card" style={{ fontSize: 13 }}>
-              <span>{item.message}</span>
+              <button type="button" className="linkish" disabled={busy || !item.id} onClick={() => fixOne(item)}>{item.message}</button>
+              {item.excerpt ? <div className="muted tiny">原文：{item.excerpt}</div> : null}
+              {item.suggestion ? <div className="muted tiny">建议：{item.suggestion}</div> : null}
               {item.id ? (
                 <button type="button" className="ghost tiny" disabled={busy} onClick={() => fixOne(item)}>改这一条</button>
               ) : null}
@@ -82,7 +84,9 @@ export default function WorkspaceReviewPanel({
           ))}
           {(review.warnings || []).map((item, i) => (
             <div key={item.id || `w-${i}`} className="level-yellow review-issue-card" style={{ fontSize: 13 }}>
-              <span>{item.message}</span>
+              <button type="button" className="linkish" disabled={busy || !item.id} onClick={() => fixOne(item)}>{item.message}</button>
+              {item.excerpt ? <div className="muted tiny">原文：{item.excerpt}</div> : null}
+              {item.suggestion ? <div className="muted tiny">建议：{item.suggestion}</div> : null}
               {item.id ? (
                 <button type="button" className="ghost tiny" disabled={busy} onClick={() => fixOne(item)}>改这一条</button>
               ) : null}

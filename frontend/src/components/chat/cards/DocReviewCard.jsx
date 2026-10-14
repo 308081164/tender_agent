@@ -25,7 +25,11 @@ export default function DocReviewCard({ card, message, onAction }) {
         <ul className="review-issue-list" style={{ marginTop: 10, paddingLeft: 18 }}>
           {issues.map((it, i) => (
             <li key={it.id || i} style={{ color: 'var(--danger, #c0392b)' }}>
-              {it.message || JSON.stringify(it)}
+              <button type="button" className="linkish" onClick={() => it.id && onAction?.(message, card, 'fix_review_issue', { issue_id: it.id })}>
+                {it.message || JSON.stringify(it)}
+              </button>
+              {it.excerpt ? <div>原文：{it.excerpt}</div> : null}
+              {it.suggestion ? <div>建议：{it.suggestion}</div> : null}
               {it.id && onAction ? (
                 <button
                   type="button"
@@ -43,7 +47,21 @@ export default function DocReviewCard({ card, message, onAction }) {
       {warnings.length > 0 && (
         <ul className="review-issue-list" style={{ marginTop: 8, paddingLeft: 18 }}>
           {warnings.map((it, i) => (
-            <li key={i} style={{ color: 'var(--warn, #b8860b)' }}>{it.message || JSON.stringify(it)}</li>
+            <li key={it.id || i} style={{ color: 'var(--warn, #b8860b)' }}>
+              {it.message || JSON.stringify(it)}
+              {it.excerpt ? <div>原文：{it.excerpt}</div> : null}
+              {it.suggestion ? <div>建议：{it.suggestion}</div> : null}
+              {it.id && onAction ? (
+                <button
+                  type="button"
+                  className="ghost tiny"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => onAction(message, card, 'fix_review_issue', { issue_id: it.id })}
+                >
+                  改这一条
+                </button>
+              ) : null}
+            </li>
           ))}
         </ul>
       )}

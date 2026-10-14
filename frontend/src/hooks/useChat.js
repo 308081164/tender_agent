@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { appendStreamToken, keepStreamedReply } from '../components/chat/agentChatRuntime'
 import { deliverChatMaterials } from '../components/chat/deliverChatMaterials'
@@ -20,7 +20,9 @@ export function useChatSessions(showToast) {
   const [workspace, setWorkspace] = useState({})
   const [replyStreaming, setReplyStreaming] = useState(false)
   const materials = usePendingMaterials()
-  const mentions = useChatMentions(sessionId)
+  const ensureSessionRef = useRef(null)
+  const ensureForMentions = useCallback(() => ensureSessionRef.current?.(), [])
+  const mentions = useChatMentions(sessionId, ensureForMentions)
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listChatSessions()
@@ -45,6 +47,7 @@ export function useChatSessions(showToast) {
     await refreshSessions()
     return s.id
   }, [sessionId, refreshSessions])
+  ensureSessionRef.current = ensureSession
 
   const openDrawer = useCallback(async () => {
     setOpen(true)

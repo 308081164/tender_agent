@@ -197,6 +197,7 @@ def pending_hint(session: ChatSession) -> dict[str, Any] | None:
         (FLOW_QUAL_FOLDER, "confirm_scan"): "资质文件夹导入待确认：请点击上方卡片「开始扫描并落库」，或发送「取消」。",
     }
     text = hints.get((pa.get("flow"), pa.get("stage")), "当前有进行中的任务，请使用上方卡片继续，或发送「取消」退出。")
+    text += "这句话不是只读查询，卡片之外的写入仍被挡住。"
     return _result(text, intent="flow_pending")
 
 
@@ -406,7 +407,23 @@ async def handle_action(
         if not project:
             return "", _result("项目不存在。", intent="error"), False
         fixed = fix_review_issue(project, issue_id)
+        blob = fixed.pop("docx_bytes", None)
         ws_next = dict(ws)
+        if isinstance(blob, (bytes, bytearray)):
+            try:
+                import datetime as _dt
+
+                from app.services import storage
+
+                key = f"chat/{session.id}/{_dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}_review.docx"
+                storage.upload_bytes(
+                    key, bytes(blob),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+                ws_next["draft_object_key"] = key
+                ws_next["version"] = int(ws_next.get("version") or 0) + 1
+            except Exception:
+                pass
         if fixed.get("highlight_texts"):
             ws_next["review_highlight_texts"] = fixed["highlight_texts"]
         else:

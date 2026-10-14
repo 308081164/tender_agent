@@ -14,6 +14,7 @@ export default function DocumentWorkspace({
   onRefresh,
   onlyOfficeEnabled = false,
   toolbarLeading = null,
+  highlightTexts = [],
 }) {
   const [mode, setMode] = useState('pdf')
   const [editingIndex, setEditingIndex] = useState(null)
@@ -77,6 +78,7 @@ export default function DocumentWorkspace({
             workspace={workspace}
             onSaved={onRefresh}
             onAnchor={onSelectAnchor}
+            highlightTexts={highlightTexts}
           />
         ) : mode === 'pdf' && pdfSrc && !pdfFailed ? (
           <PdfPreview
@@ -93,6 +95,7 @@ export default function DocumentWorkspace({
               selectedText={selectedText}
               onSelectText={onSelectText}
               onSelectAnchor={onSelectAnchor}
+              reviewHighlightTexts={highlightTexts}
             />
             <div className="paragraph-edit-list">
               <h4>段落快速编辑</h4>

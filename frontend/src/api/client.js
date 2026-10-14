@@ -1,3 +1,5 @@
+import { keepStreamedReply } from '../components/chat/agentChatRuntime'
+
 const BASE = '/api'
 
 function buildQuery(params = {}) {
@@ -269,6 +271,7 @@ export const api = {
     let buf = ''
     let payload = null
     let streamError = ''
+    let streamed = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -279,13 +282,27 @@ export const api = {
         const line = part.trim()
         if (!line.startsWith('data:')) continue
         const data = JSON.parse(line.slice(5).trim())
-        if (data.type === 'token' && data.text && onToken) onToken(data.text)
+        if (data.type === 'token' && data.text) {
+          streamed += data.text
+          if (onToken) onToken(data.text)
+        }
         if (data.type === 'tool' && onToken) onToken('', { tool: data })
         if (data.type === 'error') streamError = data.message || '回复中断'
         if (data.type === 'done') payload = data.payload
       }
     }
     if (!payload) throw new Error(streamError || '流式响应未完成')
+    if (streamError && payload.assistant_message) {
+      const content = String(payload.assistant_message.content || '')
+      const head = streamed.slice(0, Math.min(12, streamed.length))
+      if (streamed && head && !content.includes(head)) {
+        payload.assistant_message.content = keepStreamedReply(streamed, streamError)
+        payload.assistant_message.metadata = {
+          ...(payload.assistant_message.metadata || {}),
+          stream_error: streamError,
+        }
+      }
+    }
     return payload
   },
   getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),

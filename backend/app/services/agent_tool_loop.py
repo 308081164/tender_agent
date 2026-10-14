@@ -166,12 +166,41 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "check_against_tender",
-            "description": "把当前文稿或给定段落对照招标文件摘录，发现工期或废标冲突",
+            "description": "把当前文稿对照招标文件的工期、废标项、评分点、资质和关键日期",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string"},
                     "project_id": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "insert_table",
+            "description": "在选中锚点的段落后插入表格。没有段落号时不要插入，更不要插到文首。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rows": {"type": "integer"},
+                    "cols": {"type": "integer"},
+                    "paragraph_index": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "insert_image",
+            "description": "在选中锚点的段落后插入已上传的图片。没有段落号时不要插入。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paragraph_index": {"type": "integer"},
+                    "attachment_object_key": {"type": "string"},
                 },
             },
         },
@@ -261,19 +290,11 @@ async def _execute_tool(
         )}
         return {"ok": True, "tender": public}
     if name == "edit_document_anchor":
-        anchor = resolve_document_anchor(context, args)
-        if not anchor.get("ok"):
-            return {"ok": False, "error": ANCHOR_MISSING}
-        return {
-            "ok": True,
-            "anchor": {
-                "paragraph_index": anchor.get("paragraph_index"),
-                "block_id": anchor.get("block_id") or "",
-                "selected_text": anchor.get("selected_text") or "",
-            },
-            "instruction": str(args.get("instruction") or ""),
-            "message": "已按锚点定位，不会插入到文首。",
-        }
+        return await _edit_document_anchor(db, session, args, context, default_project_id)
+    if name == "insert_table":
+        return await _insert_table_tool(db, session, args, context)
+    if name == "insert_image":
+        return await _insert_image_tool(db, session, args, context)
     if name == "get_preview_status":
         ws = getattr(session, "workspace", None) or {}
         onlyoffice = {"enabled": False, "healthy": False, "message": ""}
@@ -345,7 +366,164 @@ async def _execute_tool(
     return {"ok": False, "error": f"未知工具：{name}"}
 
 
-async def _chat_with_tools(messages: list[dict], db: Session | None) -> dict[str, Any]:
+async def _edit_document_anchor(db, session, args, context, default_project_id) -> dict[str, Any]:
+    from app.services import document_agent, storage
+    from app.services.agent_capabilities import project_memory_text
+    from app.services.agent_workspace import normalize_relative_path, resolve_session_workspace_root
+
+    anchor = resolve_document_anchor(context, args)
+    if not anchor.get("ok"):
+        return {"ok": False, "error": ANCHOR_MISSING}
+    instruction = str(args.get("instruction") or (context or {}).get("instruction") or "").strip()
+    memory = project_memory_text(db, getattr(session, "workspace", None), context)
+    path = str(anchor.get("path") or "").strip()
+    if path and not path.lower().endswith(".docx"):
+        from app.services import agent_tools
+
+        current = agent_tools.read_workspace_file(db, session, path)
+        original = current.get("content") or ""
+        revised = await document_agent.revise_plain_text(
+            original, instruction, db=db, memory=memory,
+        )
+        agent_tools.write_workspace_file(db, session, path, revised)
+        return {
+            "ok": True,
+            "path": path,
+            "modified": True,
+            "anchor": {"path": path, "selected_text": anchor.get("selected_text") or ""},
+            "message": f"已按 @ 引用修改文件 {path}。",
+        }
+
+    ws = dict(getattr(session, "workspace", None) or {})
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    doc_bytes = None
+    if path.lower().endswith(".docx"):
+        root = resolve_session_workspace_root(db, session)
+        target = normalize_relative_path(root, path)
+        doc_bytes = target.read_bytes()
+    elif doc_key:
+        doc_bytes = storage.download_bytes(doc_key)
+    if not doc_bytes:
+        return {"ok": False, "error": "工作区没有可修改的文档"}
+    new_bytes, revised, meta = await document_agent.edit_document_fragment(
+        doc_bytes,
+        instruction or "按锚点修订",
+        selected_text=anchor.get("selected_text") or "",
+        paragraph_index=anchor.get("paragraph_index"),
+        db=db,
+        company_context=memory,
+    )
+    if path.lower().endswith(".docx"):
+        target.write_bytes(new_bytes)
+        saved_key = path
+    else:
+        from datetime import datetime
+
+        saved_key = f"chat/{getattr(session, 'id', 0)}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_anchor.docx"
+        storage.upload_bytes(
+            saved_key, new_bytes,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        ws["draft_object_key"] = saved_key
+        ws["version"] = int(ws.get("version") or 0) + 1
+        session.workspace = ws
+        if db is not None:
+            db.commit()
+    return {
+        "ok": True,
+        "modified": True,
+        "object_key": saved_key,
+        "revised": (revised or "")[:500],
+        "anchor": {
+            "paragraph_index": anchor.get("paragraph_index"),
+            "block_id": anchor.get("block_id") or "",
+            "selected_text": anchor.get("selected_text") or "",
+            "path": path,
+        },
+        "mode": meta.get("mode"),
+        "message": "已按锚点改写文档，没有插入到文首。",
+    }
+
+
+async def _insert_table_tool(db, session, args, context) -> dict[str, Any]:
+    from app.services import document_agent
+
+    anchor = resolve_document_anchor(context, args)
+    if not anchor_can_insert(anchor):
+        return {"ok": False, "error": ANCHOR_MISSING}
+    doc_bytes, doc_key, ws = _load_open_docx(session)
+    if doc_bytes is None:
+        return {"ok": False, "error": "请先打开标书草稿"}
+    rows = int(args.get("rows") or (context or {}).get("rows") or 3)
+    cols = int(args.get("cols") or (context or {}).get("cols") or 3)
+    new_bytes, meta = document_agent.insert_table_in_document(
+        doc_bytes, paragraph_index=int(anchor["paragraph_index"]), rows=rows, cols=cols,
+    )
+    saved = _store_open_docx(db, session, ws, doc_key, new_bytes, "table")
+    return {"ok": True, "modified": True, "object_key": saved, "anchor": meta, "message": "已在选中位置插入表格。"}
+
+
+async def _insert_image_tool(db, session, args, context) -> dict[str, Any]:
+    from app.services import document_agent, storage
+
+    anchor = resolve_document_anchor(context, args)
+    if not anchor_can_insert(anchor):
+        return {"ok": False, "error": ANCHOR_MISSING}
+    image_key = str(args.get("attachment_object_key") or (context or {}).get("attachment_object_key") or "")
+    if not image_key:
+        return {"ok": False, "error": "请先上传图片"}
+    doc_bytes, doc_key, ws = _load_open_docx(session)
+    if doc_bytes is None:
+        return {"ok": False, "error": "请先打开标书草稿"}
+    image_bytes = storage.download_bytes(image_key)
+    new_bytes, meta = document_agent.insert_image_in_document(
+        doc_bytes, image_bytes, paragraph_index=int(anchor["paragraph_index"]),
+    )
+    saved = _store_open_docx(db, session, ws, doc_key, new_bytes, "image")
+    return {"ok": True, "modified": True, "object_key": saved, "anchor": meta, "message": "已在选中位置插入图片。"}
+
+
+def _load_open_docx(session):
+    from app.services import storage
+
+    ws = dict(getattr(session, "workspace", None) or {})
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if not doc_key:
+        return None, "", ws
+    return storage.download_bytes(doc_key), doc_key, ws
+
+
+def _store_open_docx(db, session, ws, previous_key, new_bytes, suffix) -> str:
+    from datetime import datetime
+
+    from app.services import storage
+
+    saved = f"chat/{getattr(session, 'id', 0)}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{suffix}.docx"
+    storage.upload_bytes(
+        saved, new_bytes,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    ws = dict(ws)
+    ws["draft_object_key"] = saved
+    ws["version"] = int(ws.get("version") or 0) + 1
+    session.workspace = ws
+    if db is not None:
+        db.commit()
+    return saved
+
+
+def anchor_can_insert(anchor: dict) -> bool:
+    from app.services.agent_capabilities import anchor_can_insert as _can
+
+    return _can(anchor)
+
+
+from contextvars import ContextVar
+
+_loop_control: ContextVar[dict[str, Any] | None] = ContextVar("agent_loop_control", default=None)
+
+
+async def _chat_with_tools(messages: list[dict], db: Session | None = None) -> dict[str, Any]:
     from app.services import settings_svc
 
     cfg = settings_svc.resolve_ai_config(db)
@@ -355,35 +533,87 @@ async def _chat_with_tools(messages: list[dict], db: Session | None) -> dict[str
         if not call:
             continue
         base_url, api_key, model = call
+        started = False
         try:
-            return await _openai_tools_round(base_url, api_key, model, messages, TOOL_SPECS)
+            return await _openai_tools_stream(base_url, api_key, model, messages, TOOL_SPECS)
         except Exception:
+            control = _loop_control.get() or {}
+            started = bool(control.get("started"))
+            if started:
+                raise
             continue
     return {}
 
 
-async def _openai_tools_round(
+async def _openai_tools_stream(
     base_url: str,
     api_key: str,
     model: str,
     messages: list[dict],
     tools: list[dict],
 ) -> dict[str, Any]:
+    """从模型 HTTP 流里逐个 token 往外送，不把整段答案切成固定字数。"""
     import httpx
 
+    control = _loop_control.get() or {}
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    force = control.get("force_tool")
     payload: dict = {
         "model": model,
         "messages": messages,
         "tools": tools,
-        "tool_choice": "auto",
+        "tool_choice": (
+            {"type": "function", "function": {"name": force}}
+            if force and not control.get("force_used")
+            else "auto"
+        ),
         "temperature": 0.3,
+        "stream": True,
     }
+    if force and not control.get("force_used"):
+        control["force_used"] = True
+    content_parts: list[str] = []
+    tool_acc: dict[int, dict[str, Any]] = {}
     async with httpx.AsyncClient(timeout=90) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                text = delta.get("content") or ""
+                if text:
+                    content_parts.append(text)
+                    control["started"] = True
+                    sink = control.get("on_token")
+                    if sink:
+                        await sink(text)
+                for tc in delta.get("tool_calls") or []:
+                    idx = int(tc.get("index") or 0)
+                    slot = tool_acc.setdefault(idx, {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        slot["function"]["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        slot["function"]["arguments"] += fn["arguments"]
+    message: dict[str, Any] = {"content": "".join(content_parts)}
+    if tool_acc:
+        message["tool_calls"] = [tool_acc[i] for i in sorted(tool_acc)]
+    return {"choices": [{"message": message}]}
 
 
 def _sources_from_tool_log(tool_log: list[dict]) -> list[dict[str, str]]:
@@ -411,13 +641,19 @@ def _with_tool_trace(content: str, tool_log: list[dict], meta: dict[str, Any]) -
         if line and line not in content:
             content = f"{content.rstrip()}\n\n{line}"
     for entry in tool_log:
-        if entry.get("tool") != "edit_document_anchor":
-            continue
         result = entry.get("result") or {}
+        if result.get("modified"):
+            meta["workspace_updated"] = True
+            if result.get("object_key"):
+                meta["draft_object_key"] = result.get("object_key")
+        if entry.get("tool") not in ("edit_document_anchor", "insert_table", "insert_image"):
+            continue
         if not result.get("ok"):
             if ANCHOR_MISSING not in content:
                 content = f"{content.rstrip()}\n\n{ANCHOR_MISSING}".strip()
             meta["anchor_missing"] = True
+            continue
+        if result.get("modified"):
             continue
         anchor = result.get("anchor") or {}
         meta["needs_workspace_edit"] = True
@@ -438,8 +674,14 @@ async def run_tool_loop(
     workspace: dict | None,
     context: dict | None,
     max_steps: int = MAX_TOOL_STEPS,
+    on_token=None,
+    on_tool=None,
+    force_tool: str | None = None,
 ) -> dict[str, Any] | None:
-    """若 LLM 返回最终文本则输出；否则 None 表示应回退普通对话。"""
+    """若 LLM 返回最终文本则输出；否则 None 表示应回退普通对话。
+
+    上限按工具执行次数计算，不是按模型回合，也不在一回合里再截成 4 次。
+    """
     if not tool_loop_enabled() or session is None:
         return None
 
@@ -451,84 +693,117 @@ async def run_tool_loop(
     working = list(messages)
     tool_log: list[dict] = []
     limit = max(1, min(int(max_steps or MAX_TOOL_STEPS), MAX_TOOL_STEPS))
-
-    for _ in range(limit):
-        data = await _chat_with_tools(working, db)
-        if not data:
+    control = {"on_token": on_token, "force_tool": force_tool, "force_used": False, "started": False}
+    token = _loop_control.set(control)
+    executed = 0
+    try:
+        while executed < limit:
+            data = await _chat_with_tools(working, db)
+            if not data:
+                if tool_log:
+                    return _mark_streamed(
+                        _with_tool_trace("工具调用没有得到模型的后续回复。", tool_log, {"intent": "general"}),
+                        control,
+                    )
+                return None
+            choice = (data.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            tool_calls = msg.get("tool_calls") or []
+            if tool_calls:
+                working.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
+                for tc in tool_calls:
+                    if executed >= limit:
+                        break
+                    fn = tc.get("function") or {}
+                    name = fn.get("name") or ""
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = await _execute_tool(
+                        db, session, name, args, default_project_id=pid, context=ctx,
+                    )
+                    tool_log.append({"tool": name, "result": result})
+                    executed += 1
+                    if on_tool:
+                        await on_tool({"tool": name, "ok": bool((result or {}).get("ok", True))})
+                    working.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id") or name,
+                        "content": json.dumps(result, ensure_ascii=False, default=str)[:12000],
+                    })
+                if executed >= limit:
+                    break
+                continue
+            content = (msg.get("content") or "").strip()
+            if content:
+                return _mark_streamed(_finish_tool_answer(content, tool_log), control)
             if tool_log:
-                return _with_tool_trace("工具调用没有得到模型的后续回复。", tool_log, {"intent": "general"})
+                return _mark_streamed(
+                    _with_tool_trace("工具已执行，但模型没有给出文字回复。", tool_log, {"intent": "general"}),
+                    control,
+                )
             return None
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        tool_calls = msg.get("tool_calls") or []
-        if tool_calls:
-            working.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tool_calls})
-            for tc in tool_calls[:4]:
-                fn = tc.get("function") or {}
-                name = fn.get("name") or ""
-                try:
-                    args = json.loads(fn.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                result = await _execute_tool(
-                    db, session, name, args, default_project_id=pid, context=ctx,
-                )
-                tool_log.append({"tool": name, "result": result})
-                working.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id") or name,
-                    "content": json.dumps(result, ensure_ascii=False)[:12000],
-                })
-            continue
-        content = (msg.get("content") or "").strip()
-        if content:
-            sources = _sources_from_tool_log(tool_log)
-            web_attempts = [item for item in tool_log if item.get("tool") in ("web_search", "fetch_url")]
-            meta: dict[str, Any] = {}
-            if sources:
-                from app.services.web_search import format_sources_block, strip_unknown_urls
-
-                allowed = {item["url"] for item in sources}
-                content = strip_unknown_urls(content, allowed).strip()
-                block = format_sources_block(sources)
-                if block and block not in content:
-                    content = f"{content.rstrip()}\n\n{block}"
-                meta = {
-                    "intent": "web_search",
-                    "sources": sources,
-                    "web_search": {"ok": True, "searched": True},
-                }
-            elif web_attempts:
-                failed = next(
-                    (
-                        (item.get("result") or {})
-                        for item in web_attempts
-                        if not (item.get("result") or {}).get("ok")
-                    ),
-                    web_attempts[-1].get("result") or {},
-                )
-                note = (failed.get("message") or "联网检索没有返回可引用的公开来源。").strip()
-                if note not in content:
-                    content = f"{content.rstrip()}\n\n{note}"
-                meta = {
-                    "intent": "web_search",
-                    "sources": [],
-                    "web_search": {
-                        "ok": False,
-                        "offline": bool(failed.get("offline")),
-                        "empty_state": bool(failed.get("empty_state")),
-                        "error": failed.get("error") or "",
-                        "message": note,
-                    },
-                }
-            return _with_tool_trace(content, tool_log, meta)
         if tool_log:
-            return _with_tool_trace("工具已执行，但模型没有给出文字回复。", tool_log, {"intent": "general"})
+            return _mark_streamed(
+                _with_tool_trace(
+                    f"已达到每轮 {limit} 步工具上限。",
+                    tool_log,
+                    {"intent": "general", "tool_limit": True},
+                ),
+                control,
+            )
         return None
-    if tool_log:
-        return _with_tool_trace(
-            f"已达到每轮 {limit} 步工具上限。",
-            tool_log,
-            {"intent": "general", "tool_limit": True},
+    finally:
+        _loop_control.reset(token)
+
+
+def _finish_tool_answer(content: str, tool_log: list[dict]) -> dict[str, Any]:
+    sources = _sources_from_tool_log(tool_log)
+    web_attempts = [item for item in tool_log if item.get("tool") in ("web_search", "fetch_url")]
+    meta: dict[str, Any] = {}
+    if sources:
+        from app.services.web_search import format_sources_block, strip_unknown_urls
+
+        allowed = {item["url"] for item in sources}
+        content = strip_unknown_urls(content, allowed).strip()
+        block = format_sources_block(sources)
+        if block and block not in content:
+            content = f"{content.rstrip()}\n\n{block}"
+        meta = {
+            "intent": "web_search",
+            "sources": sources,
+            "web_search": {"ok": True, "searched": True},
+        }
+    elif web_attempts:
+        failed = next(
+            (
+                (item.get("result") or {})
+                for item in web_attempts
+                if not (item.get("result") or {}).get("ok")
+            ),
+            web_attempts[-1].get("result") or {},
         )
-    return None
+        note = (failed.get("message") or "联网检索没有返回可引用的公开来源。").strip()
+        if note not in content:
+            content = f"{content.rstrip()}\n\n{note}"
+        meta = {
+            "intent": "web_search",
+            "sources": [],
+            "web_search": {
+                "ok": False,
+                "offline": bool(failed.get("offline")),
+                "empty_state": bool(failed.get("empty_state")),
+                "error": failed.get("error") or "",
+                "message": note,
+            },
+        }
+    return _with_tool_trace(content, tool_log, meta)
+
+
+def _mark_streamed(result: dict[str, Any], control: dict[str, Any]) -> dict[str, Any]:
+    if control.get("started"):
+        meta = dict(result.get("metadata") or {})
+        meta["tokens_streamed"] = True
+        result["metadata"] = meta
+    return result

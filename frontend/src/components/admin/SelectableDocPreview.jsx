@@ -30,13 +30,17 @@ export default function SelectableDocPreview({
   activePlaceholderKey = '',
   onSelectMapping,
   onPlaceholderClick,
+  reviewHighlightTexts = [],
 }) {
   const highlightTexts = useMemo(
-    () => mappings
-      .filter((m) => m.approved !== false && m.action !== 'keep')
-      .map((m) => m.original_text)
-      .filter(Boolean),
-    [mappings],
+    () => [
+      ...mappings
+        .filter((m) => m.approved !== false && m.action !== 'keep')
+        .map((m) => m.original_text)
+        .filter(Boolean),
+      ...(reviewHighlightTexts || []).filter(Boolean),
+    ],
+    [mappings, reviewHighlightTexts],
   )
 
   const anchorFromNode = (node, text) => {
