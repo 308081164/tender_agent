@@ -502,7 +502,10 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
     if body.workspace_dir and str(body.workspace_dir).strip():
         from app.services.agent_workspace import validate_workspace_dir
 
-        workspace_dir = validate_workspace_dir(str(body.workspace_dir).strip())
+        try:
+            workspace_dir = validate_workspace_dir(str(body.workspace_dir).strip())
+        except Exception as err:
+            raise HTTPException(400, str(err)) from err
     project = TenderProject(
         title=body.title,
         source_type=body.source_type,
