@@ -365,8 +365,8 @@ def test_check_against_tender_covers_score_qualification_and_date(monkeypatch):
     seen = []
     real = check_against_tender
 
-    def wrapped(draft, tender):
-        out = real(draft, tender)
+    def wrapped(draft, tender, qualifications=None):
+        out = real(draft, tender, qualifications=qualifications)
         seen.append(out)
         return out
 
@@ -376,7 +376,9 @@ def test_check_against_tender_covers_score_qualification_and_date(monkeypatch):
         choice = payload.get("tool_choice") or {}
         name = (choice.get("function") or {}).get("name") if isinstance(choice, dict) else ""
         if name == "check_against_tender":
-            args = json.dumps({"text": "投标截止时间：2026-12-01。资质写了二级。工期180天。"}, ensure_ascii=False)
+            args = json.dumps({
+                "text": "技术方案。投标截止时间：2026-12-01。资质写了二级。工期180天。",
+            }, ensure_ascii=False)
             return _sse([
                 {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "check_against_tender", "arguments": args}}]},
             ]), None
@@ -386,7 +388,11 @@ def test_check_against_tender_covers_score_qualification_and_date(monkeypatch):
     db = _db()
     project = _project(db, fields={"_tender": {
         "duration": "180天",
-        "scoring_points": ["评分办法：技术方案 40 分"],
+        "scoring_points": [{
+            "name": "技术方案",
+            "title": "技术方案",
+            "requirement": "采用BIM进行管线综合，并提交进度网络图",
+        }],
         "qualifications": ["资质要求：市政公用工程施工总承包一级"],
         "key_dates": ["2026-11-02"],
         "disqualification": [],
@@ -397,8 +403,12 @@ def test_check_against_tender_covers_score_qualification_and_date(monkeypatch):
     sent = client.post(f"/api/chat/sessions/{sid}/messages", json={"content": "对照招标文件看这段"})
     assert sent.status_code == 200
     assert any(item["tool"] == "check_against_tender" for item in sent.json()["metadata"]["tool_trace"])
-    kinds = {item["kind"] for item in seen[0]["conflicts"]}
+    conflicts = seen[0]["conflicts"]
+    kinds = {item["kind"] for item in conflicts}
     assert {"scoring", "qualification", "date"} <= kinds
+    assert any(item["kind"] == "scoring" and item["item"] == "技术方案" for item in conflicts)
+    assert any(item["kind"] == "qualification" and "市政公用" in item["item"] for item in conflicts)
+    assert any(item["kind"] == "date" and "投标截止" in item["item"] for item in conflicts)
 
 
 def test_nested_mention_is_the_rewrite_target(monkeypatch):
@@ -556,7 +566,7 @@ def test_docx_tender_table_is_parsed_and_pdf_bytes_are_not_text():
     assert any("2026-11-02" in shown(item) for item in tender["key_dates"])
     checked = check_against_tender("投标截止时间：2026-12-01。资质写了二级。工期180天。", tender)
     failed = {item["item"] for item in checked["conflicts"]}
-    assert "技术方案" in failed
+    assert "技术方案" not in failed
     assert any("市政公用" in name for name in failed)
     assert any("投标截止" in name for name in failed)
     noise = client.post(

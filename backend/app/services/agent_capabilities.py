@@ -215,10 +215,16 @@ _TABLE_COLUMNS = (
     ("title", re.compile(r"评分项|评审因素|评审项|评分内容|评审内容")),
     ("score", re.compile(r"分值|得分|分数")),
     ("qualification", re.compile(r"资质|证书")),
+    ("requirement", re.compile(r"要求|评分标准|评审标准")),
     ("date", re.compile(r"日期|时间")),
     ("duration", re.compile(r"工期")),
     ("disqualification", re.compile(r"废标|否决")),
 )
+_DATE_FIELDS = (
+    ("投标截止", re.compile(r"投标截止|递交截止|截止时间")),
+    ("开标", re.compile(r"开标")),
+)
+_DURATION_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:个日历|日历)?\s*(个月|天|日|月|年)")
 
 
 def tender_has_items(parsed: dict[str, Any] | None) -> bool:
@@ -305,8 +311,17 @@ def _structure_from_blocks(blocks: list[dict[str, Any]], *, excerpt: str) -> dic
     duration = ""
     duration_source = ""
     section = ""
+    open_scoring: dict[str, Any] | None = None
+
+    def finish_scoring() -> None:
+        nonlocal open_scoring
+        if open_scoring and open_scoring.get("name"):
+            scoring.append(open_scoring)
+        open_scoring = None
+
     for block in blocks:
         if block.get("kind") == "table":
+            finish_scoring()
             _consume_tender_table(
                 block,
                 section,
@@ -326,12 +341,22 @@ def _structure_from_blocks(blocks: list[dict[str, Any]], *, excerpt: str) -> dic
         source = str(block.get("source") or "")
         kind, body = _classify_clause(text)
         if _is_section_heading(text, kind):
+            if kind != "scoring":
+                finish_scoring()
             section = kind
             continue
-        if kind:
+        active = kind or section
+        if kind and kind != "scoring":
+            finish_scoring()
             section = kind
+        elif kind == "scoring":
+            section = "scoring"
+        if active == "scoring":
+            open_scoring = _take_scoring_line(text, source, scoring, open_scoring)
+            continue
+        finish_scoring()
         _consume_clause(
-            kind or section,
+            active,
             body or text,
             source,
             scoring,
@@ -339,11 +364,12 @@ def _structure_from_blocks(blocks: list[dict[str, Any]], *, excerpt: str) -> dic
             qualifications,
             dates,
         )
-        if (kind or section) == "duration" and not duration:
+        if active == "duration" and not duration:
             found = _duration_in(text)
             if found:
                 duration = found
                 duration_source = source
+    finish_scoring()
     return {
         "scoring_points": scoring[:30],
         "disqualification": disqualification[:30],
@@ -398,27 +424,11 @@ def _consume_clause(
     if not text or not kind:
         return
     if kind == "scoring":
-        title, score = _scoring_fields(text)
-        if title:
-            scoring.append({
-                "id": f"score:{source or len(scoring) + 1}",
-                "title": title[:80],
-                "score": score,
-                "text": text[:180],
-                "source": source,
-            })
+        name, score, requirement = _scoring_name_requirement(text)
+        if name:
+            scoring.append(_scoring_item(name, score, requirement, text, source, len(scoring)))
     elif kind == "disqualification":
-        banned = ""
-        matched = re.search(r"不得([^，。；]{2,24})", text)
-        if matched:
-            banned = matched.group(1)
-        disqualification.append({
-            "id": f"reject:{source or len(disqualification) + 1}",
-            "title": banned or text[:40],
-            "banned": banned,
-            "text": text[:180],
-            "source": source,
-        })
+        disqualification.append(_disqualification_item(text, source, len(disqualification)))
     elif kind == "qualification":
         title = re.sub(r"^(资质要求|投标人须具备|须具备|资质)", "", text).strip(" ：:，,")
         if title:
@@ -444,16 +454,101 @@ def _consume_clause(
 
 
 def _scoring_fields(text: str) -> tuple[str, str]:
+    name, score, _requirement = _scoring_name_requirement(text)
+    return name, score
+
+
+def _scoring_name_requirement(text: str) -> tuple[str, str, str]:
+    """评分点是标题和其后的要求，不是整行关键词。"""
+    raw = (text or "").strip()
+    if not raw:
+        return "", "", ""
+    if ("。" in raw or "；" in raw) and "：" not in raw and ":" not in raw:
+        return "", "", ""
     score = ""
-    matched = re.search(r"(\d+\s*分)", text or "")
+    matched = re.search(r"(\d+\s*分)", raw)
     if matched:
         score = re.sub(r"\s+", "", matched.group(1))
-        title = (text or "")[:matched.start()]
-    else:
-        title = text or ""
-    title = re.sub(r"^(评分办法|评分标准|评分点|分值构成|评审因素)", "", title)
-    title = title.strip(" ：:，,。；; ")
-    return title[:80], score
+        raw = f"{raw[:matched.start()]} {raw[matched.end():]}".strip()
+    raw = re.sub(r"^(评分办法|评分标准|评分点|分值构成|评审因素|评分项)", "", raw)
+    raw = raw.strip(" ：:，,。；; ")
+    raw = re.sub(r"^[\d一二三四五六七八九十]+[、.．)\]]\s*", "", raw).strip()
+    label, body = _split_label(raw)
+    if label and 1 < len(label) <= 24 and not _requirement_prose(label):
+        return label[:80], score, body.strip()
+    if raw and len(raw) <= 24 and not _requirement_prose(raw) and "。" not in raw and "；" not in raw:
+        return raw[:80], score, ""
+    return "", score, ""
+
+
+def _requirement_prose(text: str) -> bool:
+    return bool(re.search(r"(应当|必须|须|提供|提交|建立|包含|包括|进行)", text or ""))
+
+
+def _scoring_item(name: str, score: str, requirement: str, text: str, source: str, index: int) -> dict[str, Any]:
+    return {
+        "id": f"score:{source or index + 1}",
+        "name": name[:80],
+        "title": name[:80],
+        "score": score,
+        "requirement": (requirement or "")[:500],
+        "text": ((requirement or text or name) or "")[:180],
+        "source": source,
+    }
+
+
+def _take_scoring_line(
+    text: str,
+    source: str,
+    scoring: list[dict[str, Any]],
+    open_item: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    name, score, inline = _scoring_name_requirement(text)
+    if name:
+        if open_item and open_item.get("name"):
+            scoring.append(open_item)
+        return _scoring_item(name, score, inline, text, source, len(scoring))
+    if open_item is not None:
+        extra = text.strip()
+        if extra:
+            current = str(open_item.get("requirement") or "")
+            open_item["requirement"] = (f"{current}\n{extra}" if current else extra)[:500]
+            open_item["text"] = str(open_item["requirement"])[:180]
+        return open_item
+    return open_item
+
+
+def _extract_constraints(text: str) -> list[dict[str, str]]:
+    """抽出废标约束：禁止项看条件是否出现，强制项看条件是否缺失。"""
+    found: list[dict[str, str]] = []
+    for polarity, pattern in (
+        ("forbid", r"(?:不得|禁止|不允许|严禁)([^，。；;、]{1,30})"),
+        ("require", r"(?:必须|须具备|须|应当)([^，。；;、]{1,30})"),
+    ):
+        for matched in re.finditer(pattern, text or ""):
+            condition = _clean_condition(matched.group(1))
+            if condition and not any(item["condition"] == condition for item in found):
+                found.append({"polarity": polarity, "condition": condition})
+    return found
+
+
+def _clean_condition(text: str) -> str:
+    cleaned = (text or "").strip(" ：:，,。；;、 ")
+    cleaned = re.sub(r"^(具备|提供|提交|进行|出现)", "", cleaned).strip()
+    return cleaned[:40]
+
+
+def _disqualification_item(text: str, source: str, index: int) -> dict[str, Any]:
+    constraints = _extract_constraints(text)
+    name = text[:40]
+    return {
+        "id": f"reject:{source or index + 1}",
+        "name": name,
+        "title": name,
+        "constraints": constraints,
+        "text": text[:180],
+        "source": source,
+    }
 
 
 def _consume_tender_table(
@@ -492,13 +587,8 @@ def _consume_tender_table(
                 title, parsed_score = _scoring_fields(" ".join(row))
                 score = score or parsed_score
             if title:
-                scoring.append({
-                    "id": f"score:{source}",
-                    "title": title[:80],
-                    "score": score,
-                    "text": title[:180],
-                    "source": source,
-                })
+                requirement = _cell(row, columns.get("requirement"))
+                scoring.append(_scoring_item(title, score, requirement, title, source, len(scoring)))
         if "qualification" in columns:
             title = _cell(row, columns["qualification"])
             if title:
@@ -525,6 +615,7 @@ def _table_columns(header: list[str]) -> dict[str, int]:
         for name, pattern in _TABLE_COLUMNS:
             if name not in found and pattern.search(str(cell)):
                 found[name] = index
+                break
     return found
 
 
@@ -609,87 +700,254 @@ def _duration_in(text: str) -> str:
     return re.sub(r"\s+", "", found.group(1))
 
 
-def check_against_tender(draft: str, tender: dict[str, Any] | None) -> dict[str, Any]:
-    """把结构化条款逐条对照文稿，并写明是哪一条没通过。"""
+def check_against_tender(
+    draft: str,
+    tender: dict[str, Any] | None,
+    qualifications: list[Any] | None = None,
+) -> dict[str, Any]:
+    """按条款对照文稿：要求是否写到、约束是否违反、工期和日期是否同一值、资质是否在项目记录里。"""
     record = tender or {}
     if not record:
         return {"ok": False, "error": "项目未挂招标文件", "conflicts": []}
     body = draft or ""
     conflicts: list[dict[str, str]] = []
-    duration_item = record.get("duration_item") if isinstance(record.get("duration_item"), dict) else {}
-    expected = re.sub(r"\s+", "", str(duration_item.get("value") or record.get("duration") or ""))
-    actual = _duration_in(body)
-    if expected and actual and expected != actual:
-        conflicts.append({
-            "kind": "duration",
-            "item_id": str(duration_item.get("id") or "duration"),
-            "item": "工期",
-            "tender": expected,
-            "draft": actual,
-            "message": f"工期未通过：文稿为 {actual}，招标文件为 {expected}",
-        })
+    conflicts.extend(_duration_conflicts(body, record))
     for item in _coerce_items(record.get("disqualification"), "disqualification"):
-        banned = str(item.get("banned") or "")
-        if not banned:
-            matched = re.search(r"不得([^，。；]{2,24})", str(item.get("text") or item.get("title") or ""))
-            banned = matched.group(1) if matched else ""
-        if banned and banned in body:
-            name = _item_label(item)
+        conflicts.extend(_disqualification_conflicts(body, item))
+    for item in _coerce_items(record.get("scoring_points"), "scoring"):
+        conflict = _scoring_conflict(body, item)
+        if conflict:
+            conflicts.append(conflict)
+    records = _qualification_records(qualifications if qualifications is not None else record.get("qualification_records"))
+    for item in _coerce_items(record.get("qualifications"), "qualification"):
+        conflict = _qualification_conflict(item, records)
+        if conflict:
+            conflicts.append(conflict)
+    for item in _coerce_items(record.get("key_dates"), "date"):
+        conflict = _date_conflict(body, item)
+        if conflict:
+            conflicts.append(conflict)
+    return {"ok": not conflicts, "conflicts": conflicts, "error": ""}
+
+
+def _duration_conflicts(body: str, record: dict[str, Any]) -> list[dict[str, str]]:
+    duration_item = record.get("duration_item") if isinstance(record.get("duration_item"), dict) else {}
+    expected_text = str(duration_item.get("value") or record.get("duration") or "")
+    expected = _parse_duration(expected_text, labeled=False)
+    actual = _parse_duration(body, labeled=True)
+    if not expected or not actual:
+        return []
+    if expected[0] == actual[0] and expected[1] == actual[1]:
+        return []
+    return [{
+        "kind": "duration",
+        "item_id": str(duration_item.get("id") or "duration"),
+        "item": "工期",
+        "tender": expected[2],
+        "draft": actual[2],
+        "message": f"工期未通过：文稿为 {actual[2]}，招标文件为 {expected[2]}",
+    }]
+
+
+def _parse_duration(text: str, *, labeled: bool) -> tuple[float, str, str] | None:
+    raw = text or ""
+    if labeled:
+        if "工期" not in raw:
+            return None
+        start = raw.find("工期")
+        raw = raw[start:start + 24]
+    matched = _DURATION_VALUE_RE.search(raw)
+    if not matched:
+        return None
+    number = float(matched.group(1))
+    unit = matched.group(2)
+    if unit == "日":
+        unit = "天"
+    elif unit == "个月":
+        unit = "月"
+    shown = str(int(number)) if number == int(number) else str(number)
+    return number, unit, f"{shown}{unit}"
+
+
+def _disqualification_conflicts(body: str, item: dict[str, Any]) -> list[dict[str, str]]:
+    name = str(item.get("name") or item.get("title") or item.get("text") or "")[:40]
+    conflicts: list[dict[str, str]] = []
+    for constraint in _constraints_of(item):
+        condition = str(constraint.get("condition") or "")
+        polarity = str(constraint.get("polarity") or "")
+        if not condition:
+            continue
+        if polarity == "require":
+            if condition in body:
+                continue
             conflicts.append({
                 "kind": "disqualification",
                 "item_id": str(item.get("id") or ""),
                 "item": name,
-                "tender": str(item.get("text") or name)[:180],
-                "draft": banned,
-                "message": f"废标项「{name}」未通过：文稿出现「{banned}」",
-            })
-    for item in _coerce_items(record.get("scoring_points"), "scoring"):
-        title = str(item.get("title") or "").strip()
-        if title and title not in body:
-            conflicts.append({
-                "kind": "scoring",
-                "item_id": str(item.get("id") or ""),
-                "item": title,
-                "tender": str(item.get("text") or title)[:180],
+                "tender": condition,
                 "draft": "",
-                "message": f"评分点「{title}」未写入文稿",
+                "message": f"废标项「{name}」未通过：文稿缺少「{condition}」",
             })
-    for item in _coerce_items(record.get("qualifications"), "qualification"):
-        title = str(item.get("title") or "").strip()
-        if title and title not in body:
+            continue
+        if condition in body:
             conflicts.append({
-                "kind": "qualification",
+                "kind": "disqualification",
                 "item_id": str(item.get("id") or ""),
-                "item": title,
-                "tender": str(item.get("text") or title)[:180],
-                "draft": "",
-                "message": f"资质「{title}」未写入文稿",
+                "item": name,
+                "tender": condition,
+                "draft": condition,
+                "message": f"废标项「{name}」未通过：文稿出现「{condition}」",
             })
-    draft_dates = [re.sub(r"\s+", "", item) for item in _DATE_RE.findall(body)]
-    for item in _coerce_items(record.get("key_dates"), "date"):
-        expected_date = re.sub(r"\s+", "", str(item.get("value") or ""))
-        label = str(item.get("label") or "关键日期")
-        if not expected_date or expected_date in body:
+    return conflicts
+
+
+def _constraints_of(item: dict[str, Any]) -> list[dict[str, str]]:
+    raw = item.get("constraints")
+    if isinstance(raw, list) and raw:
+        constraints = []
+        for entry in raw:
+            if isinstance(entry, dict) and entry.get("condition"):
+                constraints.append({
+                    "polarity": str(entry.get("polarity") or "forbid"),
+                    "condition": str(entry.get("condition")),
+                })
+        if constraints:
+            return constraints
+    text = str(item.get("text") or item.get("title") or item.get("name") or "")
+    found = _extract_constraints(text)
+    if found:
+        return found
+    banned = re.sub(r"^(不得|禁止|不允许|严禁)", "", str(item.get("banned") or "")).strip()
+    if banned:
+        return [{"polarity": "forbid", "condition": banned}]
+    return []
+
+
+def _scoring_conflict(body: str, item: dict[str, Any]) -> dict[str, str] | None:
+    name = str(item.get("name") or item.get("title") or "").strip()
+    requirement = str(item.get("requirement") or "").strip()
+    if not name or not requirement or name not in body:
+        return None
+    if _requirement_covered(body, name, requirement):
+        return None
+    return {
+        "kind": "scoring",
+        "item_id": str(item.get("id") or ""),
+        "item": name,
+        "tender": requirement[:180],
+        "draft": name,
+        "message": f"评分点「{name}」未通过：文稿重复了标题，没有覆盖要求",
+    }
+
+
+def _requirement_covered(body: str, name: str, requirement: str) -> bool:
+    needle = re.sub(r"\s+", "", requirement or "")
+    compact_name = re.sub(r"\s+", "", name or "")
+    if compact_name:
+        needle = needle.replace(compact_name, "")
+    needle = re.sub(r"\d+分", "", needle).strip("：:，,。；;、 ")
+    if len(needle) < 2:
+        return True
+    return needle in re.sub(r"\s+", "", body or "")
+
+
+def _qualification_records(rows: Any) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for row in rows or []:
+        if isinstance(row, str):
+            records.append({"name": row, "keywords": ""})
             continue
-        if not re.search(r"截止|开标|日期|时间", body) and label not in body:
+        if isinstance(row, dict):
+            records.append({
+                "name": str(row.get("name") or row.get("title") or ""),
+                "keywords": str(row.get("keywords") or ""),
+            })
             continue
-        other = next((found for found in draft_dates if found != expected_date), "")
-        if not other and not draft_dates:
-            continue
-        conflicts.append({
-            "kind": "date",
-            "item_id": str(item.get("id") or ""),
-            "item": label,
-            "tender": expected_date,
-            "draft": other or (draft_dates[0] if draft_dates else ""),
-            "message": f"日期「{label}」未通过：文稿为 {other or '另一日期'}，招标文件为 {expected_date}",
+        records.append({
+            "name": str(getattr(row, "name", "") or ""),
+            "keywords": str(getattr(row, "keywords", "") or ""),
         })
-    return {"ok": not conflicts, "conflicts": conflicts, "error": ""}
+    return records
+
+
+def _qualification_conflict(item: dict[str, Any], records: list[dict[str, str]]) -> dict[str, str] | None:
+    name = str(item.get("name") or item.get("title") or "").strip()
+    if not name or _qualification_met(name, records):
+        return None
+    return {
+        "kind": "qualification",
+        "item_id": str(item.get("id") or ""),
+        "item": name,
+        "tender": name,
+        "draft": "",
+        "message": f"资质「{name}」未通过：项目资质记录里没有「{name}」",
+    }
+
+
+def _qualification_met(required: str, records: list[dict[str, str]]) -> bool:
+    needle = re.sub(r"\s+", "", required)
+    if not needle:
+        return True
+    for record in records:
+        haystack = re.sub(r"\s+", "", f"{record.get('name') or ''}{record.get('keywords') or ''}")
+        if needle in haystack:
+            return True
+    return False
+
+
+def _date_conflict(body: str, item: dict[str, Any]) -> dict[str, str] | None:
+    expected = re.sub(r"\s+", "", str(item.get("value") or ""))
+    if not expected:
+        return None
+    label = str(item.get("label") or "关键日期")
+    field = _date_field(label)
+    pairs = _labeled_dates(body)
+    if field == "关键日期":
+        differing = [(bid_field, value) for bid_field, value in pairs if value != expected]
+        if not differing:
+            return None
+        conflict_field, draft_value = differing[0]
+    else:
+        matched = [(bid_field, value) for bid_field, value in pairs if bid_field == field]
+        if not matched or any(value == expected for _bid_field, value in matched):
+            return None
+        conflict_field = label if field in label else field
+        draft_value = next(value for _bid_field, value in matched if value != expected)
+    shown = conflict_field if field == "关键日期" else (label if field in label else field)
+    return {
+        "kind": "date",
+        "item_id": str(item.get("id") or ""),
+        "item": shown,
+        "tender": expected,
+        "draft": draft_value,
+        "message": f"日期「{shown}」未通过：文稿为 {draft_value}，招标文件为 {expected}",
+    }
+
+
+def _date_field(label: str) -> str:
+    for name, pattern in _DATE_FIELDS:
+        if pattern.search(label or ""):
+            return name
+    return "关键日期"
+
+
+def _labeled_dates(text: str) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for matched in _DATE_RE.finditer(text or ""):
+        value = re.sub(r"\s+", "", matched.group(0))
+        window = (text or "")[max(0, matched.start() - 16):matched.start()]
+        field = "关键日期"
+        for name, pattern in _DATE_FIELDS:
+            if pattern.search(window):
+                field = name
+                break
+        found.append((field, value))
+    return found
 
 
 def _item_label(item: Any) -> str:
     if isinstance(item, dict):
-        title = str(item.get("title") or item.get("label") or item.get("value") or "").strip()
+        title = str(item.get("name") or item.get("title") or item.get("label") or item.get("value") or "").strip()
         score = str(item.get("score") or "").strip()
         if title and score:
             return f"{title}（{score}）"
@@ -697,11 +955,14 @@ def _item_label(item: Any) -> str:
     return str(item)[:80]
 
 
-def _coerce_items(rows: Any, kind: str) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
+def _coerce_items(rows: Any, kind: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     for raw in rows or []:
-        if isinstance(raw, dict) and (raw.get("title") or raw.get("value") or raw.get("label") or raw.get("text")):
-            items.append({str(key): str(value or "") for key, value in raw.items()})
+        if isinstance(raw, dict) and (
+            raw.get("title") or raw.get("name") or raw.get("value") or raw.get("label")
+            or raw.get("text") or raw.get("requirement")
+        ):
+            items.append(_copy_item(raw))
             continue
         text = str(raw or "").strip()
         if not text:
@@ -723,6 +984,22 @@ def _coerce_items(rows: Any, kind: str) -> list[dict[str, str]]:
             value = re.sub(r"\s+", "", _DATE_RE.search(text).group(0))
             items.append({"id": f"date:stored:{value}", "label": "关键日期", "value": value, "text": text, "source": "stored"})
     return items
+
+
+def _copy_item(raw: dict[str, Any]) -> dict[str, Any]:
+    item: dict[str, Any] = {}
+    for key, value in raw.items():
+        if isinstance(value, (dict, list)):
+            item[str(key)] = value
+        elif value is None:
+            item[str(key)] = ""
+        else:
+            item[str(key)] = str(value)
+    if item.get("name") and not item.get("title"):
+        item["title"] = item["name"]
+    if item.get("title") and not item.get("name"):
+        item["name"] = item["title"]
+    return item
 
 
 def _optional_index(value: Any) -> int | None:

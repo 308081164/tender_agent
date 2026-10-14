@@ -284,6 +284,78 @@ def test_tender_file_is_context_and_check_tool_finds_conflict():
     assert any(item["kind"] == "duration" for item in conflict["conflicts"])
     assert any(item["kind"] == "disqualification" for item in conflict["conflicts"])
 
+
+def test_check_fails_uncovered_score_and_violated_disqualification():
+    """标题出现但要求没写到，不能当成通过；废标看约束，不要求文稿抄下「不得X」。"""
+    text = "\n".join([
+        "二、评分办法",
+        "技术方案",
+        "采用BIM进行管线综合，并提交进度网络图。",
+        "评分项 | 分值 | 要求",
+        "质量保证 | 20 | 建立质量管理体系并提交检验计划",
+        "工期要求：180天",
+        "资质要求：市政公用工程施工总承包一级",
+        "投标截止时间：2026-11-02",
+        "废标条款",
+        "不得联合体",
+        "必须提交投标保证金",
+    ])
+    parsed = parse_tender_text(text)
+    tech = next(item for item in parsed["scoring_points"] if item.get("name") == "技术方案")
+    quality = next(item for item in parsed["scoring_points"] if item.get("name") == "质量保证")
+    assert "进度网络图" in tech["requirement"]
+    assert "质量管理体系" in quality["requirement"]
+    assert any(item.get("name") == "不得联合体" for item in parsed["disqualification"])
+
+    bid = "技术方案已按招标文件编写。质量保证已响应。本项目接受联合体。工期90天。投标截止时间：2026-12-01。具备市政公用工程施工总承包一级。"
+    assert "技术方案" in bid
+    assert "进度网络图" not in bid
+    assert "不得联合体" not in bid
+    assert "联合体" in bid
+    conflict = check_against_tender(
+        bid,
+        parsed,
+        qualifications=[{"name": "建筑工程施工总承包二级", "keywords": ""}],
+    )
+    assert conflict["ok"] is False
+    messages = " ".join(item["message"] for item in conflict["conflicts"])
+    assert "未写入文稿" not in messages
+    assert any(
+        item["kind"] == "scoring" and item["item"] == "技术方案" and "没有覆盖要求" in item["message"]
+        for item in conflict["conflicts"]
+    )
+    assert any(item["kind"] == "scoring" and item["item"] == "质量保证" for item in conflict["conflicts"])
+    assert any(
+        item["kind"] == "disqualification" and item["item"] == "不得联合体" and "联合体" in item["message"]
+        for item in conflict["conflicts"]
+    )
+    assert any(
+        item["kind"] == "disqualification" and "投标保证金" in item["message"] and "缺少" in item["message"]
+        for item in conflict["conflicts"]
+    )
+    duration = next(item for item in conflict["conflicts"] if item["kind"] == "duration")
+    assert duration["item"] == "工期"
+    assert duration["draft"] == "90天"
+    assert duration["tender"] == "180天"
+    assert any(
+        item["kind"] == "qualification" and item["item"] == "市政公用工程施工总承包一级"
+        for item in conflict["conflicts"]
+    )
+    assert any(
+        item["kind"] == "date" and "投标截止" in item["item"] and item["draft"] == "2026-12-01" and item["tender"] == "2026-11-02"
+        for item in conflict["conflicts"]
+    )
+
+    covered = "技术方案采用BIM进行管线综合，并提交进度网络图。质量保证建立质量管理体系并提交检验计划。工期180天。投标截止时间：2026-11-02。已提交投标保证金。"
+    assert "联合体" not in covered
+    assert "市政公用" not in covered
+    passed = check_against_tender(
+        covered,
+        parsed,
+        qualifications=[{"name": "市政公用工程施工总承包一级"}],
+    )
+    assert passed["conflicts"] == []
+
     db = _db()
     project = _project(db, fields={})
     db.close()

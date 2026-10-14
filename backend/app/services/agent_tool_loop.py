@@ -317,7 +317,7 @@ async def _execute_tool(
             "onlyoffice": onlyoffice,
         }
     if name == "check_against_tender":
-        from app.models import TenderProject
+        from app.models import Qualification, TenderProject
 
         pid = int(args.get("project_id") or default_project_id or 0)
         if pid <= 0 or db is None:
@@ -330,7 +330,11 @@ async def _execute_tool(
             from app.services.agent_capabilities import collect_document_text
 
             draft = collect_document_text(p)
-        checked = check_against_tender(draft, tender_record(p.fields))
+        records = [
+            {"name": row.name or "", "keywords": row.keywords or "", "category": row.category or ""}
+            for row in db.query(Qualification).all()
+        ]
+        checked = check_against_tender(draft, tender_record(p.fields), qualifications=records)
         return checked
     if name == "web_search":
         from app.services.web_search import search_web
