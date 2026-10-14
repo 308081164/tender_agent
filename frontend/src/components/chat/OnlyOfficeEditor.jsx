@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
+import { applyOnlyOfficeHighlights, bindOnlyOfficeSelection } from './agentChatRuntime'
 
 let scriptPromise = null
 
@@ -22,9 +23,26 @@ function loadOnlyOfficeApi(documentServerUrl) {
   return scriptPromise
 }
 
-export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
+function subscribeOnlyOfficeSelection(editor, onAnchor, highlights) {
+  if (!editor) return
+  try {
+    const connector = editor.createConnector?.()
+    if (!connector) return
+    if (onAnchor) bindOnlyOfficeSelection(connector, onAnchor)
+    applyOnlyOfficeHighlights(connector, highlights)
+  } catch {
+    // 编辑器未就绪时不把光标默认为文首。
+  }
+}
+
+export default function OnlyOfficeEditor({ sessionId, workspace, onSaved, onAnchor, highlightTexts = [] }) {
   const containerRef = useRef(null)
   const editorRef = useRef(null)
+  const onAnchorRef = useRef(onAnchor)
+  const highlightRef = useRef(highlightTexts)
+  onAnchorRef.current = onAnchor
+  highlightRef.current = highlightTexts
+  const highlightKey = (highlightTexts || []).join('\u0001')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -56,10 +74,9 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
         const editor = new window.DocsAPI.DocEditor(containerRef.current, {
           ...data.config,
           events: {
+            onDocumentReady: () => subscribeOnlyOfficeSelection(editor, onAnchorRef.current, highlightRef.current),
             onDocumentStateChange: (event) => {
-              if (event?.data) {
-                // 文档有未保存修改
-              }
+              if (event?.data) subscribeOnlyOfficeSelection(editor, onAnchorRef.current, highlightRef.current)
             },
             onRequestClose: () => onSaved?.(),
             onError: (event) => {
@@ -68,6 +85,7 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
           },
         })
         editorRef.current = editor
+        subscribeOnlyOfficeSelection(editor, onAnchorRef.current, highlightRef.current)
       } catch (e) {
         if (!cancelled) setError(e.message || '加载编辑器失败')
       } finally {
@@ -84,6 +102,13 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved }) {
       }
     }
   }, [sessionId, docKey, version, onSaved])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      subscribeOnlyOfficeSelection(editorRef.current, onAnchorRef.current, highlightRef.current)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [sessionId, docKey, highlightKey])
 
   if (!docKey) {
     return <div className="onlyoffice-empty muted">请先上传 DOCX 文档</div>

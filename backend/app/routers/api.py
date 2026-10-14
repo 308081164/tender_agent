@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
+import asyncio
 import json
 import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
@@ -82,9 +83,12 @@ class SettingsUpdate(BaseModel):
     kimi_model: str | None = None
     kimi_k3_model: str | None = None
     preferred_provider: str | None = None
+    web_search_provider: str | None = None
+    web_search_api_key: str | None = None
     clear_deepseek_api_key: bool = False
     clear_qwen_api_key: bool = False
     clear_kimi_api_key: bool = False
+    clear_web_search_api_key: bool = False
 
 
 class TestProviderRequest(BaseModel):
@@ -810,6 +814,151 @@ async def upload_project_attachment(
     return await ingest_attachment(db, p, name, data, file.content_type or "")
 
 
+@router.post("/projects/{project_id}/tender-file")
+async def upload_project_tender_file(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """把招标 PDF/Word 解析进项目上下文，供写作中对照。"""
+    from app.services.agent_capabilities import (
+        parse_tender_docx,
+        parse_tender_text,
+        store_tender_record,
+        tender_has_items,
+    )
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "文件为空")
+    name = file.filename or "tender.docx"
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext not in ("pdf", "doc", "docx", "txt"):
+        raise HTTPException(400, "请上传招标 PDF 或 Word")
+    parsed = None
+    if ext in ("txt", "md"):
+        parsed = parse_tender_text(data.decode("utf-8", errors="ignore"))
+    elif ext == "docx":
+        try:
+            parsed = parse_tender_docx(data)
+        except Exception:
+            parsed = None
+        if not tender_has_items(parsed):
+            text = ""
+            try:
+                preview = word.extract_preview(data, max_paragraphs=400)
+                text = "\n".join(
+                    item.get("text") or ""
+                    for item in (preview.get("paragraphs") or [])
+                    if isinstance(item, dict)
+                )
+            except Exception:
+                text = ""
+            if isinstance(text, str) and text.strip():
+                parsed = parse_tender_text(text)
+        if parsed is None:
+            parsed = parse_tender_text("")
+    else:
+        text = ""
+        if ext == "pdf":
+            try:
+                from io import BytesIO
+
+                from pypdf import PdfReader
+
+                reader = PdfReader(BytesIO(data))
+                text = "\n".join((page.extract_text() or "") for page in reader.pages)
+            except Exception:
+                text = ""
+        if not str(text or "").strip():
+            try:
+                from io import BytesIO
+
+                import aspose.words as aw
+
+                doc = aw.Document(BytesIO(data))
+                raw = doc.to_string(aw.SaveFormat.TEXT)
+                text = raw if isinstance(raw, str) else ""
+            except Exception:
+                text = ""
+        parsed = parse_tender_text(text if isinstance(text, str) else "")
+    key = f"projects/{p.id}/tender/{name}"
+    try:
+        storage.upload_bytes(key, data, file.content_type or "application/octet-stream")
+    except Exception:
+        key = ""
+    record = store_tender_record(p, parsed, name=name, object_key=key)
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"tender": record}
+
+
+@router.get("/projects/{project_id}/memos")
+def list_project_memos(project_id: int, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import project_memos
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    return {"memos": project_memos(p.fields)}
+
+
+@router.delete("/projects/{project_id}/memos/{memo_id}")
+def delete_project_memo(project_id: int, memo_id: str, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import delete_memo, project_memos
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    if not delete_memo(p, memo_id):
+        raise HTTPException(404, "备忘不存在")
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return {"memos": project_memos(p.fields)}
+
+
+@router.post("/projects/{project_id}/review-issues/{issue_id}/fix")
+async def fix_project_review_issue(project_id: int, issue_id: str, db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import fix_review_issue, open_bound_docx
+    from app.services.project_sessions import find_bound_session
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    result = await fix_review_issue(
+        p, issue_id, docx_bytes=open_bound_docx(db, p), db=db,
+    )
+    blob = result.pop("docx_bytes", None)
+    if isinstance(blob, (bytes, bytearray)):
+        try:
+            key = f"projects/{p.id}/review/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.docx"
+            storage.upload_bytes(
+                key, bytes(blob),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            fields = dict(p.fields or {})
+            fields["_draft_object_key"] = key
+            p.fields = fields
+            flag_modified(p, "fields")
+            bound = find_bound_session(db, p.id)
+            if bound is not None:
+                ws = dict(bound.workspace or {})
+                ws["draft_object_key"] = key
+                ws["version"] = int(ws.get("version") or 0) + 1
+                bound.workspace = ws
+            result["draft_object_key"] = key
+        except Exception:
+            result["draft_saved"] = False
+    if not result.get("ok") and result.get("error") == "没有这一条审查问题":
+        raise HTTPException(404, result["error"])
+    p.updated_at = datetime.utcnow()
+    db.commit()
+    return result
+
+
 @router.post("/projects/{project_id}/attachments/apply")
 def apply_attachment_field_patch(
     project_id: int,
@@ -1218,6 +1367,9 @@ async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
     review = await review_project_document(
         doc_bytes, tpl.placeholders, export_fields, snap, required, db=db
     )
+    from app.services.agent_capabilities import stamp_review_issues
+
+    review = stamp_review_issues(review)
     merged = dict(p.checklist_result or {})
     merged["doc_review"] = review
     merged["can_export"] = review.get("can_export", False) and merged.get("can_export", True)
@@ -1763,6 +1915,14 @@ def list_chat_messages(session_id: int, db: Session = Depends(get_db)):
     return [message_to_dict(m) for m in (s.messages or [])]
 
 
+@router.get("/chat/sessions/{session_id}/mentions")
+def list_chat_mentions(session_id: int, q: str = "", db: Session = Depends(get_db)):
+    from app.services.agent_capabilities import mention_candidates
+
+    s = get_session_or_404(db, session_id)
+    return {"items": mention_candidates(db, s, q)}
+
+
 async def _finalize_chat_message_turn(
     session_id: int,
     s: ChatSession,
@@ -1823,12 +1983,17 @@ async def _finalize_chat_message_turn(
             )
             meta["workspace_updated"] = True
 
-    # 工作区：插入表格
+    # 工作区：插入表格（必须有明确锚点，不用段落 0 兜底）
     if meta.get("needs_workspace_insert_table"):
+        from app.services.agent_capabilities import ANCHOR_MISSING
+
         doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
-        if doc_key:
+        raw_idx = meta.get("paragraph_index")
+        if raw_idx is None:
+            raw_idx = (body.context or {}).get("paragraph_index")
+        if doc_key and raw_idx is not None and str(raw_idx) != "":
             doc_bytes = storage.download_bytes(doc_key)
-            pidx = int(meta.get("paragraph_index") or (body.context or {}).get("paragraph_index") or 0)
+            pidx = int(raw_idx)
             rows = int(meta.get("rows") or 3)
             cols = int(meta.get("cols") or 3)
             new_bytes, ins_meta = document_agent.insert_table_in_document(
@@ -1843,15 +2008,23 @@ async def _finalize_chat_message_turn(
             result["answer"] = f"✅ 已插入 {rows}×{cols} 表格（版本 v{ws['version']}），请在左侧预览确认。"
             meta["workspace_updated"] = True
             meta["insert_meta"] = ins_meta
+        else:
+            result["answer"] = ANCHOR_MISSING
+            meta["anchor_missing"] = True
 
-    # 工作区：插入图片
+    # 工作区：插入图片（必须有明确锚点，不用段落 0 兜底）
     if meta.get("needs_workspace_insert_image"):
+        from app.services.agent_capabilities import ANCHOR_MISSING as _ANCHOR_MISSING
+
         doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
         att_key = meta.get("attachment_object_key") or (body.context or {}).get("attachment_object_key")
-        if doc_key and att_key:
+        raw_idx = meta.get("paragraph_index")
+        if raw_idx is None:
+            raw_idx = (body.context or {}).get("paragraph_index")
+        if doc_key and att_key and raw_idx is not None and str(raw_idx) != "":
             doc_bytes = storage.download_bytes(doc_key)
             img_bytes = storage.download_bytes(att_key)
-            pidx = int(meta.get("paragraph_index") or (body.context or {}).get("paragraph_index") or 0)
+            pidx = int(raw_idx)
             new_bytes, ins_meta = document_agent.insert_image_in_document(
                 doc_bytes, img_bytes, paragraph_index=pidx,
             )
@@ -1864,6 +2037,11 @@ async def _finalize_chat_message_turn(
             result["answer"] = f"✅ 图片已插入文档（版本 v{ws['version']}）。"
             meta["workspace_updated"] = True
             meta["insert_meta"] = ins_meta
+        elif not att_key:
+            result["answer"] = "请先通过 📎 上传图片，再选中插入位置。"
+        else:
+            result["answer"] = _ANCHOR_MISSING
+            meta["anchor_missing"] = True
 
     # 工作区：局部修改
     if meta.get("needs_workspace_edit"):
@@ -1969,14 +2147,108 @@ async def _finalize_chat_message_turn(
     }
 
 
+_EXT_TYPE_LABELS = {
+    "pdf": "PDF",
+    "doc": "DOC",
+    "docx": "DOCX",
+    "txt": "TXT",
+    "png": "PNG",
+    "jpg": "JPG",
+    "jpeg": "JPG",
+    "webp": "WEBP",
+    "gif": "GIF",
+    "zip": "ZIP",
+    "tif": "TIFF",
+    "tiff": "TIFF",
+    "bmp": "BMP",
+}
+
+
+def _file_type_label(name: str) -> str:
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
+    if not ext:
+        return "文件"
+    return _EXT_TYPE_LABELS.get(ext, ext.upper()[:6])
+
+
+def sanitize_attachment_chips(raw) -> list[dict]:
+    """只保留展示用的名称/类型，不把本地路径写进消息 metadata。"""
+    if not isinstance(raw, list):
+        return []
+    chips: list[dict] = []
+    for item in raw[:24]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        kind = "folder" if str(item.get("kind") or "") == "folder" else "file"
+        type_label = str(item.get("type") or "").strip()[:32] or (
+            "文件夹" if kind == "folder" else _file_type_label(name)
+        )
+        chips.append({"name": name[:180], "kind": kind, "type": type_label})
+    return chips
+
+
+def prepare_chat_turn(body: ChatMessageCreate) -> tuple[str, dict, list[dict], list[dict]]:
+    from app.services.agent_capabilities import normalize_mentions
+
+    ctx = dict(body.context or {})
+    chips = sanitize_attachment_chips(ctx.pop("attachments", None))
+    mentions = normalize_mentions(ctx.get("mentions"))
+    if mentions:
+        ctx["mentions"] = mentions
+    else:
+        ctx.pop("mentions", None)
+    content = (body.content or "").strip()
+    return content, ctx, chips, mentions
+
+
+def _user_message_with_chips(
+    session_id: int,
+    content: str,
+    chips: list[dict],
+    mentions: list[dict] | None = None,
+) -> ChatMessage:
+    meta: dict = {}
+    if chips:
+        meta["attachments"] = chips
+    if mentions:
+        meta["mentions"] = mentions
+    kwargs = {"metadata_json": meta} if meta else {}
+    return ChatMessage(session_id=session_id, role="user", content=content, **kwargs)
+
+
+def _attachment_only_payload(db: Session, s: ChatSession, user_msg: ChatMessage) -> dict:
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(s)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": None,
+        "answer": "",
+        "source": "",
+        "matched_question": "",
+        "mode": "attachments",
+        "metadata": {},
+    }
+
+
 @router.post("/chat/sessions/{session_id}/messages")
 async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
     s = get_session_or_404(db, session_id)
-    content = (body.content or "").strip()
-    if not content:
+    content, ctx, chips, mentions = prepare_chat_turn(body)
+    if not content and not chips and not mentions:
         raise HTTPException(400, "消息不能为空")
+    body.context = ctx or None
 
-    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    user_msg = _user_message_with_chips(s.id, content, chips, mentions)
+    if not content:
+        db.add(user_msg)
+        return _attachment_only_payload(db, s, user_msg)
     db.add(user_msg)
     db.flush()
 
@@ -1996,7 +2268,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         history=history,
         faq_items=items,
         workspace=getattr(s, "workspace", None) or {},
-        context=body.context or {},
+        context=ctx,
         session=s,
     )
     return await _finalize_chat_message_turn(session_id, s, user_msg, content, body, result, db)
@@ -2005,12 +2277,25 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
 @router.post("/chat/sessions/{session_id}/messages/stream")
 async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
     s = get_session_or_404(db, session_id)
-    content = (body.content or "").strip()
-    if not content:
+    content, ctx, chips, mentions = prepare_chat_turn(body)
+    if not content and not chips and not mentions:
         raise HTTPException(400, "消息不能为空")
+    body.context = ctx or None
 
-    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    user_msg = _user_message_with_chips(s.id, content, chips, mentions)
     db.add(user_msg)
+    if not content:
+        payload = _attachment_only_payload(db, s, user_msg)
+
+        async def attachment_only_stream():
+            yield f"data: {json.dumps({'type': 'done', 'payload': payload}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            attachment_only_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     db.commit()
     user_msg_id = user_msg.id
     db_bind = db.get_bind()
@@ -2033,39 +2318,93 @@ async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db:
                 for f in faqs
             ]
             ws = getattr(s_live, "workspace", None) or {}
-            ctx = body.context or {}
 
-            result = await chat_assistant.process_chat_message(
-                content,
-                stream_db,
-                history=history,
-                faq_items=items,
-                workspace=ws,
-                context=ctx,
-                session=s_live,
-                stream=True,
-            )
-            stream_msgs = result.pop("stream_messages", None)
-            if stream_msgs:
-                pieces: list[str] = []
-                async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
-                    pieces.append(tok)
-                    yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
-                result["answer"] = "".join(pieces)
-            else:
-                result = await chat_assistant.process_chat_message(
-                    content,
-                    stream_db,
-                    history=history,
-                    faq_items=items,
-                    workspace=ws,
-                    context=ctx,
-                    session=s_live,
-                    stream=False,
-                )
-                ans = result.get("answer") or ""
-                if ans:
-                    yield f"data: {json.dumps({'type': 'token', 'text': ans}, ensure_ascii=False)}\n\n"
+            from app.services.agent_capabilities import interrupted_answer
+
+            pieces: list[str] = []
+            tool_events: list[dict] = []
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def on_token(text: str):
+                await queue.put(("token", text))
+
+            async def on_tool(item: dict):
+                await queue.put(("tool", item))
+
+            async def runner():
+                try:
+                    result = await chat_assistant.process_chat_message(
+                        content,
+                        stream_db,
+                        history=history,
+                        faq_items=items,
+                        workspace=ws,
+                        context=ctx,
+                        session=s_live,
+                        stream=True,
+                        on_token=on_token,
+                        on_tool=on_tool,
+                    )
+                    await queue.put(("result", result))
+                except Exception as exc:
+                    await queue.put(("exc", exc))
+
+            task = asyncio.create_task(runner())
+            result = None
+            failed = None
+            try:
+                while True:
+                    kind, payload = await queue.get()
+                    if kind == "token":
+                        pieces.append(payload)
+                        yield f"data: {json.dumps({'type': 'token', 'text': payload}, ensure_ascii=False)}\n\n"
+                    elif kind == "tool":
+                        tool_events.append(payload)
+                        yield f"data: {json.dumps({'type': 'tool', 'tool': payload.get('tool'), 'ok': payload.get('ok', True)}, ensure_ascii=False)}\n\n"
+                    elif kind == "exc":
+                        failed = payload
+                        break
+                    elif kind == "result":
+                        result = payload
+                        break
+                if failed is not None:
+                    reason = str(failed) or failed.__class__.__name__
+                    result = {
+                        "answer": interrupted_answer("".join(pieces), reason),
+                        "mode": "error",
+                        "metadata": {"stream_error": reason, "intent": "stream_error"},
+                    }
+                    yield f"data: {json.dumps({'type': 'error', 'message': reason}, ensure_ascii=False)}\n\n"
+                else:
+                    result = result or {}
+                    streamed = bool(pieces) or bool((result.get("metadata") or {}).get("tokens_streamed"))
+                    for item in (result.get("metadata") or {}).get("tool_trace") or []:
+                        if any(ev.get("tool") == item.get("tool") for ev in tool_events):
+                            continue
+                        yield f"data: {json.dumps({'type': 'tool', 'tool': item.get('tool'), 'ok': item.get('ok', True)}, ensure_ascii=False)}\n\n"
+                    stream_msgs = result.pop("stream_messages", None)
+                    if stream_msgs and not streamed:
+                        try:
+                            async for tok in ai_svc.chat_completion_stream(stream_msgs, db=stream_db):
+                                pieces.append(tok)
+                                yield f"data: {json.dumps({'type': 'token', 'text': tok}, ensure_ascii=False)}\n\n"
+                            result["answer"] = "".join(pieces)
+                        except Exception as exc:
+                            reason = str(exc) or exc.__class__.__name__
+                            result["answer"] = interrupted_answer("".join(pieces), reason)
+                            result["mode"] = "error"
+                            meta = dict(result.get("metadata") or {})
+                            meta["stream_error"] = reason
+                            result["metadata"] = meta
+                            yield f"data: {json.dumps({'type': 'error', 'message': reason}, ensure_ascii=False)}\n\n"
+                    elif not streamed:
+                        ans = result.get("answer") or ""
+                        if ans:
+                            pieces.append(ans)
+                            yield f"data: {json.dumps({'type': 'token', 'text': ans}, ensure_ascii=False)}\n\n"
+            finally:
+                if not task.done():
+                    task.cancel()
 
             payload = await _finalize_chat_message_turn(
                 session_id, s_live, user_live, content, body, result, stream_db,
@@ -2108,9 +2447,20 @@ class ChatSessionWorkspacePatch(BaseModel):
     project_id: int | None = None
 
 
-def _persist_assistant_turn(db: Session, s: ChatSession, user_content: str, result: dict):
+def _persist_assistant_turn(
+    db: Session,
+    s: ChatSession,
+    user_content: str,
+    result: dict,
+    user_metadata: dict | None = None,
+):
     meta = dict(result.get("metadata") or {})
-    user_msg = ChatMessage(session_id=s.id, role="user", content=user_content)
+    user_msg = ChatMessage(
+        session_id=s.id,
+        role="user",
+        content=user_content,
+        metadata_json=user_metadata or {},
+    )
     db.add(user_msg)
     db.flush()
     bot_msg = ChatMessage(
@@ -2401,7 +2751,10 @@ async def upload_chat_file(
         session_id=s.id,
         role="user",
         content=f"[上传文件] {fname}",
-        metadata_json={"attachment": {"filename": fname, "object_key": key, "size": len(data)}},
+        metadata_json={
+            "attachment": {"filename": fname, "object_key": key, "size": len(data)},
+            "attachments": [{"name": fname, "kind": "file", "type": _file_type_label(fname)}],
+        },
     )
     db.add(user_msg)
     bot_msg = ChatMessage(
@@ -2438,7 +2791,16 @@ async def post_chat_import_folder(
         raise HTTPException(400, "folder_path 不能为空")
     result = await agent_flows.start_qual_folder_import(db, s, folder)
     label = (body.label or "选择资质文件夹").strip()
-    user_msg, bot_msg = _persist_assistant_turn(db, s, f"[{label}] {folder}", result)
+    folder_name = Path(folder).name or label
+    user_msg, bot_msg = _persist_assistant_turn(
+        db,
+        s,
+        f"[{label}] {folder}",
+        result,
+        user_metadata={
+            "attachments": [{"name": folder_name[:180], "kind": "folder", "type": "文件夹"}],
+        },
+    )
     return {
         "session": session_to_dict(s),
         "user_message": message_to_dict(user_msg),
@@ -2531,7 +2893,18 @@ async def upload_chat_files_batch(
             "metadata": {"intent": "file_upload_batch", "staging_dir": str(staging), "files": saved_names},
         }
 
-    user_msg, bot_msg = _persist_assistant_turn(db, s, user_label, result)
+    user_msg, bot_msg = _persist_assistant_turn(
+        db,
+        s,
+        user_label,
+        result,
+        user_metadata={
+            "attachments": [
+                {"name": name[:180], "kind": "file", "type": _file_type_label(name)}
+                for name in saved_names[:24]
+            ],
+        },
+    )
     return {
         "session": session_to_dict(s),
         "user_message": message_to_dict(user_msg),

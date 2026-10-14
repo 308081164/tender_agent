@@ -1,5 +1,9 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { appendStreamToken, keepStreamedReply } from '../components/chat/agentChatRuntime'
+import { deliverChatMaterials } from '../components/chat/deliverChatMaterials'
+import { usePendingMaterials } from '../components/chat/usePendingMaterials'
+import { useChatMentions } from './useChatMentions'
 
 export function useChatSessions(showToast) {
   const [open, setOpen] = useState(false)
@@ -7,12 +11,18 @@ export function useChatSessions(showToast) {
   const [sessionId, setSessionId] = useState(null)
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [chatContext, setChatContext] = useState(null)
   const [boundProjectId, setBoundProjectId] = useState(null)
   const [workspace, setWorkspace] = useState({})
+  const [replyStreaming, setReplyStreaming] = useState(false)
+  const materials = usePendingMaterials()
+  const ensureSessionRef = useRef(null)
+  const ensureForMentions = useCallback(() => ensureSessionRef.current?.(), [])
+  const mentions = useChatMentions(sessionId, ensureForMentions)
 
   const refreshSessions = useCallback(async () => {
     const list = await api.listChatSessions()
@@ -25,6 +35,7 @@ export function useChatSessions(showToast) {
     setSessionId(data.id)
     setMessages(data.messages || [])
     setWorkspace(data.workspace || {})
+    materials.clear()
     setShowHistory(false)
     return data
   }, [])
@@ -36,6 +47,7 @@ export function useChatSessions(showToast) {
     await refreshSessions()
     return s.id
   }, [sessionId, refreshSessions])
+  ensureSessionRef.current = ensureSession
 
   const openDrawer = useCallback(async () => {
     setOpen(true)
@@ -60,6 +72,7 @@ export function useChatSessions(showToast) {
       setSessionId(s.id)
       setMessages([])
       setWorkspace({})
+      materials.clear()
       setShowHistory(false)
       await refreshSessions()
     } catch (e) {
@@ -98,59 +111,11 @@ export function useChatSessions(showToast) {
     }
   }, [actingCardId, loading, ensureSession, showToast])
 
-  const mergeUploadResponse = useCallback((res, optimisticId) => {
-    setMessages((m) => [
-      ...m.filter((x) => x.id !== optimisticId),
-      res.user_message,
-      res.assistant_message,
-    ])
-    if (res.session) {
-      setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
-    }
+  const rememberSession = useCallback((session) => {
+    if (!session) return
+    if (session.workspace) setWorkspace(session.workspace)
+    setSessions((list) => [session, ...list.filter((s) => s.id !== session.id)])
   }, [])
-
-  const uploadFiles = useCallback(async (files) => {
-    const list = Array.from(files || []).filter(Boolean)
-    if (!list.length || loading) return
-    const label =
-      list.length === 1
-        ? `[上传文件] ${list[0].name}`
-        : `[上传 ${list.length} 个文件] ${list.map((f) => f.name).slice(0, 3).join('、')}${list.length > 3 ? '…' : ''}`
-    const optimisticId = `tmp-file-${Date.now()}`
-    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: label }])
-    setLoading(true)
-    try {
-      const id = await ensureSession()
-      const res =
-        list.length === 1
-          ? await api.uploadChatFile(id, list[0])
-          : await api.uploadChatFilesBatch(id, list)
-      mergeUploadResponse(res, optimisticId)
-    } catch (e) {
-      showToast?.(e.message)
-      setMessages((m) => m.filter((x) => x.id !== optimisticId))
-    } finally {
-      setLoading(false)
-    }
-  }, [loading, ensureSession, mergeUploadResponse, showToast])
-
-  const importFolderPath = useCallback(async (folderPath, folderLabel) => {
-    if (!folderPath || loading) return
-    const optimisticId = `tmp-folder-${Date.now()}`
-    const userLine = `[${folderLabel || '选择文件夹'}] ${folderPath}`
-    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: userLine }])
-    setLoading(true)
-    try {
-      const id = await ensureSession()
-      const res = await api.importChatFolder(id, folderPath, folderLabel)
-      mergeUploadResponse(res, optimisticId)
-    } catch (e) {
-      showToast?.(e.message)
-      setMessages((m) => m.filter((x) => x.id !== optimisticId))
-    } finally {
-      setLoading(false)
-    }
-  }, [loading, ensureSession, mergeUploadResponse, showToast])
 
   const bindProjectSession = useCallback(async (projectId) => {
     if (!projectId) {
@@ -174,47 +139,86 @@ export function useChatSessions(showToast) {
   }, [refreshSessions, showToast])
 
   const askChat = useCallback(async () => {
+    if (loading) return
     const q = chatInput.trim()
-    if (!q || loading) return
+    const staged = materials.consume()
+    const sentMentions = mentions.mentions
+    if (!q && !staged.length && !sentMentions.length) return
+    const draft = chatInput
     setChatInput('')
     setLoading(true)
     const optimisticId = `tmp-${Date.now()}`
     const assistantId = `tmp-bot-${Date.now()}`
-    const optimistic = { id: optimisticId, role: 'user', content: q }
-    setMessages((m) => [...m, optimistic, { id: assistantId, role: 'assistant', content: '' }])
+    const optimistic = {
+      id: optimisticId,
+      role: 'user',
+      content: q,
+      metadata: {
+        ...(staged.length ? { attachments: staged.map(({ name, kind, type }) => ({ name, kind, type })) } : {}),
+        ...(sentMentions.length ? { mentions: sentMentions } : {}),
+      },
+    }
+    mentions.clearMentions()
+    setMessages((m) => [...m, optimistic])
+    let delivered = []
     try {
       const id = await ensureSession()
-      const ctx = chatContext || undefined
-      const res = await api.sendChatMessageStream(id, q, ctx, (tok) => {
-        setMessages((m) => m.map((x) => (
-          x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
-        )))
-      })
+      if (staged.length) {
+        const uploaded = await deliverChatMaterials(api, id, staged)
+        delivered = uploaded.messages
+        rememberSession(uploaded.session)
+        if (uploaded.workspace) setWorkspace(uploaded.workspace)
+      }
+      let textTurn = []
+      if (q || sentMentions.length) {
+        setReplyStreaming(true)
+        setMessages((m) => [
+          ...m.filter((x) => x.id !== optimisticId),
+          ...delivered,
+          { id: optimisticId, role: 'user', content: q, metadata: optimistic.metadata },
+          { id: assistantId, role: 'assistant', content: '' },
+        ])
+        const ctx = { ...(chatContext || {}) }
+        if (webSearch) ctx.web_search = true
+        if (sentMentions.length) ctx.mentions = sentMentions
+        const res = await api.sendChatMessageStream(id, q, ctx, (tok, event) => {
+          setMessages((m) => m.map((x) => (
+            x.id === assistantId ? appendStreamToken(x, tok, event) : x
+          )))
+        })
+        if (res.user_message) textTurn.push(res.user_message)
+        if (res.assistant_message) textTurn.push(res.assistant_message)
+        rememberSession(res.session)
+      }
       setMessages((m) => {
-        const withoutOptimistic = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
+        const base = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
+        const already = delivered[0]?.id && base.some((item) => item.id === delivered[0].id)
+        return [...(already ? base : [...base, ...delivered]), ...textTurn]
+      })
+    } catch (e) {
+      setMessages((m) => {
+        const partial = m.find((x) => x.id === assistantId)
+        const kept = keepStreamedReply(partial?.content, e.message)
+        const base = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
+        const already = delivered[0]?.id && base.some((item) => item.id === delivered[0].id)
         return [
-          ...withoutOptimistic,
-          res.user_message,
-          res.assistant_message,
+          ...(already ? base : [...base, ...delivered]),
+          optimistic,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: kept,
+            metadata: { ...(partial?.metadata || {}), stream_error: e.message },
+          },
         ]
       })
-      if (res.session) {
-        setWorkspace(res.session.workspace || {})
-        setSessions((list) => {
-          const rest = list.filter((s) => s.id !== res.session.id)
-          return [res.session, ...rest]
-        })
-      }
-    } catch (e) {
-      setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
-        optimistic,
-        { role: 'assistant', content: `提问失败：${e.message}` },
-      ])
+      if (!delivered.length) materials.restore(staged)
+      showToast?.(e.message)
     } finally {
+      setReplyStreaming(false)
       setLoading(false)
     }
-  }, [chatInput, loading, ensureSession, chatContext])
+  }, [chatInput, loading, materials, mentions, ensureSession, chatContext, webSearch, rememberSession, showToast])
 
   const patchWorkspaceDir = useCallback(async (dir) => {
     try {
@@ -237,6 +241,8 @@ export function useChatSessions(showToast) {
     messages,
     chatInput,
     setChatInput,
+    webSearch,
+    setWebSearch,
     loading,
     showHistory,
     setShowHistory,
@@ -246,13 +252,22 @@ export function useChatSessions(showToast) {
     refreshSessions,
     handleCardAction,
     actingCardId,
-    uploadFiles,
-    importFolderPath,
+    pendingMaterials: materials.items,
+    removePendingMaterial: materials.remove,
+    stageFiles: materials.addFiles,
+    stageFolderFiles: materials.addFolderFiles,
+    stageFolderPath: materials.addFolderPath,
+    replyStreaming,
     showToast,
     bindProjectSession,
     boundProjectId,
     chatContext,
     workspace,
     patchWorkspaceDir,
+    mentions: mentions.mentions,
+    mentionItems: mentions.mentionItems,
+    onMentionQuery: mentions.onMentionQuery,
+    pickMention: mentions.pickMention,
+    removeMention: mentions.removeMention,
   }
 }

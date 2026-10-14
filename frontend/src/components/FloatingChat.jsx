@@ -35,20 +35,31 @@ export default function FloatingChat({ chat, projectPath = '' }) {
         messages={chat.messages}
         chatInput={chat.chatInput}
         setChatInput={chat.setChatInput}
+        webSearch={chat.webSearch}
+        onToggleWebSearch={chat.setWebSearch}
         askChat={chat.askChat}
         loading={chat.loading}
+        replyStreaming={chat.replyStreaming}
+        pendingMaterials={chat.pendingMaterials}
+        onRemoveAttachment={chat.removePendingMaterial}
         showHistory={chat.showHistory}
         setShowHistory={chat.setShowHistory}
         onNewChat={chat.newChat}
         onSelectSession={chat.loadSession}
         onCardAction={chat.handleCardAction}
         actingCardId={chat.actingCardId}
-        onUploadFiles={chat.uploadFiles}
-        onImportFolderPath={chat.importFolderPath}
+        onUploadFiles={chat.stageFiles}
+        onPickFolderFiles={chat.stageFolderFiles}
+        onImportFolderPath={chat.stageFolderPath}
         showToast={chat.showToast}
         boundProjectId={chat.boundProjectId}
         workspace={chat.workspace}
         onWorkspaceDirChange={chat.patchWorkspaceDir}
+        mentions={chat.mentions}
+        mentionItems={chat.mentionItems}
+        onMentionQuery={chat.onMentionQuery}
+        onPickMention={chat.pickMention}
+        onRemoveMention={chat.removeMention}
       />
     </>
   )

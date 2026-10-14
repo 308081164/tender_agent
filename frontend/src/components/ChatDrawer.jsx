@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
 import { formatTime } from '../utils/format'
-import ChatMessageBubble from './chat/ChatMessageBubble'
+import ChatTranscript from './chat/ChatTranscript'
 import ChatAttachmentControls from './chat/ChatAttachmentControls'
 import ChatComposer from './chat/ChatComposer'
 import ComposerContextBar from './chat/ComposerContextBar'
@@ -15,6 +15,8 @@ export default function ChatDrawer({
   messages,
   chatInput,
   setChatInput,
+  webSearch = false,
+  onToggleWebSearch,
   askChat,
   loading,
   showHistory,
@@ -24,11 +26,20 @@ export default function ChatDrawer({
   onCardAction,
   actingCardId,
   onUploadFiles,
+  onPickFolderFiles,
   onImportFolderPath,
+  pendingMaterials = [],
+  onRemoveAttachment,
+  replyStreaming = false,
   showToast,
   boundProjectId = null,
   workspace = {},
   onWorkspaceDirChange,
+  mentions = [],
+  mentionItems = [],
+  onMentionQuery,
+  onPickMention,
+  onRemoveMention,
 }) {
   const workspaceDir = (workspace?.workspace_dir || '').trim()
   if (!open) return null
@@ -81,22 +92,20 @@ export default function ChatDrawer({
         ) : (
           <>
             <div className="chat-drawer-messages">
-              {messages.length === 0 && (
-                <div className="msg bot">
-                  {boundProjectId
-                    ? '你好，我是标书 Copilot，已绑定当前项目。可问模板、缺项与编写要求；支持 📎 上传招标文件与 📁 选择资质文件夹。'
-                    : '你好，我是标书智能体助手。可询问资质、业绩、人员，或打开项目页后在此继续 Copilot 对话。'}
-                </div>
-              )}
-              {messages.map((m, i) => (
-                <ChatMessageBubble
-                  key={m.id || i}
-                  message={m}
-                  onCardAction={onCardAction}
-                  actingCardId={actingCardId}
-                />
-              ))}
-              {loading && <div className="msg bot">思考中…</div>}
+              <ChatTranscript
+                messages={messages}
+                loading={loading}
+                streaming={replyStreaming}
+                onCardAction={onCardAction}
+                actingCardId={actingCardId}
+                empty={(
+                  <p className="chat-empty-intro">
+                    {boundProjectId
+                      ? '你好，我是标书 Copilot，已绑定当前项目。可问模板、缺项与编写要求；附件会先留在输入框，发送后显示为资料芯片。'
+                      : '你好，我是标书智能体助手。可询问资质、业绩、人员，或打开项目页后在此继续 Copilot 对话。'}
+                  </p>
+                )}
+              />
             </div>
             <ChatComposer
               className="chat-drawer-input"
@@ -104,8 +113,16 @@ export default function ChatDrawer({
               onChange={setChatInput}
               onSend={askChat}
               loading={loading}
-              loadingHint={loading ? '思考中…' : null}
-              placeholder="可粘贴文件夹路径并说明「读取录入」…"
+              attachments={pendingMaterials}
+              onRemoveAttachment={onRemoveAttachment}
+              mentions={mentions}
+              mentionItems={mentionItems}
+              onMentionQuery={onMentionQuery}
+              onPickMention={onPickMention}
+              onRemoveMention={onRemoveMention}
+              placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '可粘贴文件夹路径并说明「读取录入」…'}
+              webSearch={webSearch}
+              onToggleWebSearch={onToggleWebSearch}
               contextBar={(
                 <ComposerContextBar
                   workspaceDir={workspaceDir}
@@ -120,6 +137,7 @@ export default function ChatDrawer({
                   disabled={loading}
                   showToast={showToast}
                   onUploadFiles={onUploadFiles}
+                  onPickFolderFiles={onPickFolderFiles}
                   onImportFolderPath={onImportFolderPath}
                   onImportFolderZip={(file) => onUploadFiles?.([file])}
                 />

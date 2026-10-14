@@ -26,6 +26,7 @@ INTENT_LABELS = [
     "edit_fragment",
     "export_project",
     "search_info",
+    "web_search",
     "general",
 ]
 
@@ -45,6 +46,11 @@ def _keyword_route(text: str) -> tuple[str, dict[str, Any], float]:
 
     if any(k in q for k in _TEACH_KEYWORDS):
         return "teach", {}, 0.92
+
+    from app.services.web_search import extract_search_query, text_requests_web_search
+
+    if text_requests_web_search(q):
+        return "web_search", {"query": extract_search_query(q)}, 0.96
 
     if re.search(r"(全称|公司名称|企业名称|叫什么)", q):
         return "query_company", {}, 0.9
@@ -112,7 +118,9 @@ async def _llm_route(
         "- 上传文件后要生成标书 → generate_document\n"
         "- 上传文件后要建模板 → create_template\n"
         "- 全文替换 → bulk_replace，params 含 old_text/new_text\n"
-        "- 企业资质业绩 → search_info\n"
+        "- 联网、网上查、搜索一下、查一下最新、公开资料、中标/招标公告 → web_search，"
+        "不要当成企业 FAQ\n"
+        "- 企业资质业绩（未要求联网） → search_info\n"
         "- 用户提供本机文件夹绝对路径并要求读取/录入/导入/落库 → import_qual_folder，"
         "params.folder_path 为路径（桌面版后端可读盘，勿回答无法访问本地目录）\n"
         "只返回 JSON。"
@@ -179,6 +187,9 @@ async def _synthesize(
     tool_payload: dict[str, Any],
     history: list[dict],
     db: Session | None,
+    *,
+    workspace: dict | None = None,
+    context: dict | None = None,
 ) -> str:
     hist = []
     for m in (history or [])[-8:]:
@@ -192,6 +203,11 @@ async def _synthesize(
         "保持多轮对话连贯；数字与名称必须与系统数据一致，不可编造。"
         "若结果为空，如实说明并给出下一步建议。可使用 Markdown 列表。"
     )
+    from app.services.agent_capabilities import project_memory_text
+
+    memory = project_memory_text(db, workspace, context)
+    if memory:
+        system += "\n\n" + memory
     user = (
         f"用户问题：{user_text}\n\n"
         f"意图：{intent}\n\n"
@@ -207,7 +223,14 @@ async def _synthesize(
     return tool_payload.get("fallback_answer") or "已查询系统数据，请查看上方操作按钮。"
 
 
-async def _handle_teach(text: str, db: Session | None, history: list[dict]) -> dict[str, Any]:
+async def _handle_teach(
+    text: str,
+    db: Session | None,
+    history: list[dict],
+    *,
+    workspace: dict | None = None,
+    context: dict | None = None,
+) -> dict[str, Any]:
     guide = {
         "topics": [
             {"title": "新建标书", "steps": ["首页 → 新建标书", "选择模板或历史标书", "按六步向导填写并导出"]},
@@ -217,7 +240,9 @@ async def _handle_teach(text: str, db: Session | None, history: list[dict]) -> d
         ],
         "user_question": text,
     }
-    answer = await _synthesize(text, "teach", guide, history, db)
+    answer = await _synthesize(
+        text, "teach", guide, history, db, workspace=workspace, context=context,
+    )
     return {
         "answer": answer,
         "mode": "teach",
@@ -275,7 +300,7 @@ async def process_with_semantic_router(
         return await _handle_meta_question()
 
     if intent == "teach" and confidence >= 0.5:
-        return await _handle_teach(text, db, hist)
+        return await _handle_teach(text, db, hist, workspace=ws, context=context)
 
     if intent == "query_company" and confidence >= 0.5:
         if db is None:
@@ -285,7 +310,7 @@ async def process_with_semantic_router(
             data["fallback_answer"] = "系统中尚未录入企业档案，请前往「数据管理 → 企业档案」填写。"
         else:
             data["fallback_answer"] = f"公司全称：{data.get('full_name') or '未填写'}"
-        answer = await _synthesize(text, intent, data, hist, db)
+        answer = await _synthesize(text, intent, data, hist, db, workspace=ws, context=context)
         return {
             "answer": answer,
             "mode": "query",
@@ -303,7 +328,7 @@ async def process_with_semantic_router(
         data["fallback_answer"] = (
             f"当前共有 {data['total']} 个标书模板/脚本，其中 {data['enabled']} 个已启用。"
         )
-        answer = await _synthesize(text, intent, data, hist, db)
+        answer = await _synthesize(text, intent, data, hist, db, workspace=ws, context=context)
         return {
             "answer": answer,
             "mode": "query",
@@ -327,7 +352,7 @@ async def process_with_semantic_router(
                 else "系统内暂无模板，请前往「数据管理 → 模板」上传或工程化创建。"
             ),
         }
-        answer = await _synthesize(text, intent, data, hist, db)
+        answer = await _synthesize(text, intent, data, hist, db, workspace=ws, context=context)
         actions = [{"type": "link", "label": "模板管理", "url": "/admin/templates", "primary": True}]
         for i, t in enumerate(templates[:3]):
             actions.append({
@@ -348,7 +373,7 @@ async def process_with_semantic_router(
         projects = agent_query_tools.list_recent_projects(db, days=days)
         data = {"days": days, "count": len(projects), "projects": projects}
         data["fallback_answer"] = f"最近 {days} 天共创建 {len(projects)} 个标书项目。"
-        answer = await _synthesize(text, intent, data, hist, db)
+        answer = await _synthesize(text, intent, data, hist, db, workspace=ws, context=context)
         return {
             "answer": answer,
             "mode": "query",
@@ -367,7 +392,7 @@ async def process_with_semantic_router(
         data = {"query": query, "count": len(projects), "projects": projects}
         if not projects:
             data["fallback_answer"] = f"未找到与「{query}」匹配的标书项目，可尝试更短的关键词。"
-        answer = await _synthesize(text, intent, data, hist, db)
+        answer = await _synthesize(text, intent, data, hist, db, workspace=ws, context=context)
         return {
             "answer": answer,
             "mode": "query",
@@ -388,7 +413,7 @@ async def process_with_semantic_router(
             {"type": "link", "label": f"模板：{t['name'][:18]}", "url": "/admin/templates", "primary": i == 0}
             for i, t in enumerate(templates[:5])
         ]
-        answer = await _synthesize(text, intent, data, hist, db)
+        answer = await _synthesize(text, intent, data, hist, db, workspace=ws, context=context)
         return {
             "answer": answer,
             "mode": "query",
@@ -469,6 +494,13 @@ async def process_with_semantic_router(
     if intent == "edit_fragment" and confidence >= 0.55:
         from app.services.chat_assistant import _handle_edit_fragment
         return await _handle_edit_fragment(text, context)
+
+    if intent == "web_search" and confidence >= 0.55:
+        from app.services.web_search import run_web_research
+
+        return await run_web_research(
+            text, db, hist, workspace=ws, context=context,
+        )
 
     if intent == "search_info" and confidence >= 0.55:
         from app.services.chat_assistant import _handle_search_info

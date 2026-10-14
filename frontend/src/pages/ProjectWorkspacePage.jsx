@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import BackChevron from '../components/chat/BackChevron'
-import ChatMessageBubble from '../components/chat/ChatMessageBubble'
+import ChatTranscript from '../components/chat/ChatTranscript'
 import ProjectContextBar from '../components/project/ProjectContextBar'
 import FieldChecklistPanel from '../components/project/FieldChecklistPanel'
 import ProjectDocumentPane from '../components/project/ProjectDocumentPane'
@@ -12,6 +12,11 @@ import ChatComposer from '../components/chat/ChatComposer'
 import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
 import ComposerContextBar from '../components/chat/ComposerContextBar'
 import { useProjectContext } from '../hooks/useProjectContext'
+import { usePendingMaterials } from '../components/chat/usePendingMaterials'
+import { chipPayload } from '../components/chat/chatTranscriptModel'
+import { appendStreamToken, buildAnchorPayload, keepStreamedReply } from '../components/chat/agentChatRuntime'
+import { useChatMentions } from '../hooks/useChatMentions'
+import WorkspaceReviewPanel from '../components/project/WorkspaceReviewPanel'
 
 export default function ProjectWorkspacePage() {
   const { id } = useParams()
@@ -24,7 +29,9 @@ export default function ProjectWorkspacePage() {
   const [workspace, setWorkspace] = useState({})
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [replyStreaming, setReplyStreaming] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [checklistOpen, setChecklistOpen] = useState(true)
   const [deliveryOpen, setDeliveryOpen] = useState(false)
@@ -36,6 +43,20 @@ export default function ProjectWorkspacePage() {
   const [lastImageAttachmentKey, setLastImageAttachmentKey] = useState(null)
   const [referenceOpen, setReferenceOpen] = useState(false)
   const messagesRef = useRef(null)
+  const materials = usePendingMaterials()
+  const ensureRef = useRef(null)
+  const ensureForMentions = useCallback(() => ensureRef.current?.(), [])
+  const mentions = useChatMentions(sessionId, ensureForMentions)
+  const ensureSession = async () => {
+    if (sessionId) return sessionId
+    const opened = await api.openProjectWorkspace(projectId, true)
+    setSessionId(opened.session.id)
+    setWorkspace(opened.session.workspace || {})
+    return opened.session.id
+  }
+  ensureRef.current = ensureSession
+  const [anchor, setAnchor] = useState(null)
+  const [memos, setMemos] = useState([])
 
   const boundProjectTitle =
     project?.fields?.project_name || project?.title || (projectId ? `项目 #${projectId}` : '')
@@ -66,6 +87,8 @@ export default function ProjectWorkspacePage() {
           if (!hasOpening) msgs = [...msgs, opened.assistant_message]
         }
         setMessages(msgs)
+        const memoRes = await api.listProjectMemos(projectId).catch(() => ({ memos: [] }))
+        setMemos(memoRes.memos || [])
       } catch (e) {
         showToast(e.message)
       }
@@ -104,42 +127,133 @@ export default function ProjectWorkspacePage() {
     }
   }
 
-  const send = async (text) => {
+  const uploadProjectFiles = async (files) => {
+    let imageKey = lastImageAttachmentKey
+    for (const file of files) {
+      const res = await api.uploadProjectAttachment(projectId, file)
+      if (/\.(png|jpe?g|gif|webp)$/i.test(file.name) && res.attachment?.object_key) {
+        imageKey = res.attachment.object_key
+      }
+      if (res.suggested_field_patch?.length) {
+        const safe = res.suggested_field_patch.filter((x) => x.auto_apply)
+        if (safe.length) {
+          await api.applyAttachmentPatch(projectId, res.attachment.id, safe.map((x) => x.key))
+        }
+      }
+    }
+    if (imageKey) setLastImageAttachmentKey(imageKey)
+    return imageKey
+  }
+
+  const send = async (text, { withMaterials = false } = {}) => {
+    if (loading || !sessionId) return
+    const staged = withMaterials ? materials.consume() : []
     const q = (text ?? input).trim()
-    if (!q || loading || !sessionId) return
+    const sentMentions = mentions.mentions
+    if (!q && !staged.length && !sentMentions.length) return
     setInput('')
     setLoading(true)
+    const inlineItems = staged.filter((item) => !item.path)
+    const pathFolders = staged.filter((item) => item.kind === 'folder' && item.path)
+    const inlineChips = chipPayload(inlineItems)
     const optimisticId = `tmp-${Date.now()}`
     const assistantId = `tmp-bot-${Date.now()}`
+    const streamReply = Boolean(q || sentMentions.length)
+    if (streamReply) setReplyStreaming(true)
+    const optimisticUser = {
+      id: optimisticId,
+      role: 'user',
+      content: q,
+      metadata: {
+        ...(inlineChips.length ? { attachments: inlineChips } : {}),
+        ...(sentMentions.length ? { mentions: sentMentions } : {}),
+      },
+    }
+    mentions.clearMentions()
     setMessages((m) => [
       ...m,
-      { id: optimisticId, role: 'user', content: q },
-      { id: assistantId, role: 'assistant', content: '' },
+      optimisticUser,
+      ...(streamReply ? [{ id: assistantId, role: 'assistant', content: '' }] : []),
     ])
+    let progressed = false
+    let folderMessages = []
     try {
-      const ctx = { project_id: projectId, guided_intake: guidedIntake }
-      if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
-      if (lastImageAttachmentKey) ctx.attachment_object_key = lastImageAttachmentKey
-      const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok) => {
-        setMessages((m) => m.map((x) => (
-          x.id === assistantId ? { ...x, content: (x.content || '') + tok } : x
-        )))
-      })
+      const files = []
+      for (const item of inlineItems) {
+        if (item.files?.length) files.push(...item.files)
+        else if (item.file) files.push(item.file)
+      }
+      let imageKey = lastImageAttachmentKey
+      if (files.length) {
+        imageKey = await uploadProjectFiles(files)
+        progressed = true
+        showToast(files.length === 1 ? `已上传：${files[0].name}` : `已上传 ${files.length} 个文件`)
+        bumpPreview()
+        await refreshContext()
+      }
+      for (const folder of pathFolders) {
+        const imported = await api.importChatFolder(sessionId, folder.path, folder.label || '选择资质文件夹')
+        progressed = true
+        if (imported.user_message) folderMessages.push(imported.user_message)
+        if (imported.assistant_message) folderMessages.push(imported.assistant_message)
+      }
+      let textTurn = []
+      if (q || inlineChips.length || sentMentions.length) {
+        const ctx = {
+          project_id: projectId,
+          guided_intake: guidedIntake,
+          ...buildAnchorPayload(anchor),
+        }
+        if (webSearch) ctx.web_search = true
+        if (referenceText.trim()) ctx.reference_snippets = [referenceText.trim()]
+        if (imageKey) ctx.attachment_object_key = imageKey
+        if (inlineChips.length) ctx.attachments = inlineChips
+        if (sentMentions.length) ctx.mentions = sentMentions
+        const res = await api.sendChatMessageStream(sessionId, q, ctx, (tok, event) => {
+          setMessages((m) => m.map((x) => (
+            x.id === assistantId ? appendStreamToken(x, tok, event) : x
+          )))
+        })
+        if (res.user_message) textTurn.push(res.user_message)
+        if (res.assistant_message) textTurn.push(res.assistant_message)
+        if (res.session) setWorkspace(res.session.workspace || {})
+        if (res.metadata?.project_context || res.metadata?.intent === 'project_memo') {
+          await refreshContext()
+          const memoRes = await api.listProjectMemos(projectId).catch(() => ({ memos: [] }))
+          setMemos(memoRes.memos || [])
+        }
+        if (res.metadata?.highlight_texts) setReviewHighlights(res.metadata.highlight_texts)
+        if (res.metadata?.export_result || res.metadata?.export_flow === 'done') {
+          const p = await api.getProject(projectId)
+          setProject(p)
+        }
+        bumpPreview()
+      }
       setMessages((m) => [
         ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
-        res.user_message,
-        res.assistant_message,
+        ...folderMessages,
+        ...textTurn,
       ])
-      if (res.session) setWorkspace(res.session.workspace || {})
-      if (res.metadata?.project_context) await refreshContext()
-      if (res.metadata?.export_result || res.metadata?.export_flow === 'done') {
-        const p = await api.getProject(projectId)
-        setProject(p)
-      }
-      bumpPreview()
     } catch (e) {
+      setMessages((m) => {
+        const partial = m.find((x) => x.id === assistantId)
+        const kept = keepStreamedReply(partial?.content, e.message)
+        return [
+          ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
+          ...folderMessages,
+          optimisticUser,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: kept,
+            metadata: { ...(partial?.metadata || {}), stream_error: e.message },
+          },
+        ]
+      })
+      if (!progressed) materials.restore(staged)
       showToast(e.message)
     } finally {
+      setReplyStreaming(false)
       setLoading(false)
     }
   }
@@ -181,46 +295,6 @@ export default function ProjectWorkspacePage() {
       showToast('已确认敏感字段')
     } catch (e) {
       showToast(e.message)
-    }
-  }
-
-  const uploadProjectFiles = async (files) => {
-    const list = Array.from(files || []).filter(Boolean)
-    if (!list.length || loading) return
-    setLoading(true)
-    try {
-      for (const file of list) {
-        const res = await api.uploadProjectAttachment(projectId, file)
-        if (/\.(png|jpe?g|gif|webp)$/i.test(file.name) && res.attachment?.object_key) {
-          setLastImageAttachmentKey(res.attachment.object_key)
-        }
-        if (res.suggested_field_patch?.length) {
-          const safe = res.suggested_field_patch.filter((x) => x.auto_apply)
-          if (safe.length) {
-            await api.applyAttachmentPatch(projectId, res.attachment.id, safe.map((x) => x.key))
-          }
-        }
-      }
-      showToast(list.length === 1 ? `已上传：${list[0].name}` : `已上传 ${list.length} 个文件`)
-      bumpPreview()
-      await refreshContext()
-    } catch (e) {
-      showToast(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const importFolderPath = async (folderPath, folderLabel) => {
-    if (!folderPath || loading || !sessionId) return
-    setLoading(true)
-    try {
-      await api.importChatFolder(sessionId, folderPath, folderLabel)
-      showToast('文件夹已导入会话，可在对话中继续处理')
-    } catch (e) {
-      showToast(e.message)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -266,6 +340,22 @@ export default function ProjectWorkspacePage() {
             onPreviewError={(msg) => showToast(msg || '预览失败')}
             onFieldsSaved={refreshContext}
             onAgentFollowup={(msg) => setMessages((m) => [...m, msg])}
+            onAnchor={setAnchor}
+          />
+          <WorkspaceReviewPanel
+            projectId={projectId}
+            onReviewComplete={() => bumpPreview()}
+            onHighlightTexts={setReviewHighlights}
+            showToast={showToast}
+            onFixed={(result) => {
+              setReviewHighlights(result.highlight_texts || [])
+              setMessages((m) => [...m, {
+                role: 'assistant',
+                content: result.answer || '已复审这一条。',
+                metadata: { tool_trace: [{ tool: 'fix_review_issue', ok: !!result.ok }], highlight_texts: result.highlight_texts || [] },
+              }])
+              bumpPreview()
+            }}
           />
         </section>
 
@@ -277,39 +367,67 @@ export default function ProjectWorkspacePage() {
               <input type="checkbox" checked={guidedIntake} onChange={(e) => setGuidedIntake(e.target.checked)} />
               引导补全
             </label>
+            {memos.length ? (
+              <ul className="project-memo-list">
+                {memos.map((memo) => (
+                  <li key={memo.id}>
+                    <span>{memo.text}</span>
+                    <button
+                      type="button"
+                      className="ghost tiny"
+                      onClick={async () => {
+                        try {
+                          const res = await api.deleteProjectMemo(projectId, memo.id)
+                          setMemos(res.memos || [])
+                        } catch (err) {
+                          showToast(err.message)
+                        }
+                      }}
+                    >
+                      删除
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
           <div className="chat-messages-area compact" ref={messagesRef}>
-            {messages.length === 0 && !loading ? (
-              <div className="chat-empty compact">
-                <p className="muted chat-empty-hint">
-                  可修改字段、上传材料解析、对话中说「请帮我导出标书」完成审查与导出。
-                </p>
-                <div className="chat-prompt-chips">
-                  {workspacePrompts.map((p) => (
-                    <button key={p} type="button" className="chip" onClick={() => send(p)}>{p}</button>
-                  ))}
+            <ChatTranscript
+              messages={messages}
+              loading={loading}
+              streaming={replyStreaming}
+              onCardAction={handleCardAction}
+              actingCardId={actingCardId}
+              empty={(
+                <div className="chat-empty compact">
+                  <p className="muted chat-empty-hint">
+                    可修改字段、附上材料后再发送。资料会显示为芯片，对话中说「请帮我导出标书」完成审查与导出。
+                  </p>
+                  <div className="chat-prompt-chips">
+                    {workspacePrompts.map((p) => (
+                      <button key={p} type="button" className="chip" onClick={() => send(p)}>{p}</button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              messages.map((m, i) => (
-                <ChatMessageBubble
-                  key={m.id || i}
-                  message={m}
-                  onCardAction={handleCardAction}
-                  actingCardId={actingCardId}
-                />
-              ))
-            )}
-            {loading ? <div className="chat-msg bot">思考中…</div> : null}
+              )}
+            />
           </div>
           <ChatComposer
             compact
             value={input}
             onChange={setInput}
-            onSend={() => send()}
+            onSend={() => send(undefined, { withMaterials: true })}
             loading={loading}
-            loadingHint={loading ? '思考中…' : null}
-            placeholder="修改字段、提问、导出标书…"
+            attachments={materials.items}
+            onRemoveAttachment={materials.remove}
+            mentions={mentions.mentions}
+            onRemoveMention={mentions.removeMention}
+            mentionItems={mentions.mentionItems}
+            onMentionQuery={mentions.onMentionQuery}
+            onPickMention={mentions.pickMention}
+            placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '修改字段、提问、导出标书…'}
+            webSearch={webSearch}
+            onToggleWebSearch={setWebSearch}
             contextBar={(
               <ComposerContextBar
                 workspaceDir={workspaceDir}
@@ -351,13 +469,35 @@ export default function ProjectWorkspacePage() {
                 >
                   参照
                 </button>
+                <label className="ghost tiny tender-upload">
+                  招标文件
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx,application/pdf"
+                    hidden
+                    disabled={loading}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0]
+                      e.target.value = ''
+                      if (!file) return
+                      try {
+                        await api.uploadTenderFile(projectId, file)
+                        await refreshContext()
+                        showToast('已解析招标文件')
+                      } catch (err) {
+                        showToast(err.message)
+                      }
+                    }}
+                  />
+                </label>
                 <ChatAttachmentControls
                   compact
                   disabled={loading}
                   showToast={showToast}
-                  onUploadFiles={uploadProjectFiles}
-                  onImportFolderPath={importFolderPath}
-                  onImportFolderZip={(file) => uploadProjectFiles([file])}
+                  onUploadFiles={materials.addFiles}
+                  onPickFolderFiles={materials.addFolderFiles}
+                  onImportFolderPath={materials.addFolderPath}
+                  onImportFolderZip={materials.addFiles}
                 />
               </>
             )}

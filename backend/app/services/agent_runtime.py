@@ -92,6 +92,17 @@ def build_context_system_block(
         if miss:
             names = [m.get("name") or m.get("key") for m in miss[:8]]
             parts.append("优先待填字段：" + "、".join(str(n) for n in names if n))
+        tender_block = str(ctx_pack.get("tender_prompt") or "").strip()
+        if tender_block:
+            parts.append(tender_block)
+        memo_block = str(ctx_pack.get("memo_prompt") or "").strip()
+        if memo_block:
+            parts.append(memo_block)
+    from app.services.agent_capabilities import mention_prompt_block
+
+    mentioned = mention_prompt_block(ctx.get("mentions"))
+    if mentioned:
+        parts.append(mentioned)
     return "\n\n".join(parts)
 
 
@@ -168,8 +179,9 @@ def build_general_messages(
         )
 
     system = (
-        "你是标书智能体 Copilot，兼具企业投标问答与标书编写协助。"
+        "你是标书智能体 Copilot，兼具企业投标问答、标书编写协助和公开资料检索。"
         "请自然、主动地回答问题，结合项目上下文给出可执行建议。"
+        "当用户要求联网、网上查、搜索一下或查公开资料时，调用 web_search，只引用工具返回的标题和 URL，不要编造链接。"
         "当用户提供本机文件夹绝对路径并要求导入资质时，引导使用 📁 选择文件夹。"
         "不要编造无法核实的企业事实。"
     )

@@ -149,29 +149,71 @@ async def edit_document_fragment(
     if not revised:
         raise ValueError("AI 未返回有效修订内容")
 
-    if selected_text and selected_text in (context_text or selected_text):
-        new_bytes = word.replace_text_snippet(docx_bytes, selected_text, revised)
-        mode = "snippet"
-    elif paragraph_index is not None:
-        new_bytes = word.replace_paragraph_text(docx_bytes, paragraph_index, revised)
-        mode = "paragraph"
-    elif context_text:
-        new_bytes = word.replace_text_snippet(docx_bytes, context_text, revised)
-        mode = "snippet"
+    from app.services.docx_ooxml import aspose_available, replace_text
+
+    if aspose_available():
+        if selected_text and selected_text in (context_text or selected_text):
+            new_bytes = word.replace_text_snippet(docx_bytes, selected_text, revised)
+            mode = "snippet"
+        elif paragraph_index is not None:
+            new_bytes = word.replace_paragraph_text(docx_bytes, paragraph_index, revised)
+            mode = "paragraph"
+        elif context_text:
+            new_bytes = word.replace_text_snippet(docx_bytes, context_text, revised)
+            mode = "snippet"
+        else:
+            raise ValueError("请提供选中文本或段落索引")
     else:
-        raise ValueError("请提供选中文本或段落索引")
+        if selected_text:
+            new_bytes = replace_text(docx_bytes, selected_text, revised, paragraph_index=paragraph_index)
+            mode = "snippet"
+        elif paragraph_index is not None:
+            new_bytes = replace_text(docx_bytes, "", revised, paragraph_index=paragraph_index)
+            mode = "paragraph"
+        elif context_text:
+            new_bytes = replace_text(docx_bytes, context_text, revised)
+            mode = "snippet"
+        else:
+            raise ValueError("请提供选中文本或段落索引")
 
     return new_bytes, revised, {"mode": mode, "paragraph_index": paragraph_index}
+
+
+async def revise_plain_text(
+    original: str,
+    instruction: str,
+    *,
+    db: Session | None = None,
+    memory: str = "",
+) -> str:
+    """按指令改写纯文本。备忘必须进入这条提示。"""
+    prompt = (
+        "你是标书编辑助手。根据修改指令输出修订后的全文。\n"
+        "只输出正文，不要解释。\n\n"
+        f"{memory}\n\n原文：\n{original}\n\n修改指令：{instruction}"
+    )
+    revised = await ai.chat_completion([
+        {"role": "system", "content": "你是标书正文编辑助手。必须遵守项目备忘。"},
+        {"role": "user", "content": prompt},
+    ], db=db)
+    return (revised or original).strip()
 
 
 def insert_table_in_document(
     docx_bytes: bytes,
     *,
-    paragraph_index: int = 0,
+    paragraph_index: int | None = None,
     rows: int = 3,
     cols: int = 3,
 ) -> tuple[bytes, dict[str, Any]]:
-    new_bytes = word.insert_table_at_paragraph(docx_bytes, paragraph_index, rows=rows, cols=cols)
+    if paragraph_index is None:
+        raise ValueError("请先选中位置")
+    from app.services.docx_ooxml import aspose_available, insert_table
+
+    if aspose_available():
+        new_bytes = word.insert_table_at_paragraph(docx_bytes, paragraph_index, rows=rows, cols=cols)
+    else:
+        new_bytes = insert_table(docx_bytes, paragraph_index, rows=rows, cols=cols)
     return new_bytes, {"mode": "insert_table", "paragraph_index": paragraph_index, "rows": rows, "cols": cols}
 
 
@@ -179,7 +221,14 @@ def insert_image_in_document(
     docx_bytes: bytes,
     image_bytes: bytes,
     *,
-    paragraph_index: int = 0,
+    paragraph_index: int | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
-    new_bytes = word.insert_image_at_paragraph(docx_bytes, paragraph_index, image_bytes)
+    if paragraph_index is None:
+        raise ValueError("请先选中位置")
+    from app.services.docx_ooxml import aspose_available, insert_image
+
+    if aspose_available():
+        new_bytes = word.insert_image_at_paragraph(docx_bytes, paragraph_index, image_bytes)
+    else:
+        new_bytes = insert_image(docx_bytes, paragraph_index, image_bytes)
     return new_bytes, {"mode": "insert_image", "paragraph_index": paragraph_index}

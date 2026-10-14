@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import BackChevron from '../components/chat/BackChevron'
-import ChatMessageBubble from '../components/chat/ChatMessageBubble'
+import ChatTranscript from '../components/chat/ChatTranscript'
 import ChatSessionSidebar from '../components/chat/ChatSessionSidebar'
 import DocumentWorkspace from '../components/chat/DocumentWorkspace'
 import ChatAttachmentControls from '../components/chat/ChatAttachmentControls'
@@ -13,6 +13,10 @@ import DocWorkspaceSidebarToggle from '../components/chat/DocWorkspaceSidebarTog
 import WorkspaceTreeSlidePanel from '../components/chat/WorkspaceTreeSlidePanel'
 import { useDocWorkspaceTreeOpen } from '../hooks/useDocWorkspaceTreeOpen'
 import { useWorkspaceFileSelection } from '../hooks/useWorkspaceFileSelection'
+import { usePendingMaterials } from '../components/chat/usePendingMaterials'
+import { deliverChatMaterials } from '../components/chat/deliverChatMaterials'
+import { appendStreamToken, buildAnchorPayload, keepStreamedReply } from '../components/chat/agentChatRuntime'
+import { useChatMentions } from '../hooks/useChatMentions'
 
 export default function ChatPage() {
   const { showToast } = useApp()
@@ -22,15 +26,28 @@ export default function ChatPage() {
   const [workspace, setWorkspace] = useState({})
   const [paragraphs, setParagraphs] = useState([])
   const [input, setInput] = useState('')
+  const [webSearch, setWebSearch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [features, setFeatures] = useState({ feature_cards: [], suggested_prompts: [] })
   const [selectedText, setSelectedText] = useState('')
+  const [anchor, setAnchor] = useState(null)
+  const [replyStreaming, setReplyStreaming] = useState(false)
   const [showSessions, setShowSessions] = useState(false)
   const [actingCardId, setActingCardId] = useState(null)
   const [creatingChat, setCreatingChat] = useState(false)
   const [docPanelOpen, setDocPanelOpen] = useState(true)
   const [projects, setProjects] = useState([])
   const messagesRef = useRef(null)
+  const materials = usePendingMaterials()
+  const [memos, setMemos] = useState([])
+  const ensureRef = useRef(null)
+  const ensureForMentions = useCallback(() => ensureRef.current?.(), [])
+  const mentions = useChatMentions(sessionId, ensureForMentions)
+
+  const rememberAnchor = useCallback((next) => {
+    setAnchor(next)
+    setSelectedText(next?.selected_text || '')
+  }, [])
 
   const {
     selectedPath: selectedWorkspaceFile,
@@ -76,6 +93,7 @@ export default function ChatPage() {
     setSessionId(data.id)
     setMessages(data.messages || [])
     setWorkspace(data.workspace || {})
+    materials.clear()
     await refreshWorkspace(id)
     setShowSessions(false)
   }
@@ -110,38 +128,109 @@ export default function ChatPage() {
     await refreshSessions()
     return s.id
   }
+  ensureRef.current = ensureSession
 
-  const send = async (text) => {
+  useEffect(() => {
+    const projectId = workspace?.project_id
+    if (!projectId) {
+      setMemos([])
+      return undefined
+    }
+    let cancelled = false
+    api.listProjectMemos(projectId)
+      .then((res) => { if (!cancelled) setMemos(res.memos || []) })
+      .catch(() => { if (!cancelled) setMemos([]) })
+    return () => { cancelled = true }
+  }, [workspace?.project_id, messages])
+
+  const applySession = (session) => {
+    if (!session) return
+    setSessions((list) => [session, ...list.filter((s) => s.id !== session.id)])
+    if (session.workspace) setWorkspace(session.workspace)
+  }
+
+  const send = async (text, { withMaterials = false } = {}) => {
+    if (loading) return
+    const staged = withMaterials ? materials.consume() : []
     const q = (text ?? input).trim()
-    if (!q || loading) return
+    if (!q && !staged.length && !mentions.mentions.length) return
     setInput('')
     setLoading(true)
     const optimisticId = `tmp-${Date.now()}`
-    const optimistic = { id: optimisticId, role: 'user', content: q }
-    setMessages((m) => [...m, optimistic])
+    const assistantId = `tmp-bot-${Date.now()}`
+    const sentMentions = mentions.mentions
+    const optimistic = {
+      id: optimisticId,
+      role: 'user',
+      content: q,
+      metadata: {
+        ...(staged.length ? { attachments: staged.map(({ name, kind, type }) => ({ name, kind, type })) } : {}),
+        ...(sentMentions.length ? { mentions: sentMentions } : {}),
+      },
+    }
+    setMessages((m) => [
+      ...m,
+      optimistic,
+      ...(q ? [{ id: assistantId, role: 'assistant', content: '' }] : []),
+    ])
+    if (q) setReplyStreaming(true)
+    mentions.clearMentions()
+    let delivered = []
     try {
       const id = await ensureSession()
-      const ctx = { selected_text: selectedText, ...buildFileContext() }
-      const res = await api.sendChatMessage(id, q, ctx)
-      setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
-        res.user_message,
-        res.assistant_message,
-      ])
-      if (res.session) {
-        setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
-        setWorkspace(res.session.workspace || {})
-      }
-      if (res.metadata?.workspace_updated || res.session?.workspace) {
+      if (staged.length) {
+        const uploaded = await deliverChatMaterials(api, id, staged)
+        delivered = uploaded.messages
+        if (uploaded.workspace) setWorkspace(uploaded.workspace)
+        applySession(uploaded.session)
         await refreshWorkspace(id)
       }
-    } catch (e) {
+      let textTurn = []
+      if (q || sentMentions.length) {
+        const ctx = {
+          ...buildAnchorPayload(anchor || (selectedText ? { selected_text: selectedText } : null)),
+          ...buildFileContext(),
+        }
+        if (webSearch) ctx.web_search = true
+        if (sentMentions.length) ctx.mentions = sentMentions
+        const res = await api.sendChatMessageStream(id, q, ctx, (tok, event) => {
+          setMessages((m) => m.map((item) => (
+            item.id === assistantId ? appendStreamToken(item, tok, event) : item
+          )))
+        })
+        if (res.user_message) textTurn.push(res.user_message)
+        if (res.assistant_message) textTurn.push(res.assistant_message)
+        applySession(res.session)
+        if (res.metadata?.workspace_updated || res.session?.workspace || res.metadata?.highlight_texts) {
+          await refreshWorkspace(id)
+        }
+      }
       setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
-        optimistic,
-        { role: 'assistant', content: `发送失败：${e.message}` },
+        ...m.filter((x) => x.id !== optimisticId && x.id !== assistantId),
+        ...delivered,
+        ...textTurn,
       ])
+    } catch (e) {
+      setMessages((m) => {
+        const partial = m.find((x) => x.id === assistantId)
+        const kept = keepStreamedReply(partial?.content, e.message)
+        const base = m.filter((x) => x.id !== optimisticId && x.id !== assistantId)
+        return [
+          ...base,
+          ...delivered,
+          optimistic,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: kept,
+            metadata: { ...(partial?.metadata || {}), stream_error: e.message },
+          },
+        ]
+      })
+      if (!delivered.length) materials.restore(staged)
+      showToast(e.message)
     } finally {
+      setReplyStreaming(false)
       setLoading(false)
     }
   }
@@ -156,6 +245,9 @@ export default function ChatPage() {
       setWorkspace({})
       setParagraphs([])
       setSelectedText('')
+      setAnchor(null)
+      mentions.clearMentions()
+      materials.clear()
       clearFile()
       setSessions((list) => [s, ...list.filter((x) => x.id !== s.id)])
       setShowSessions(false)
@@ -163,67 +255,6 @@ export default function ChatPage() {
       showToast(e.message)
     } finally {
       setCreatingChat(false)
-    }
-  }
-
-  const mergeUploadResponse = async (id, res, optimisticId) => {
-    setMessages((m) => [
-      ...m.filter((x) => x.id !== optimisticId),
-      res.user_message,
-      res.assistant_message,
-    ])
-    setWorkspace(res.workspace || res.session?.workspace || {})
-    await refreshWorkspace(id)
-    if (res.session) {
-      setSessions((list) => [res.session, ...list.filter((s) => s.id !== res.session.id)])
-    }
-  }
-
-  const uploadFiles = async (files) => {
-    const list = Array.from(files || []).filter(Boolean)
-    if (!list.length || loading) return
-    const label =
-      list.length === 1
-        ? `[上传文件] ${list[0].name}`
-        : `[上传 ${list.length} 个文件] ${list.map((f) => f.name).slice(0, 3).join('、')}${list.length > 3 ? '…' : ''}`
-    const optimisticId = `tmp-file-${Date.now()}`
-    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: label }])
-    setLoading(true)
-    try {
-      const id = await ensureSession()
-      const res =
-        list.length === 1
-          ? await api.uploadChatFile(id, list[0])
-          : await api.uploadChatFilesBatch(id, list)
-      await mergeUploadResponse(id, res, optimisticId)
-    } catch (e) {
-      setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
-        { id: optimisticId, role: 'user', content: label },
-        { role: 'assistant', content: `上传失败：${e.message}` },
-      ])
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const importFolderPath = async (folderPath, folderLabel) => {
-    if (!folderPath || loading) return
-    const optimisticId = `tmp-folder-${Date.now()}`
-    const userLine = `[${folderLabel || '选择文件夹'}] ${folderPath}`
-    setMessages((m) => [...m, { id: optimisticId, role: 'user', content: userLine }])
-    setLoading(true)
-    try {
-      const id = await ensureSession()
-      const res = await api.importChatFolder(id, folderPath, folderLabel)
-      await mergeUploadResponse(id, res, optimisticId)
-    } catch (e) {
-      setMessages((m) => [
-        ...m.filter((x) => x.id !== optimisticId),
-        { role: 'assistant', content: `文件夹导入失败：${e.message}` },
-      ])
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -356,10 +387,12 @@ export default function ChatPage() {
                   workspace={workspace}
                   paragraphs={paragraphs}
                   selectedText={selectedText}
-                  onSelectText={setSelectedText}
+                  onSelectText={(text) => rememberAnchor({ ...(anchor || {}), selected_text: text, source: 'document' })}
+                  onSelectAnchor={rememberAnchor}
                   onParagraphEdit={onParagraphEdit}
                   onRefresh={() => refreshWorkspace(sessionId)}
                   onlyOfficeEnabled={!!features.onlyoffice?.enabled}
+                  highlightTexts={workspace?.review_highlight_texts || []}
                   toolbarLeading={showFileTree ? (
                     <DocWorkspaceSidebarToggle
                       active={treeOpen}
@@ -388,30 +421,46 @@ export default function ChatPage() {
           </div>
 
           <div className="chat-messages-area compact" ref={messagesRef}>
-            {messages.length === 0 && !loading ? (
-              <div className="chat-empty compact">
-                <p className="muted chat-empty-hint">
-                  可查询企业信息、检索标书；📎 可上传多个文件或整个资质文件夹，也可询问「如何使用本系统」。
-                </p>
-                <div className="chat-prompt-chips">
-                  {(features.suggested_prompts || []).map((p) => (
-                    <button key={p} type="button" className="chip" onClick={() => send(p)}>{p}</button>
-                  ))}
+            <ChatTranscript
+              messages={messages}
+              loading={loading}
+              streaming={replyStreaming}
+              onCardAction={handleCardAction}
+              actingCardId={actingCardId}
+              empty={(
+                <div className="chat-empty compact">
+                  <p className="muted chat-empty-hint">
+                    可查询企业信息、检索标书。附件会先留在输入框里，发送后显示为资料芯片。
+                  </p>
+                  <div className="chat-prompt-chips">
+                    {(features.suggested_prompts || []).map((p) => (
+                      <button key={p} type="button" className="chip" onClick={() => send(p)}>{p}</button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              messages.map((m, i) => (
-                <ChatMessageBubble
-                  key={m.id || i}
-                  message={m}
-                  onCardAction={handleCardAction}
-                  actingCardId={actingCardId}
-                />
-              ))
-            )}
-            {loading ? <div className="chat-msg bot">思考中…</div> : null}
+              )}
+            />
           </div>
 
+          {memos.length ? (
+            <ul className="project-memo-list">
+              {memos.map((memo) => (
+                <li key={memo.id}>
+                  <span>{memo.text}</span>
+                  <button
+                    type="button"
+                    className="ghost tiny"
+                    onClick={async () => {
+                      const res = await api.deleteProjectMemo(workspace.project_id, memo.id)
+                      setMemos(res.memos || [])
+                    }}
+                  >
+                    删除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {selectedText ? (
             <div className="chat-selection-hint">
               将修改选中文本：
@@ -423,10 +472,19 @@ export default function ChatPage() {
             compact
             value={input}
             onChange={setInput}
-            onSend={() => send()}
+            onSend={() => send(undefined, { withMaterials: true })}
             loading={loading}
-            loadingHint={loading ? '思考中…' : fileLoading ? '正在读取工程文件…' : null}
-            placeholder="提问、检索标书、编写/替换指令…"
+            loadingHint={fileLoading ? '正在读取工程文件…' : null}
+            attachments={materials.items}
+            onRemoveAttachment={materials.remove}
+            mentions={mentions.mentions}
+            onRemoveMention={mentions.removeMention}
+            mentionItems={mentions.mentionItems}
+            onMentionQuery={mentions.onMentionQuery}
+            onPickMention={mentions.pickMention}
+            placeholder={webSearch ? '联网检索公开资料，回复会附来源链接…' : '提问、检索标书、编写/替换指令…'}
+            webSearch={webSearch}
+            onToggleWebSearch={setWebSearch}
             contextBar={(
               <ComposerContextBar
                 workspaceDir={workspaceDir}
@@ -449,9 +507,10 @@ export default function ChatPage() {
                 compact
                 disabled={loading}
                 showToast={showToast}
-                onUploadFiles={uploadFiles}
-                onImportFolderPath={importFolderPath}
-                onImportFolderZip={(file) => uploadFiles([file])}
+                onUploadFiles={materials.addFiles}
+                onPickFolderFiles={materials.addFolderFiles}
+                onImportFolderPath={materials.addFolderPath}
+                onImportFolderZip={materials.addFiles}
               />
             )}
           />

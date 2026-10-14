@@ -180,6 +180,8 @@ class SystemSetting(Base):
     kimi_model: Mapped[str] = mapped_column(String(100), default="moonshot-v1-8k")
     kimi_k3_model: Mapped[str] = mapped_column(String(100), default="kimi-k3")
     preferred_provider: Mapped[str] = mapped_column(String(50), default="auto")
+    web_search_provider: Mapped[str] = mapped_column(String(40), default="duckduckgo")
+    web_search_api_key: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

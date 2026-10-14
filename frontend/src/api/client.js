@@ -1,3 +1,5 @@
+import { keepStreamedReply } from '../components/chat/agentChatRuntime'
+
 const BASE = '/api'
 
 function buildQuery(params = {}) {
@@ -241,6 +243,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content, context }),
     }),
+  listChatMentions: (sessionId, q = '') =>
+    request(`/chat/sessions/${sessionId}/mentions${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+  listProjectMemos: (projectId) => request(`/projects/${projectId}/memos`),
+  deleteProjectMemo: (projectId, memoId) =>
+    request(`/projects/${projectId}/memos/${encodeURIComponent(memoId)}`, { method: 'DELETE' }),
+  uploadTenderFile: async (projectId, file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/projects/${projectId}/tender-file`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await readErrorDetail(res))
+    return res.json()
+  },
+  fixReviewIssue: (projectId, issueId) =>
+    request(`/projects/${projectId}/review-issues/${encodeURIComponent(issueId)}/fix`, { method: 'POST' }),
   sendChatMessageStream: async (sessionId, content, context = null, onToken) => {
     const res = await fetch(`${BASE}/chat/sessions/${sessionId}/messages/stream`, {
       method: 'POST',
@@ -254,6 +270,8 @@ export const api = {
     const decoder = new TextDecoder()
     let buf = ''
     let payload = null
+    let streamError = ''
+    let streamed = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -264,11 +282,27 @@ export const api = {
         const line = part.trim()
         if (!line.startsWith('data:')) continue
         const data = JSON.parse(line.slice(5).trim())
-        if (data.type === 'token' && data.text && onToken) onToken(data.text)
+        if (data.type === 'token' && data.text) {
+          streamed += data.text
+          if (onToken) onToken(data.text)
+        }
+        if (data.type === 'tool' && onToken) onToken('', { tool: data })
+        if (data.type === 'error') streamError = data.message || '回复中断'
         if (data.type === 'done') payload = data.payload
       }
     }
-    if (!payload) throw new Error('流式响应未完成')
+    if (!payload) throw new Error(streamError || '流式响应未完成')
+    if (streamError && payload.assistant_message) {
+      const content = String(payload.assistant_message.content || '')
+      const head = streamed.slice(0, Math.min(12, streamed.length))
+      if (streamed && head && !content.includes(head)) {
+        payload.assistant_message.content = keepStreamedReply(streamed, streamError)
+        payload.assistant_message.metadata = {
+          ...(payload.assistant_message.metadata || {}),
+          stream_error: streamError,
+        }
+      }
+    }
     return payload
   },
   getChatWorkspace: (sessionId) => request(`/chat/sessions/${sessionId}/workspace`),

@@ -24,12 +24,27 @@ async def review_document(
     warnings: list[dict] = []
 
     # 规则层
-    rule_val = word.validate_export(docx_bytes, required_fields, fields)
-    issues.extend(rule_val.get("issues") or [])
-    warnings.extend(rule_val.get("warnings") or [])
+    try:
+        rule_val = word.validate_export(docx_bytes, required_fields, fields)
+        issues.extend(rule_val.get("issues") or [])
+        warnings.extend(rule_val.get("warnings") or [])
+    except Exception:
+        pass
 
-    index = build_document_index(docx_bytes)
-    full_text = index.get("full_text") or ""
+    full_text = ""
+    try:
+        index = build_document_index(docx_bytes)
+        raw_text = index.get("full_text") if isinstance(index, dict) else ""
+        full_text = raw_text if isinstance(raw_text, str) else ""
+    except Exception:
+        full_text = ""
+    if not full_text.strip():
+        from app.services.docx_ooxml import plain_text
+
+        try:
+            full_text = plain_text(docx_bytes)
+        except Exception:
+            full_text = ""
 
     # 残留旧值检测（替换模式）
     snap_fields = (snapshot or {}).get("fields") if isinstance((snapshot or {}).get("fields"), dict) else snapshot
@@ -41,12 +56,14 @@ async def review_document(
             new_val = str(fields.get(key) or "").strip()
             if not old_val or not new_val or old_val == new_val:
                 continue
-            if len(old_val) >= 4 and old_val in full_text:
+            if len(old_val) >= 2 and old_val in full_text:
                 issues.append({
                     "level": "red",
                     "code": "stale_value",
-                    "message": f"文档中仍残留旧「{key}」内容：{old_val[:40]}…",
+                    "message": f"文档中仍残留旧「{key}」内容：「{old_val}」",
                     "field": key,
+                    "excerpt": old_val,
+                    "suggestion": new_val,
                 })
 
     # Manifest 必填块
@@ -63,6 +80,8 @@ async def review_document(
                         "code": "missing_field",
                         "message": f"必填字段未填写：{key}",
                         "field": key,
+                        "excerpt": key,
+                        "suggestion": "",
                     })
             elif btype == "ai_section":
                 title = block.get("title") or ""
@@ -105,6 +124,8 @@ async def review_document(
             "level": level,
             "code": f.get("code") or "llm_review",
             "message": f.get("message") or "",
+            "excerpt": f.get("excerpt") or "",
+            "suggestion": f.get("suggestion") or "",
         }
         if level == "red":
             issues.append(item)
@@ -119,13 +140,16 @@ async def review_document(
 
     can_export = len([i for i in issues if i.get("level") == "red"]) == 0
 
-    return {
+    from app.services.agent_capabilities import stamp_review_issues
+
+    stamped = stamp_review_issues({
         "status": status,
         "can_export": can_export,
         "issues": issues,
         "warnings": warnings,
         "engine": "doc_engine_v2",
-    }
+    })
+    return stamped
 
 
 async def _llm_review(
@@ -153,7 +177,8 @@ async def _llm_review(
         f"new_fields: {json.dumps(fields, ensure_ascii=False)[:3000]}\n"
         f"old_values: {json.dumps(old_values, ensure_ascii=False)[:1500]}\n"
         f"document_excerpt:\n{document_text[:12000]}\n\n"
-        "返回 JSON 数组，每项含 level(red|yellow), code, message。最多 10 项。只返回 JSON。"
+        "返回 JSON 数组，每项含 level(red|yellow), code, message, excerpt, suggestion。"
+        "excerpt 是文档中的原句，suggestion 是应改成的句子。最多 10 项。只返回 JSON。"
     )
     raw = await ai.chat_completion([
         {"role": "system", "content": "你是标书审阅助手，只输出 JSON 数组。"},

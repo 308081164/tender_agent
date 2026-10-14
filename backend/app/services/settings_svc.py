@@ -41,6 +41,8 @@ def get_or_create_setting(db: Session) -> SystemSetting:
         kimi_model=env.kimi_model or KIMI_DEFAULT_MODEL,
         kimi_k3_model=getattr(env, "kimi_k3_model", None) or KIMI_K3_DEFAULT_MODEL,
         preferred_provider="auto",
+        web_search_provider=getattr(env, "web_search_provider", None) or "duckduckgo",
+        web_search_api_key=getattr(env, "web_search_api_key", None) or "",
     )
     db.add(row)
     db.commit()
@@ -63,6 +65,8 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         "kimi_model": env.kimi_model or KIMI_DEFAULT_MODEL,
         "kimi_k3_model": env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": "auto",
+        "web_search_provider": getattr(env, "web_search_provider", None) or "duckduckgo",
+        "web_search_api_key": getattr(env, "web_search_api_key", None) or "",
     }
     if db is None:
         return cfg
@@ -91,6 +95,10 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         cfg["kimi_k3_model"] = row.kimi_k3_model
     if row.preferred_provider:
         cfg["preferred_provider"] = row.preferred_provider
+    if getattr(row, "web_search_provider", None):
+        cfg["web_search_provider"] = row.web_search_provider
+    if getattr(row, "web_search_api_key", None):
+        cfg["web_search_api_key"] = row.web_search_api_key
     if not cfg.get("qwen_vl_model"):
         cfg["qwen_vl_model"] = QWEN_VL_DEFAULT_MODEL
     return cfg
@@ -132,6 +140,22 @@ def multimodal_gate_payload() -> dict:
     }
 
 
+def _web_search_empty_state(row: SystemSetting, *, env_fallback: bool = True) -> str | None:
+    provider = (getattr(row, "web_search_provider", None) or "duckduckgo").strip().lower()
+    key = (getattr(row, "web_search_api_key", None) or "").strip()
+    if not key and env_fallback:
+        key = (getattr(env, "web_search_api_key", None) or "").strip()
+    if provider in ("", "duckduckgo"):
+        return None
+    if key:
+        return None
+    label = {"tavily": "Tavily", "bing": "Bing", "serpapi": "SerpAPI"}.get(provider, provider)
+    return (
+        f"已选择 {label}，但尚未填写 API Key。保存后不会调用该服务，也不会假装已经搜过网。"
+        "请填写密钥，或改回 DuckDuckGo（无需密钥）。"
+    )
+
+
 def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
     ds_key = row.deepseek_api_key or ((env.deepseek_api_key or "") if env_fallback else "")
     qw_key = row.qwen_api_key or ((env.qwen_api_key or "") if env_fallback else "")
@@ -154,6 +178,10 @@ def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
         "kimi_model": row.kimi_model or env.kimi_model or KIMI_DEFAULT_MODEL,
         "kimi_k3_model": getattr(row, "kimi_k3_model", None) or env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": row.preferred_provider or "auto",
+        "web_search_provider": getattr(row, "web_search_provider", None) or "duckduckgo",
+        "web_search_api_key_set": bool(getattr(row, "web_search_api_key", None) or (getattr(env, "web_search_api_key", "") if env_fallback else "")),
+        "web_search_api_key_masked": _mask(getattr(row, "web_search_api_key", None) or ((getattr(env, "web_search_api_key", "") or "") if env_fallback else "")),
+        "web_search_empty_state": _web_search_empty_state(row, env_fallback=env_fallback),
         "multimodal_ready": multimodal_ready({
             "qwen_api_key": qw_key,
             "kimi_api_key": km_key,
@@ -186,6 +214,11 @@ def update_settings(db: Session, payload: dict) -> SystemSetting:
     elif payload.get("kimi_api_key"):
         row.kimi_api_key = str(payload["kimi_api_key"]).strip()
 
+    if payload.get("clear_web_search_api_key"):
+        row.web_search_api_key = ""
+    elif payload.get("web_search_api_key"):
+        row.web_search_api_key = str(payload["web_search_api_key"]).strip()
+
     if "deepseek_base_url" in payload and payload["deepseek_base_url"] is not None:
         row.deepseek_base_url = str(payload["deepseek_base_url"]).strip() or row.deepseek_base_url
     if "deepseek_model" in payload and payload["deepseek_model"] is not None:
@@ -206,6 +239,10 @@ def update_settings(db: Session, payload: dict) -> SystemSetting:
         provider = str(payload["preferred_provider"]).strip()
         if provider in ("auto", "deepseek", "qwen", "kimi"):
             row.preferred_provider = provider
+    if "web_search_provider" in payload and payload["web_search_provider"] is not None:
+        search_provider = str(payload["web_search_provider"]).strip().lower()
+        if search_provider in ("duckduckgo", "tavily", "bing", "serpapi"):
+            row.web_search_provider = search_provider
 
     db.commit()
     db.refresh(row)

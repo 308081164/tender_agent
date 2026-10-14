@@ -9,10 +9,12 @@ export default function DocumentWorkspace({
   paragraphs,
   selectedText,
   onSelectText,
+  onSelectAnchor,
   onParagraphEdit,
   onRefresh,
   onlyOfficeEnabled = false,
   toolbarLeading = null,
+  highlightTexts = [],
 }) {
   const [mode, setMode] = useState('pdf')
   const [editingIndex, setEditingIndex] = useState(null)
@@ -71,7 +73,13 @@ export default function DocumentWorkspace({
             {onlyOfficeEnabled ? <p className="muted">OnlyOffice 已启用，上传后将自动进入 Word 在线编辑模式。</p> : null}
           </div>
         ) : mode === 'onlyoffice' && onlyOfficeEnabled ? (
-          <OnlyOfficeEditor sessionId={sessionId} workspace={workspace} onSaved={onRefresh} />
+          <OnlyOfficeEditor
+            sessionId={sessionId}
+            workspace={workspace}
+            onSaved={onRefresh}
+            onAnchor={onSelectAnchor}
+            highlightTexts={highlightTexts}
+          />
         ) : mode === 'pdf' && pdfSrc && !pdfFailed ? (
           <PdfPreview
             src={pdfSrc}
@@ -86,6 +94,8 @@ export default function DocumentWorkspace({
               mappings={[]}
               selectedText={selectedText}
               onSelectText={onSelectText}
+              onSelectAnchor={onSelectAnchor}
+              reviewHighlightTexts={highlightTexts}
             />
             <div className="paragraph-edit-list">
               <h4>段落快速编辑</h4>
