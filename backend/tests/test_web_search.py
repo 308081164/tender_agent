@@ -209,6 +209,328 @@ def test_tool_loop_web_search_returns_citations(monkeypatch):
     assert result["results"][0]["url"] == "https://example.com/notice"
 
 
+def test_keyless_search_uses_duckduckgo_fixture_titles_and_urls(monkeypatch):
+    """默认无密钥检索会打到 DuckDuckGo；夹具成功时返回标题和 URL。"""
+    requested: list[str] = []
+
+    class Resp:
+        def __init__(self, text: str):
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, **kwargs):
+            requested.append(url)
+            if "html.duckduckgo.com" in url:
+                return Resp(DDG_HTML)
+            return Resp("<html></html>")
+
+    monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    result = asyncio.run(search_web("今天 OpenAI 有没有更新", provider="duckduckgo", api_key=""))
+    assert any("html.duckduckgo.com" in url for url in requested)
+    assert result["ok"] is True
+    assert result["provider"] == "duckduckgo"
+    assert result["results"][0]["title"] == "铁路投标保证金"
+    assert result["results"][0]["url"] == "https://example.com/bond"
+    assert all(item["url"].startswith("https://") for item in result["results"])
+
+
+def test_duckduckgo_timeout_falls_back_to_keyless_bing(monkeypatch):
+    """单个 DuckDuckGo 端点超时不能吃掉整次检索；其他无密钥结果仍要带标题和 URL。"""
+    import base64
+
+    target = "https://example.com/openai-news"
+    token = "a1" + base64.b64encode(target.encode()).decode()
+    bing_html = (
+        f'<h2><a href="https://www.bing.com/ck/a?u={token}&amp;ntb=1">OpenAI 今日更新</a></h2>'
+        "<p>发布了新的模型说明。</p>"
+    )
+    requested: list[str] = []
+
+    class Resp:
+        def __init__(self, text: str):
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, **kwargs):
+            requested.append(url)
+            if "bing.com" in url:
+                return Resp(bing_html)
+            raise httpx.ReadTimeout("duckduckgo hung")
+
+    monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    result = asyncio.run(search_web("今天open AI有没有更新"))
+    assert any("duckduckgo.com" in url for url in requested)
+    assert result["ok"] is True
+    assert result["provider"] == "duckduckgo"
+    assert result["results"][0]["title"] == "OpenAI 今日更新"
+    assert result["results"][0]["url"] == target
+
+
+def test_real_timeout_tells_user_search_failed(monkeypatch):
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, **kwargs):
+            raise httpx.ReadTimeout("all endpoints hung")
+
+    monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    result = asyncio.run(search_web("今天open AI有没有更新"))
+    assert result["ok"] is False
+    assert result["results"] == []
+    assert result["error"] == "timeout"
+    assert "联网搜索超时" in result["message"]
+    assert "没有拿到公开结果" in result["message"]
+
+
+def _chat_api():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.database import Base, get_db
+    from app.models import ChatMessage, ChatSession, FieldDef, Template, TenderProject
+    from app.routers import api as api_router
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    app = FastAPI()
+    app.include_router(api_router.router, prefix="/api")
+
+    def _override_get_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = _override_get_db
+    return TestClient(app), Session, ChatSession, ChatMessage, Template, TenderProject, FieldDef
+
+
+def _bound_compose_project(Session, Template, TenderProject, FieldDef, ChatSession):
+    db = Session()
+    tpl = Template(
+        name="铁路工程投标模板2-空白.docx",
+        description="",
+        object_key="templates/blank.docx",
+        placeholders={},
+        template_code="common",
+        kind="skeleton",
+        enabled=True,
+    )
+    db.add(tpl)
+    db.flush()
+    db.add(FieldDef(key="project_name", name="项目名称", required=True, template_code="common", sort_order=1))
+    db.add(FieldDef(key="tender_no", name="招标编号/项目编号", required=True, template_code="common", sort_order=2))
+    db.add(FieldDef(key="bid_date", name="投标日期", required=False, template_code="common", sort_order=3))
+    project = TenderProject(
+        title="新建标书",
+        template_id=tpl.id,
+        fields={},
+        current_step=2,
+        status="draft",
+    )
+    db.add(project)
+    db.flush()
+    session = ChatSession(
+        title="文档 Agent",
+        workspace={"project_id": project.id, "guided_intake": True},
+    )
+    db.add(session)
+    db.commit()
+    ids = {"session_id": session.id, "project_id": project.id}
+    db.close()
+    return ids
+
+
+def _patch_chat_llm(monkeypatch):
+    async def no_tools(messages, db=None):
+        return {}
+
+    async def no_chat(messages, db=None, **kwargs):
+        return "不知道。当前本地资料中没有关于 OpenAI 今天更新的信息。"
+
+    monkeypatch.setattr("app.services.agent_tool_loop._chat_with_tools", no_tools)
+    monkeypatch.setattr("app.services.ai.chat_completion", no_chat)
+
+
+def test_general_web_question_skips_intake_and_cites_fixture(monkeypatch):
+    client, Session, ChatSession, ChatMessage, Template, TenderProject, FieldDef = _chat_api()
+    ids = _bound_compose_project(Session, Template, TenderProject, FieldDef, ChatSession)
+    from app.services.project_context import build_project_context
+
+    db = Session()
+    ctx = build_project_context(db, ids["project_id"])
+    db.close()
+    assert ctx["template"]["mode"] == "compose"
+    assert ctx["template"]["name"] == "铁路工程投标模板2-空白.docx"
+    assert ctx["field_checklist"]["missing_required"]
+
+    requested: list[str] = []
+
+    class Resp:
+        def __init__(self, text: str):
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, **kwargs):
+            requested.append(str(url))
+            if "html.duckduckgo.com" in str(url):
+                return Resp(DDG_HTML)
+            return Resp("<html></html>")
+
+    async def cited(messages, db=None, **kwargs):
+        return "公开资料里能看到相关更新。"
+
+    _patch_chat_llm(monkeypatch)
+    monkeypatch.setattr("app.services.ai.chat_completion", cited)
+    monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+
+    response = client.post(
+        f"/api/chat/sessions/{ids['session_id']}/messages",
+        json={
+            "content": "今天open AI有没有更新",
+            "context": {"web_search": True, "project_id": ids["project_id"]},
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    answer = data["assistant_message"]["content"]
+    cards = data["assistant_message"]["metadata"].get("cards") or []
+    assert any("html.duckduckgo.com" in url for url in requested)
+    assert "铁路投标保证金" in answer
+    assert "https://example.com/bond" in answer
+    assert "当前模板" not in answer
+    assert "待填" not in answer
+    assert "待核实" not in answer
+    assert "待填基础信息" not in answer
+    assert all(card.get("type") != "field_collect" for card in cards)
+    assert all(card.get("title") != "待填基础信息" for card in cards)
+
+
+def test_general_web_question_timeout_has_no_intake_card(monkeypatch):
+    client, Session, ChatSession, ChatMessage, Template, TenderProject, FieldDef = _chat_api()
+    ids = _bound_compose_project(Session, Template, TenderProject, FieldDef, ChatSession)
+    requested: list[str] = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, **kwargs):
+            requested.append(str(url))
+            raise httpx.ReadTimeout("network timeout")
+
+    _patch_chat_llm(monkeypatch)
+    monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    response = client.post(
+        f"/api/chat/sessions/{ids['session_id']}/messages",
+        json={
+            "content": "今天open AI有没有更新",
+            "context": {"web_search": True, "project_id": ids["project_id"]},
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    answer = data["assistant_message"]["content"]
+    cards = data["assistant_message"]["metadata"].get("cards") or []
+    assert any("duckduckgo.com" in url for url in requested)
+    assert "联网搜索超时" in answer
+    assert "没有拿到公开结果" in answer
+    assert "不知道" in answer
+    assert "http" not in answer
+    assert "当前模板" not in answer
+    assert "待填" not in answer
+    assert all(card.get("type") != "field_collect" for card in cards)
+
+
+def test_bid_turn_still_attaches_intake_chrome():
+    """标书填写回合仍保留待填卡片，避免把一般问答的豁免扩大成永远不提示。"""
+    _client, Session, ChatSession, _ChatMessage, Template, TenderProject, FieldDef = _chat_api()
+    ids = _bound_compose_project(Session, Template, TenderProject, FieldDef, ChatSession)
+    from app.routers.api import ChatMessageCreate, _finalize_chat_message_turn
+    from app.models import ChatMessage
+
+    db = Session()
+    session = db.query(ChatSession).filter(ChatSession.id == ids["session_id"]).one()
+    user = ChatMessage(session_id=session.id, role="user", content="完善标书里的项目名称")
+    db.add(user)
+    db.flush()
+    payload = asyncio.run(_finalize_chat_message_turn(
+        session.id,
+        session,
+        user,
+        "完善标书里的项目名称",
+        ChatMessageCreate(content="完善标书里的项目名称", context={}),
+        {
+            "answer": "请补充项目名称。",
+            "mode": "action",
+            "metadata": {"intent": "edit_project"},
+        },
+        db,
+    ))
+    db.close()
+    answer = payload["answer"]
+    cards = payload["metadata"].get("cards") or []
+    assert "当前模板：铁路工程投标模板2-空白.docx（compose）" in answer
+    assert "待填" in answer
+    assert "待核实" in answer
+    assert any(card.get("type") == "field_collect" and card.get("title") == "待填基础信息" for card in cards)
+
+
 def test_toggle_context_triggers_search_without_phrase(monkeypatch):
     called = {}
 

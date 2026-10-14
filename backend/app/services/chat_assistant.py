@@ -155,6 +155,52 @@ def _classify_intent_sync(text: str) -> str:
     return intent if score >= 0.45 else "general"
 
 
+# 这些回合不是在填标书，不能附上「待填基础信息」卡片或 compose 进度脚注。
+_NON_BID_INTENTS = frozenset({
+    "web_search",
+    "general",
+    "meta",
+    "teach",
+    "side_question",
+    "search_info",
+    "query_company",
+    "query_template_stats",
+    "list_templates",
+    "query_recent_projects",
+    "search_project",
+    "search_template",
+    "project_memo",
+    "fallback",
+    "import_qual_folder",
+    "bulk_replace",
+})
+
+
+def should_attach_bid_intake_chrome(
+    text: str,
+    meta: dict | None,
+    context: dict | None,
+) -> bool:
+    """只有标书填写类回合才附带待填卡片和模板进度脚注。"""
+    ctx = context or {}
+    if ctx.get("web_search") is True:
+        return False
+    data = meta or {}
+    intent = str(data.get("intent") or "")
+    if intent in _NON_BID_INTENTS:
+        return False
+    web = data.get("web_search")
+    if isinstance(web, dict) and (web.get("query") or web.get("error") or web.get("searched")):
+        return False
+    if data.get("sources"):
+        return False
+    from app.services.web_search import should_search
+
+    if should_search(text or "", ctx):
+        return False
+    return True
+
+
 def _company_context(db: Session) -> str:
     c = db.query(CompanyProfile).filter(CompanyProfile.id == 1).first()
     if not c:
