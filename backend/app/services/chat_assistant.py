@@ -474,7 +474,7 @@ async def _handle_edit_project(db: Session) -> dict[str, Any]:
                 {
                     "type": "link",
                     "label": "继续编辑标书",
-                    "url": f"/projects/{project.id}/workspace" if step >= 3 else f"/projects/{project.id}/step/{step}",
+                    "url": "/chat" if step >= 3 else f"/projects/{project.id}/step/{step}",
                     "primary": True,
                 },
                 {"type": "link", "label": "预览导出", "url": f"/projects/{project.id}/preview"},
@@ -496,7 +496,7 @@ async def _handle_draft_create(db: Session) -> dict[str, Any]:
                 "project_id": project_id,
                 "actions": [
                     {"type": "link", "label": "填写字段", "url": f"/projects/{project_id}/step/2", "primary": True},
-                    {"type": "link", "label": "进入创作工作台", "url": f"/projects/{project_id}/workspace"},
+                    {"type": "link", "label": "打开 Agent 对话", "url": "/chat"},
                 ],
             },
         }
@@ -510,7 +510,7 @@ async def _handle_draft_create(db: Session) -> dict[str, Any]:
             "intent": "draft_create",
             "project_id": project.id,
             "actions": [
-                {"type": "link", "label": "进入创作工作台", "url": f"/projects/{project.id}/workspace", "primary": True},
+                {"type": "link", "label": "打开 Agent 对话", "url": "/chat", "primary": True},
                 {"type": "link", "label": "补充项目字段", "url": f"/projects/{project.id}/step/2"},
             ],
         },
@@ -695,7 +695,7 @@ async def _handle_general_conversation(
     answer = await ai.chat_completion(messages, db=db)
     if not answer:
         return {
-            "answer": "暂未匹配到明确答案，建议补充项目信息或打开创作工作台继续。",
+            "answer": "暂未匹配到明确答案。可以补充项目信息，或在文档工作区继续。",
             "mode": "fallback",
             "metadata": meta,
         }

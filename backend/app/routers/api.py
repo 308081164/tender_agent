@@ -592,7 +592,7 @@ async def open_project_workspace(
     body: WorkspaceOpenIn | None = None,
     db: Session = Depends(get_db),
 ):
-    """进入创作工作台：绑定会话并注入主动开场 assistant 消息（幂等）。"""
+    """绑定项目会话并注入主动开场（幂等）。"""
     from app.services.project_sessions import get_or_create_project_session
     from app.services import project_workspace_agent
 
@@ -635,7 +635,7 @@ async def project_workspace_followup(
         return {"assistant_message": None, "created": False}
     s = find_bound_session(db, project_id)
     if not s:
-        raise HTTPException(404, "请先打开创作工作台以创建项目会话")
+        raise HTTPException(404, "还没有绑定的项目会话。")
     msg = await project_workspace_agent.append_workspace_followup_message(
         db, s, p, guided=True,
     )

@@ -1,20 +1,11 @@
 import React from 'react'
-import { Link } from 'react-router-dom'
 import ChatDrawer from './ChatDrawer'
 
-export default function FloatingChat({ chat, projectPath = '' }) {
-  const m = projectPath.match(/^\/projects\/(\d+)/)
-  const workspaceHref = m ? `/projects/${m[1]}/workspace` : null
-
+export default function FloatingChat({ chat }) {
   return (
     <>
       {!chat.open && (
         <div className="floating-chat-wrap">
-          {workspaceHref ? (
-            <Link to={workspaceHref} className="floating-chat-workspace-link">
-              打开创作工作台
-            </Link>
-          ) : null}
           <button
             type="button"
             className="floating-chat-btn"
@@ -29,7 +20,6 @@ export default function FloatingChat({ chat, projectPath = '' }) {
       <ChatDrawer
         open={chat.open}
         onClose={chat.closeDrawer}
-        workspaceHref={workspaceHref}
         sessions={chat.sessions}
         sessionId={chat.sessionId}
         messages={chat.messages}

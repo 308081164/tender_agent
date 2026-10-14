@@ -561,15 +561,9 @@ async def _on_confirm_fields(
         flag_modified(p, "fields")
         db.commit()
         return "保存字段", _result(
-            "已更新项目字段。左侧预览将在保存后刷新。",
+            "已更新项目字段。",
             intent="project_fields",
             project_id=p.id,
-            actions=[{
-                "type": "link",
-                "label": "打开创作工作台",
-                "url": f"/projects/{p.id}/workspace",
-                "primary": True,
-            }],
         ), False
 
     if not pa or pa.get("flow") != FLOW_PROJECT_CREATE or pa.get("stage") != "collect_fields":
