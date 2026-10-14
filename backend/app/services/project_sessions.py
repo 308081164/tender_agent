@@ -9,6 +9,11 @@ from sqlalchemy.orm import Session
 from app.models import ChatSession, TenderProject
 
 
+def agent_chat_path(project_id: int | str) -> str:
+    """项目后续编写、审查、导出所在的 Agent 对话。"""
+    return f"/chat?project={int(project_id)}"
+
+
 def find_bound_session(db: Session, project_id: int) -> ChatSession | None:
     for s in db.query(ChatSession).order_by(ChatSession.updated_at.desc()).all():
         ws = getattr(s, "workspace", None) or {}

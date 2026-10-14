@@ -19,7 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.models import ChatSession, FieldDef, Template
+from app.models import ChatSession, FieldDef, Template, TenderProject
 from app.services import agent_flows, chat_assistant
 
 
@@ -284,6 +284,11 @@ def test_project_create_flow():
         assert project.fields["project_name"] == "京沪高铁维保标段"
         assert session.workspace.get("pending_action") is None
         assert session.workspace["draft_object_key"].endswith("_generated.docx")
+        assert session.workspace["project_id"] == project.id
+        actions = result3["metadata"].get("actions") or []
+        assert actions and actions[0]["url"] == f"/chat?project={project.id}"
+        assert all("创作工作台" not in (a.get("label") or "") for a in actions)
+        assert all("/workspace" not in (a.get("url") or "") for a in actions)
     asyncio.run(run())
 
 
@@ -321,6 +326,44 @@ def test_intent_routing_to_flows():
         )
         cards = result["metadata"].get("cards") or []
         assert cards and cards[0]["type"] == "template_picker"
+    asyncio.run(run())
+
+
+def test_bound_project_field_save_does_not_link_creation_workspace():
+    """保存字段后留在 Agent 对话，不再给出「打开创作工作台」。"""
+    async def run():
+        db = _make_db()
+        _seed_fields(db)
+        project = TenderProject(
+            title="已有标书",
+            fields={"project_name": "旧名称"},
+            current_step=3,
+            chapters={},
+            inserted_quals=[],
+        )
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        session = _new_session(db)
+        session.workspace = {"project_id": project.id}
+        db.commit()
+
+        label, result, _updated = await agent_flows.handle_action(
+            db, session, "confirm_fields",
+            {"fields": {"project_name": "新名称"}},
+        )
+        assert label == "保存字段"
+        assert result["answer"] == "已更新项目字段。"
+        assert "创作工作台" not in result["answer"]
+        assert "左侧预览" not in result["answer"]
+        actions = result["metadata"].get("actions") or []
+        blob = " ".join(
+            f"{action.get('label', '')} {action.get('url', '')}" for action in actions
+        )
+        assert "创作工作台" not in blob
+        assert "/workspace" not in blob
+        db.refresh(project)
+        assert project.fields["project_name"] == "新名称"
     asyncio.run(run())
 
 

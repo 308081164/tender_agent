@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import { STEPS } from '../constants'
-import { projectContinuePath, WIZARD_STEPS } from '../utils/projectRouting'
+import { projectAgentChatPath, projectContinuePath, WIZARD_STEPS } from '../utils/projectRouting'
 import { useProject } from '../hooks/useProject'
 import { highlightText } from '../utils/highlight'
 import { formatTime } from '../utils/format'
@@ -48,7 +48,7 @@ export default function WizardPage() {
 
   useEffect(() => {
     if (viewStep >= 3) {
-      navigate(`/projects/${id}/workspace`, { replace: true })
+      navigate(projectAgentChatPath(id), { replace: true })
     }
   }, [viewStep, id, navigate])
 
@@ -59,7 +59,7 @@ export default function WizardPage() {
         const p = await loadProject(id)
         if (cancelled) return
         if ((p.current_step || 1) >= 3 || viewStep >= 3) {
-          navigate(`/projects/${id}/workspace`, { replace: true })
+          navigate(projectAgentChatPath(id), { replace: true })
           return
         }
         const maxStep = Math.min(p.current_step || 1, 2)
@@ -77,7 +77,7 @@ export default function WizardPage() {
   const goStep = (step) => {
     if (!project) return
     if (step >= 3) {
-      navigate(`/projects/${id}/workspace`)
+      navigate(projectAgentChatPath(id))
       return
     }
     if (step > (project.current_step || 1)) {
@@ -163,7 +163,7 @@ export default function WizardPage() {
           } catch {
             /* session optional until first chat */
           }
-          navigate(`/projects/${p.id}/workspace`)
+          navigate(projectAgentChatPath(p.id))
         } else {
           navigate(`/projects/${id}/step/${next}`)
         }
@@ -477,8 +477,8 @@ export default function WizardPage() {
             <div className="actions">
               <button className="secondary" onClick={() => goStep(1)}>返回上一步</button>
               <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
-              <Link className="button secondary linkish" to="/chat">打开 Agent 对话</Link>
-              <button onClick={confirmFields} disabled={loading}>保存并继续</button>
+              <Link className="button secondary linkish" to={projectAgentChatPath(project.id)}>打开 Agent 对话</Link>
+              <button onClick={confirmFields} disabled={loading}>保存并进入 Agent 对话</button>
             </div>
           </>
         )}

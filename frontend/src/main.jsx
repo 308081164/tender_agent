@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import App from './App'
 import MainLayoutRoute from './layouts/MainLayoutRoute'
 import AdminLayout from './layouts/AdminLayout'
@@ -24,8 +24,13 @@ import FaqsListPage from './pages/admin/FaqsListPage'
 import FaqDetailPage from './pages/admin/FaqDetailPage'
 import ImportPage from './pages/admin/ImportPage'
 import ChatPage from './pages/ChatPage'
-import ProjectWorkspacePage from './pages/ProjectWorkspacePage'
+import { projectAgentChatPath } from './utils/projectRouting'
 import './styles/app.css'
+
+function LegacyWorkspaceRedirect() {
+  const { id } = useParams()
+  return <Navigate to={projectAgentChatPath(id)} replace />
+}
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -33,7 +38,7 @@ createRoot(document.getElementById('root')).render(
       <Routes>
         <Route element={<App />}>
           <Route path="chat" element={<ChatPage />} />
-          <Route path="projects/:id/workspace" element={<ProjectWorkspacePage />} />
+          <Route path="projects/:id/workspace" element={<LegacyWorkspaceRedirect />} />
           <Route element={<MainLayoutRoute />}>
             <Route index element={<HomePage />} />
             <Route path="projects/new" element={<NewProjectPage />} />

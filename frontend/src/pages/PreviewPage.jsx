@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { useApp } from '../App'
 import PdfPreview from '../components/PdfPreview'
 import { formatTime } from '../utils/format'
+import { projectAgentChatPath } from '../utils/projectRouting'
 
 export default function PreviewPage() {
   const { id } = useParams()
@@ -83,7 +84,7 @@ export default function PreviewPage() {
           </p>
         </div>
         <div className="actions" style={{ marginTop: 0 }}>
-          <Link className="btn secondary" to={`/projects/${id}/step/6`}>返回向导</Link>
+          <Link className="btn secondary" to={projectAgentChatPath(id)}>返回 Agent 对话</Link>
           <button className="secondary" onClick={download} disabled={!selectedId}>下载</button>
           <button className="ghost" onClick={() => navigate('/')}>首页</button>
         </div>

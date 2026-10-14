@@ -586,6 +586,7 @@ async def _on_confirm_fields(
             "project_id": project.id,
             "fields": fields,
         })
+        _update_workspace(session, project_id=project.id, template_id=template_id)
         return "确认关键信息", _result(
             f"标书「{project.title}」已创建。该模板支持智能创作，请补充编写要求（章节重点、风格、约束等），我将分块生成并审阅。",
             cards=[{
@@ -624,14 +625,22 @@ async def _on_confirm_fields(
                 "review_summary": review_summary,
             },
         }],
-        actions=[
-            {"type": "link", "label": "进入向导精细完善", "url": f"/projects/{project.id}/step/3", "primary": True},
-            {"type": "link", "label": "预览与导出", "url": f"/projects/{project.id}/step/6"},
-        ],
+        actions=_agent_chat_actions(project.id),
         intent="create_project",
         project_id=project.id,
         workspace_updated=workspace_updated,
     ), workspace_updated
+
+
+def _agent_chat_actions(project_id: int) -> list[dict]:
+    from app.services.project_sessions import agent_chat_path
+
+    return [{
+        "type": "link",
+        "label": "继续在 Agent 对话中完善",
+        "url": agent_chat_path(project_id),
+        "primary": True,
+    }]
 
 
 async def _generate_project_draft(
@@ -714,6 +723,8 @@ async def _generate_project_draft(
         )
         ws = dict(getattr(session, "workspace", None) or {})
         ws.update({
+            "project_id": project.id,
+            "template_id": template_id,
             "draft_object_key": new_key,
             "filename": f"{project.title}.docx",
             "version": int(ws.get("version") or 0) + 1,
@@ -726,9 +737,9 @@ async def _generate_project_draft(
         ws_note = f"\n\n已生成初稿（处理 {len(keys)} 个块/字段），请在左侧预览查看。"
         if review_summary:
             ws_note += f"\n文档审阅：{review_summary.get('status', 'unknown')}，"
-            ws_note += "可导出" if review_summary.get("can_export") else "建议进入向导第 5 步完善"
+            ws_note += "可导出" if review_summary.get("can_export") else "可在本对话中继续完善"
     except Exception as exc:
-        ws_note = f"\n\n初稿生成未完成（{exc}），可进入向导第 3 步重新生成。"
+        ws_note = f"\n\n初稿生成未完成（{exc}），可在本对话中重试。"
     return ws_note, workspace_updated, review_summary
 
 
@@ -795,10 +806,7 @@ async def _on_confirm_requirements(
                 },
             },
         ],
-        actions=[
-            {"type": "link", "label": "进入向导精细完善", "url": f"/projects/{project.id}/step/3", "primary": True},
-            {"type": "link", "label": "预览与导出", "url": f"/projects/{project.id}/step/6"},
-        ],
+        actions=_agent_chat_actions(project.id),
         intent="create_project",
         project_id=project.id,
         workspace_updated=workspace_updated,
@@ -880,10 +888,8 @@ async def _on_finish_revision(
     _set_pending(session, None)
     project_id = int((pa or {}).get("project_id") or 0)
     return "完成修订", _result(
-        "修订流程已结束。您可以继续导出，或进入向导精细完善。",
-        actions=[
-            {"type": "link", "label": "进入向导", "url": f"/projects/{project_id}/step/3", "primary": True},
-        ] if project_id else [],
+        "修订流程已结束。可继续在 Agent 对话中审查或导出。",
+        actions=_agent_chat_actions(project_id) if project_id else [],
         intent="revise_done",
     ), False
 
