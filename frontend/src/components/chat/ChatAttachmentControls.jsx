@@ -11,6 +11,7 @@ export default function ChatAttachmentControls({
   onUploadFiles,
   onImportFolderPath,
   onImportFolderZip,
+  onPickFolderFiles,
   showToast,
   compact = false,
 }) {
@@ -50,8 +51,12 @@ export default function ChatAttachmentControls({
     const list = Array.from(e.target.files || [])
     e.target.value = ''
     setMenuOpen(false)
-    if (!list.length || !onUploadFiles) return
-    await onUploadFiles(list)
+    if (!list.length) return
+    if (onPickFolderFiles) {
+      await onPickFolderFiles(list)
+      return
+    }
+    if (onUploadFiles) await onUploadFiles(list)
   }
 
   const onZipChange = async (e) => {

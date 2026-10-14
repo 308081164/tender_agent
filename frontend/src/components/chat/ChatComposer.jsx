@@ -1,5 +1,6 @@
 import React from 'react'
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea'
+import ChatAttachmentChip from './ChatAttachmentChip'
 
 /**
  * Agent 对话输入：现代卡片式 Composer；Enter 发送，Shift+Enter 换行。
@@ -19,13 +20,16 @@ export default function ChatComposer({
   innerPrefix = null,
   webSearch = false,
   onToggleWebSearch,
+  attachments = [],
+  onRemoveAttachment,
 }) {
   const textareaRef = useAutoResizeTextarea(value, { minRows: 2, maxRows: 12 })
+  const canSend = !loading && (Boolean(value.trim()) || attachments.length > 0)
 
   const handleKeyDown = (e) => {
     if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
     e.preventDefault()
-    if (!loading && value.trim()) onSend?.()
+    if (canSend) onSend?.()
   }
 
   return (
@@ -34,6 +38,17 @@ export default function ChatComposer({
       <div className="composer-card">
         {loadingHint ? <div className="composer-loading-hint">{loadingHint}</div> : null}
         {innerPrefix}
+        {attachments.length ? (
+          <div className="composer-attach-row">
+            {attachments.map((item) => (
+              <ChatAttachmentChip
+                key={item.id || `${item.kind}-${item.name}`}
+                item={item}
+                onRemove={loading ? undefined : () => onRemoveAttachment?.(item.id)}
+              />
+            ))}
+          </div>
+        ) : null}
         <textarea
           ref={textareaRef}
           className="composer-card-input"
@@ -63,7 +78,7 @@ export default function ChatComposer({
             type="button"
             className="composer-card-send"
             onClick={() => onSend?.()}
-            disabled={loading || !value.trim()}
+            disabled={!canSend}
           >
             {sendLabel}
           </button>

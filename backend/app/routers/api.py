@@ -1972,14 +1972,91 @@ async def _finalize_chat_message_turn(
     }
 
 
+_EXT_TYPE_LABELS = {
+    "pdf": "PDF",
+    "doc": "DOC",
+    "docx": "DOCX",
+    "txt": "TXT",
+    "png": "PNG",
+    "jpg": "JPG",
+    "jpeg": "JPG",
+    "webp": "WEBP",
+    "gif": "GIF",
+    "zip": "ZIP",
+    "tif": "TIFF",
+    "tiff": "TIFF",
+    "bmp": "BMP",
+}
+
+
+def _file_type_label(name: str) -> str:
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
+    if not ext:
+        return "文件"
+    return _EXT_TYPE_LABELS.get(ext, ext.upper()[:6])
+
+
+def sanitize_attachment_chips(raw) -> list[dict]:
+    """只保留展示用的名称/类型，不把本地路径写进消息 metadata。"""
+    if not isinstance(raw, list):
+        return []
+    chips: list[dict] = []
+    for item in raw[:24]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        kind = "folder" if str(item.get("kind") or "") == "folder" else "file"
+        type_label = str(item.get("type") or "").strip()[:32] or (
+            "文件夹" if kind == "folder" else _file_type_label(name)
+        )
+        chips.append({"name": name[:180], "kind": kind, "type": type_label})
+    return chips
+
+
+def prepare_chat_turn(body: ChatMessageCreate) -> tuple[str, dict, list[dict]]:
+    ctx = dict(body.context or {})
+    chips = sanitize_attachment_chips(ctx.pop("attachments", None))
+    content = (body.content or "").strip()
+    return content, ctx, chips
+
+
+def _user_message_with_chips(session_id: int, content: str, chips: list[dict]) -> ChatMessage:
+    kwargs = {"metadata_json": {"attachments": chips}} if chips else {}
+    return ChatMessage(session_id=session_id, role="user", content=content, **kwargs)
+
+
+def _attachment_only_payload(db: Session, s: ChatSession, user_msg: ChatMessage) -> dict:
+    s.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(s)
+    return {
+        "session": session_to_dict(s),
+        "user_message": message_to_dict(user_msg),
+        "assistant_message": None,
+        "answer": "",
+        "source": "",
+        "matched_question": "",
+        "mode": "attachments",
+        "metadata": {},
+    }
+
+
 @router.post("/chat/sessions/{session_id}/messages")
 async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
     s = get_session_or_404(db, session_id)
-    content = (body.content or "").strip()
-    if not content:
+    content, ctx, chips = prepare_chat_turn(body)
+    if not content and not chips:
         raise HTTPException(400, "消息不能为空")
+    body.context = ctx or None
 
-    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    user_msg = _user_message_with_chips(s.id, content, chips)
+    if not content:
+        db.add(user_msg)
+        return _attachment_only_payload(db, s, user_msg)
     db.add(user_msg)
     db.flush()
 
@@ -1999,7 +2076,7 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
         history=history,
         faq_items=items,
         workspace=getattr(s, "workspace", None) or {},
-        context=body.context or {},
+        context=ctx,
         session=s,
     )
     return await _finalize_chat_message_turn(session_id, s, user_msg, content, body, result, db)
@@ -2008,12 +2085,25 @@ async def post_chat_message(session_id: int, body: ChatMessageCreate, db: Sessio
 @router.post("/chat/sessions/{session_id}/messages/stream")
 async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db: Session = Depends(get_db)):
     s = get_session_or_404(db, session_id)
-    content = (body.content or "").strip()
-    if not content:
+    content, ctx, chips = prepare_chat_turn(body)
+    if not content and not chips:
         raise HTTPException(400, "消息不能为空")
+    body.context = ctx or None
 
-    user_msg = ChatMessage(session_id=s.id, role="user", content=content)
+    user_msg = _user_message_with_chips(s.id, content, chips)
     db.add(user_msg)
+    if not content:
+        payload = _attachment_only_payload(db, s, user_msg)
+
+        async def attachment_only_stream():
+            yield f"data: {json.dumps({'type': 'done', 'payload': payload}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            attachment_only_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     db.commit()
     user_msg_id = user_msg.id
     db_bind = db.get_bind()
@@ -2036,7 +2126,6 @@ async def post_chat_message_stream(session_id: int, body: ChatMessageCreate, db:
                 for f in faqs
             ]
             ws = getattr(s_live, "workspace", None) or {}
-            ctx = body.context or {}
 
             result = await chat_assistant.process_chat_message(
                 content,
@@ -2111,9 +2200,20 @@ class ChatSessionWorkspacePatch(BaseModel):
     project_id: int | None = None
 
 
-def _persist_assistant_turn(db: Session, s: ChatSession, user_content: str, result: dict):
+def _persist_assistant_turn(
+    db: Session,
+    s: ChatSession,
+    user_content: str,
+    result: dict,
+    user_metadata: dict | None = None,
+):
     meta = dict(result.get("metadata") or {})
-    user_msg = ChatMessage(session_id=s.id, role="user", content=user_content)
+    user_msg = ChatMessage(
+        session_id=s.id,
+        role="user",
+        content=user_content,
+        metadata_json=user_metadata or {},
+    )
     db.add(user_msg)
     db.flush()
     bot_msg = ChatMessage(
@@ -2404,7 +2504,10 @@ async def upload_chat_file(
         session_id=s.id,
         role="user",
         content=f"[上传文件] {fname}",
-        metadata_json={"attachment": {"filename": fname, "object_key": key, "size": len(data)}},
+        metadata_json={
+            "attachment": {"filename": fname, "object_key": key, "size": len(data)},
+            "attachments": [{"name": fname, "kind": "file", "type": _file_type_label(fname)}],
+        },
     )
     db.add(user_msg)
     bot_msg = ChatMessage(
@@ -2441,7 +2544,16 @@ async def post_chat_import_folder(
         raise HTTPException(400, "folder_path 不能为空")
     result = await agent_flows.start_qual_folder_import(db, s, folder)
     label = (body.label or "选择资质文件夹").strip()
-    user_msg, bot_msg = _persist_assistant_turn(db, s, f"[{label}] {folder}", result)
+    folder_name = Path(folder).name or label
+    user_msg, bot_msg = _persist_assistant_turn(
+        db,
+        s,
+        f"[{label}] {folder}",
+        result,
+        user_metadata={
+            "attachments": [{"name": folder_name[:180], "kind": "folder", "type": "文件夹"}],
+        },
+    )
     return {
         "session": session_to_dict(s),
         "user_message": message_to_dict(user_msg),
@@ -2534,7 +2646,18 @@ async def upload_chat_files_batch(
             "metadata": {"intent": "file_upload_batch", "staging_dir": str(staging), "files": saved_names},
         }
 
-    user_msg, bot_msg = _persist_assistant_turn(db, s, user_label, result)
+    user_msg, bot_msg = _persist_assistant_turn(
+        db,
+        s,
+        user_label,
+        result,
+        user_metadata={
+            "attachments": [
+                {"name": name[:180], "kind": "file", "type": _file_type_label(name)}
+                for name in saved_names[:24]
+            ],
+        },
+    )
     return {
         "session": session_to_dict(s),
         "user_message": message_to_dict(user_msg),
