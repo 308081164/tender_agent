@@ -64,6 +64,18 @@ export const api = {
   getProject: (id) => request(`/projects/${id}`),
   getProjectContext: (id) => request(`/projects/${id}/context`),
   ensureProjectSession: (id) => request(`/projects/${id}/sessions`, { method: 'POST' }),
+  openProjectWorkspace: (id) => request(`/projects/${id}/workspace/open`, {
+    method: 'POST',
+    body: JSON.stringify({ guided_intake: true }),
+  }),
+  uploadReusableTemplate: async (file, meta = {}) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const qs = new URLSearchParams(meta).toString()
+    const res = await fetch(`${BASE}/templates/upload${qs ? `?${qs}` : ''}`, { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
   confirmSensitiveFields: (id, field_keys) =>
     request(`/projects/${id}/fields/confirm-sensitive`, {
       method: 'PATCH',

@@ -485,7 +485,7 @@ async def process_with_semantic_router(
 
     if intent == "generate_document" and confidence >= 0.55:
         from app.services.chat_assistant import _handle_generate_document
-        return await _handle_generate_document(db, text, ws)
+        return await _handle_generate_document(db, text, ws, session=session)
 
     if intent == "create_project" and confidence >= 0.55:
         from app.services.chat_assistant import _handle_create_project

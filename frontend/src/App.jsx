@@ -111,6 +111,7 @@ export default function App() {
         templates={templates}
         onClose={() => setCreateHubOpen(false)}
         showToast={showToast}
+        onUploaded={refreshBaseData}
       />
       <Toast message={toast} />
     </AppContext.Provider>

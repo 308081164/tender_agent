@@ -1,6 +1,7 @@
 """不依赖 Aspose 的 docx 读写。工具环用它真正改段落、插表、插图。"""
 from __future__ import annotations
 
+import os
 import sys
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -21,6 +22,8 @@ ET.register_namespace("r", R)
 
 
 def aspose_available() -> bool:
+    if os.environ.get("TENDER_DISABLE_ASPOSE") == "1":
+        return False
     mod = sys.modules.get("aspose.words")
     if mod is None:
         try:
@@ -30,7 +33,10 @@ def aspose_available() -> bool:
     if type(mod).__name__ == "MagicMock":
         return False
     document = getattr(mod, "Document", None)
-    return callable(document) and type(document).__name__ != "MagicMock"
+    if not (callable(document) and type(document).__name__ != "MagicMock"):
+        return False
+    from app.services.aspose_runtime import aspose_runtime_usable
+    return aspose_runtime_usable()
 
 
 def build_docx(paragraphs: list[str]) -> bytes:
@@ -189,14 +195,77 @@ def insert_image(docx_bytes: bytes, paragraph_index: int, image_bytes: bytes) ->
     return _merge_new_parts(docx_bytes, packed, rel_id, image_bytes)
 
 
-def _paragraph_xml(text: str) -> str:
+def _paragraph_xml(text: str, style: str | None = None) -> str:
     safe = (
         (text or "")
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-    return f'<w:p><w:r><w:t xml:space="preserve">{safe}</w:t></w:r></w:p>'
+    ppr = ""
+    if style:
+        safe_style = (
+            style.replace("&", "")
+            .replace("<", "")
+            .replace(">", "")
+            .replace('"', "")
+        )
+        ppr = f'<w:pPr><w:pStyle w:val="{safe_style}"/></w:pPr>'
+    return f'<w:p>{ppr}<w:r><w:t xml:space="preserve">{safe}</w:t></w:r></w:p>'
+
+
+def build_styled_docx(items: list[tuple[str, str | None]]) -> bytes:
+    """段落列表，每项是 (正文, 样式名)。样式名可为空。"""
+    body = "".join(_paragraph_xml(text, style) for text, style in items) or _paragraph_xml("")
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}" xmlns:r="{R}"><w:body>{body}'
+        '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Types xmlns="{CT}">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{PR}">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    doc_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{PR}"></Relationships>'
+    )
+    return _pack({
+        "[Content_Types].xml": content_types.encode(),
+        "_rels/.rels": rels.encode(),
+        "word/document.xml": document.encode(),
+        "word/_rels/document.xml.rels": doc_rels.encode(),
+    })
+
+
+def paragraph_records(docx_bytes: bytes) -> list[dict]:
+    """正文段落的文本和样式。空段也保留，用来识别空白章节。"""
+    root = _document_root(docx_bytes)
+    records: list[dict] = []
+    for node in _body_paragraphs(root):
+        style = ""
+        ppr = node.find(f"{{{W}}}pPr")
+        if ppr is not None:
+            pstyle = ppr.find(f"{{{W}}}pStyle")
+            if pstyle is not None:
+                style = pstyle.get(f"{{{W}}}val") or ""
+        records.append({
+            "text": _paragraph_text(node).strip(),
+            "style": style,
+        })
+    return records
 
 
 def _table_xml(rows: int, cols: int, cells: list[list[str]] | None = None) -> str:

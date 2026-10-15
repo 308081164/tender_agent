@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
@@ -20,7 +20,7 @@ export default function WizardPage() {
   const navigate = useNavigate()
   const {
     showToast, templates, fieldDefs, quals, categories,
-    refreshProjects,
+    refreshProjects, refreshBaseData,
   } = useApp()
 
   const projectState = useProject(showToast)
@@ -41,6 +41,8 @@ export default function WizardPage() {
   const [guidedIntake, setGuidedIntake] = useState(null)
   const [guidedAnswers, setGuidedAnswers] = useState({})
   const [processing, setProcessing] = useState({ open: false, title: '', message: '' })
+  const [uploadingTpl, setUploadingTpl] = useState(false)
+  const uploadRef = useRef(null)
 
   const viewStep = Math.min(Math.max(parseInt(stepParam, 10) || 1, 1), 6)
   const currentStep = project?.current_step || 1
@@ -170,6 +172,22 @@ export default function WizardPage() {
       }
     }
     return p
+  }
+
+  const uploadTemplateForBid = async (file) => {
+    if (!file || uploadingTpl) return
+    setUploadingTpl(true)
+    try {
+      const tpl = await api.uploadReusableTemplate(file)
+      await refreshBaseData?.()
+      setSelectedTpl(tpl.id)
+      showToast(`「${tpl.name || file.name}」已保存，以后新建标书也能选用`)
+    } catch (e) {
+      showToast(e.message || '上传失败')
+    } finally {
+      setUploadingTpl(false)
+      if (uploadRef.current) uploadRef.current.value = ''
+    }
   }
 
   const confirmStep1 = async () => {
@@ -397,7 +415,19 @@ export default function WizardPage() {
         {step === 1 && (
           <>
             <h2>选择起点</h2>
-            <p className="lead">优先选择「工程化模板」；历史标书将按原字段快照做智能替换。招标文件不会出现在此列表。</p>
+            <p className="lead">选择已保存的模板，或上传一份。上传的文件会存档，下一份标书也能选到。招标文件不会出现在此列表。</p>
+            <input
+              ref={uploadRef}
+              type="file"
+              accept=".docx"
+              className="hidden"
+              onChange={(e) => uploadTemplateForBid(e.target.files?.[0])}
+            />
+            <div className="actions" style={{ marginTop: 0 }}>
+              <button type="button" className="secondary" onClick={() => uploadRef.current?.click()} disabled={uploadingTpl}>
+                {uploadingTpl ? '上传中…' : '上传 Word 模板'}
+              </button>
+            </div>
             <Step1TemplatePicker
               templates={templates}
               selectedId={selectedTpl}

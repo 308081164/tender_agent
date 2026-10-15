@@ -20,6 +20,20 @@ RULE_HINTS: list[tuple[str, list[str]]] = [
     ("bid_amount", [r"人民币[\u4e00-\u9fff]{2,30}整", r"\d+(?:\.\d+)?(?:万|亿)?元"]),
     ("bid_date", [r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日"]),
     ("duration", [r"\d+\s*日历天", r"\d+\s*工作日", r"\d+\s*(?:个)?月(?!\s*\d)"]),
+    ("tender_no", [
+        r"(?<=招标编号：)[A-Za-z0-9\-]{4,40}",
+        r"(?<=招标编号:)[A-Za-z0-9\-]{4,40}",
+        r"(?<=项目编号：)[A-Za-z0-9\-]{4,40}",
+        r"(?<=项目编号:)[A-Za-z0-9\-]{4,40}",
+    ]),
+    ("tenderer", [
+        r"(?<=招标人：)[\u4e00-\u9fffA-Za-z0-9（）()]{2,40}",
+        r"(?<=招标人:)[\u4e00-\u9fffA-Za-z0-9（）()]{2,40}",
+    ]),
+    ("bidder_name", [
+        r"(?<=投标人：)[\u4e00-\u9fffA-Za-z0-9（）()]{2,40}",
+        r"(?<=投标人:)[\u4e00-\u9fffA-Za-z0-9（）()]{2,40}",
+    ]),
     ("phone", [r"0\d{2,3}-\d{7,8}"]),
     ("postcode", [r"(?<!\d)\d{6}(?!\d)"]),
 ]
@@ -214,9 +228,12 @@ async def detect_placeholder_candidates(
 
     llm_items = await ai.detect_placeholder_candidates(text, catalog, db=db)
     rule_items = _rule_candidates(text, catalog)
+    index_paras = paragraphs
     try:
-        from app.services.doc_engine.indexer import build_document_index
-        index_paras = build_document_index(docx_bytes).get("paragraphs") or []
+        from app.services.docx_ooxml import aspose_available
+        if aspose_available():
+            from app.services.doc_engine.indexer import build_document_index
+            index_paras = build_document_index(docx_bytes).get("paragraphs") or paragraphs
     except Exception:
         index_paras = paragraphs
     blank_items = _blank_fill_candidates(index_paras, catalog)

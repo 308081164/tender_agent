@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useApp } from '../../App'
 import { api } from '../../api/client'
 import { useAdminList } from '../../hooks/useAdminList'
@@ -11,7 +11,6 @@ import Pagination from '../../components/Pagination'
 import { TEMPLATE_UPLOAD_OPTIONS, templateSourceLabel } from '../../constants/admin'
 
 export default function TemplatesListPage() {
-  const navigate = useNavigate()
   const { showToast, refreshBaseData } = useApp()
   const [tab, setTab] = useState('all')
   const [uploading, setUploading] = useState(false)
@@ -68,7 +67,7 @@ export default function TemplatesListPage() {
       const tpl = await api.uploadTemplate(file, { kind })
       await reload()
       await refreshBaseData?.()
-      navigate(`/admin/templates/${tpl.id}/engineer`)
+      showToast(`「${tpl.name || file.name}」已保存，新建标书时可以直接选用`)
     } catch (e) {
       setUploadError(e.message || '上传失败')
     } finally {
@@ -111,7 +110,7 @@ export default function TemplatesListPage() {
       />
       <AdminPageHeader
         title="模板管理"
-        lead="上传 Word 文档后进入工程化工作台。请先选择创建方式：完整标书需标记大量可变字段；空白模板含编写规则，生成时将全文供 AI 参考。"
+        lead="上传 Word 文档后即存档，不必进入占位符编辑。文件里已有的占位符由系统收下；新建标书时再选用。"
         actions={uploadButton}
       />
       {uploadError ? <div className="banner err">{uploadError}</div> : null}

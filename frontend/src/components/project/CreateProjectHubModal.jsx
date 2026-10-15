@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Step1TemplatePicker from '../Step1TemplatePicker'
 import { api } from '../../api/client'
@@ -16,11 +16,13 @@ function markRecent(templateId) {
   }
 }
 
-export default function CreateProjectHubModal({ open, templates, onClose, showToast }) {
+export default function CreateProjectHubModal({ open, templates, onClose, showToast, onUploaded }) {
   const navigate = useNavigate()
   const [selectedId, setSelectedId] = useState(null)
   const [workspaceDir, setWorkspaceDir] = useState('')
   const [busy, setBusy] = useState(false)
+  const [localTemplates, setLocalTemplates] = useState(templates)
+  const fileRef = useRef(null)
 
   const recentWorkspaces = useMemo(() => {
     try {
@@ -38,14 +40,35 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
     }
   }, [open])
 
+  useEffect(() => {
+    setLocalTemplates(templates)
+  }, [templates])
+
   const sortedTemplates = useMemo(() => {
     const recent = new Set(recentIds)
-    return [...templates].sort((a, b) => {
+    return [...localTemplates].sort((a, b) => {
       const ar = recent.has(a.id) ? 1 : 0
       const br = recent.has(b.id) ? 1 : 0
       return br - ar
     })
-  }, [templates, recentIds])
+  }, [localTemplates, recentIds])
+
+  const onUpload = async (file) => {
+    if (!file || busy) return
+    setBusy(true)
+    try {
+      const tpl = await api.uploadReusableTemplate(file)
+      setLocalTemplates((list) => [tpl, ...list.filter((item) => item.id !== tpl.id)])
+      setSelectedId(tpl.id)
+      await onUploaded?.()
+      showToast?.(`「${tpl.name || file.name}」已保存，这次和以后的标书都可以选用`)
+    } catch (e) {
+      showToast?.(e.message || '上传失败')
+    } finally {
+      setBusy(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
 
   useEffect(() => {
     if (!open) {
@@ -105,7 +128,19 @@ export default function CreateProjectHubModal({ open, templates, onClose, showTo
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal panel create-hub-modal" role="dialog" onClick={(e) => e.stopPropagation()}>
         <h3>新建标书</h3>
-        <p className="muted">选择模板后从「选择起点」开始；完成信息录入后留在 Agent 对话里编写、审查和导出。</p>
+        <p className="muted">选择已有模板，或现在上传一份。上传的文件会存成可复用模板，下一份标书也能选到。完成信息录入后留在 Agent 对话里编写、审查和导出。</p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".docx"
+          className="hidden"
+          onChange={(e) => onUpload(e.target.files?.[0])}
+        />
+        <div className="row-actions" style={{ marginBottom: 8 }}>
+          <button type="button" className="secondary" onClick={() => fileRef.current?.click()} disabled={busy}>
+            {busy ? '上传中…' : '上传 Word 模板'}
+          </button>
+        </div>
         <Step1TemplatePicker templates={sortedTemplates} selectedId={selectedId} onSelect={setSelectedId} />
         <div className="create-hub-workspace" style={{ marginTop: 12 }}>
           <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>

@@ -116,6 +116,12 @@ export default function ChatPage() {
         if (Number.isFinite(projectId) && projectId > 0) {
           const bound = await api.ensureProjectSession(projectId)
           if (cancelled) return
+          try {
+            await api.openProjectWorkspace(projectId)
+          } catch {
+            /* 开场失败时仍打开已绑定的文档 */
+          }
+          if (cancelled) return
           const sid = bound?.session?.id
           if (sid) {
             await loadSession(sid)
