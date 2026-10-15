@@ -96,9 +96,18 @@ def _field_defs_for_detect(db: Session) -> list[dict]:
     return catalog
 
 
+def _section_starter(title: str, project_name: str) -> str:
+    name = project_name or "本项目"
+    if "投标函" in title:
+        return f"我方参加「{name}」投标，现提交投标函，并按招标文件要求编制。"
+    if "技术方案" in title:
+        return f"针对「{name}」，技术方案从实施范围、质量措施和进度安排写起。"
+    return f"「{title}」按「{name}」的招标要求开始编写。"
+
+
 def _empty_sections(data: bytes) -> list[str]:
     try:
-        records = paragraph_records(data)
+        records = [item for item in paragraph_records(data) if not item.get("in_table")]
     except Exception:
         return []
     titles: list[str] = []
@@ -283,8 +292,8 @@ def format_creation_greeting(report: dict) -> str:
             lines.append(f"- {item.get('name')}：{item.get('detail') or item.get('value')}")
     elif sections:
         lines.append("")
-        lines.append("这是空白模板，已识别可写章节：" + "、".join(sections) + "。")
-        lines.append("可以从这些空章节开始写，不必再画占位符。")
+        lines.append("这是空白模板，已在草稿中开始写这些章节：" + "、".join(sections) + "。")
+        lines.append("对应标题下的空段已经起稿，不必再画占位符。")
     else:
         lines.append("")
         lines.append("模板正文已读入工作区。")
@@ -414,6 +423,19 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
                 rendered_text = document_text(rendered)
             except Exception:
                 rendered_text = ""
+    # 单元格里还留着旧事实时，不能报「已写入」。
+    written = [
+        item for item in written
+        if not (item.get("original") and item.get("original") in rendered_text)
+        and (not item.get("value") or item.get("value") in rendered_text)
+    ]
+    starters = {
+        title: _section_starter(title, str(fields.get("project_name") or "").strip())
+        for title in sections
+    }
+    if starters:
+        from app.services.docx_ooxml import write_section_starters
+        rendered = write_section_starters(rendered, starters)
 
     draft_key = f"projects/{project.id}/creation_draft.docx"
     storage.upload_bytes(

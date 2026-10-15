@@ -130,18 +130,27 @@ def document_blocks(docx_bytes: bytes) -> list[dict]:
     return blocks
 
 
+def _all_paragraphs(root: ET.Element) -> list[ET.Element]:
+    """正文段落和表格单元格里的段落。"""
+    return list(_body(root).iter(f"{{{W}}}p"))
+
+
 def replace_text(docx_bytes: bytes, old: str, new: str, *, paragraph_index: int | None = None) -> bytes:
-    """替换选中文字或指定段落。找不到原文时抛错，不改到文首。"""
+    """替换选中文字或指定段落。找不到原文时抛错，不改到文首。
+
+    未指定段落时同时查找表格单元格，避免只改到 w:body 的直接段落。
+    """
     if not old and paragraph_index is None:
         raise ValueError("请提供选中文本或段落索引")
     root = _document_root(docx_bytes)
     nodes = _body_paragraphs(root)
     replaced = False
-    targets = nodes
     if paragraph_index is not None:
         if paragraph_index < 0 or paragraph_index >= len(nodes):
             raise ValueError(f"段落索引越界: {paragraph_index}")
         targets = [nodes[paragraph_index]]
+    else:
+        targets = _all_paragraphs(root)
     for node in targets:
         current = _paragraph_text(node)
         if old and old in current:
@@ -250,22 +259,103 @@ def build_styled_docx(items: list[tuple[str, str | None]]) -> bytes:
     })
 
 
+def _paragraph_style(node: ET.Element) -> str:
+    ppr = node.find(f"{{{W}}}pPr")
+    if ppr is None:
+        return ""
+    pstyle = ppr.find(f"{{{W}}}pStyle")
+    if pstyle is None:
+        return ""
+    return pstyle.get(f"{{{W}}}val") or ""
+
+
+def _record_for(node: ET.Element, *, in_table: bool) -> dict:
+    return {
+        "text": _paragraph_text(node).strip(),
+        "style": _paragraph_style(node),
+        "in_table": in_table,
+    }
+
+
 def paragraph_records(docx_bytes: bytes) -> list[dict]:
-    """正文段落的文本和样式。空段也保留，用来识别空白章节。"""
+    """按阅读顺序交出正文段落和表格单元格。空段保留，用来识别空白章节。"""
     root = _document_root(docx_bytes)
     records: list[dict] = []
-    for node in _body_paragraphs(root):
-        style = ""
-        ppr = node.find(f"{{{W}}}pPr")
-        if ppr is not None:
-            pstyle = ppr.find(f"{{{W}}}pStyle")
-            if pstyle is not None:
-                style = pstyle.get(f"{{{W}}}val") or ""
-        records.append({
-            "text": _paragraph_text(node).strip(),
-            "style": style,
-        })
+    for child in list(_body(root)):
+        if child.tag == f"{{{W}}}p":
+            records.append(_record_for(child, in_table=False))
+        elif child.tag == f"{{{W}}}tbl":
+            for para in child.iter(f"{{{W}}}p"):
+                records.append(_record_for(para, in_table=True))
     return records
+
+
+def build_table_docx(rows: list[list[str]]) -> bytes:
+    """只有一张表的 docx，用来覆盖单元格里的旧事实。"""
+    width = max((len(row) for row in rows), default=1)
+    table = _table_xml(len(rows) or 1, width, rows)
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{W}" xmlns:r="{R}"><w:body>{table}'
+        '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Types xmlns="{CT}">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{PR}">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    doc_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{PR}"></Relationships>'
+    )
+    return _pack({
+        "[Content_Types].xml": content_types.encode(),
+        "_rels/.rels": rels.encode(),
+        "word/document.xml": document.encode(),
+        "word/_rels/document.xml.rels": doc_rels.encode(),
+    })
+
+
+def write_section_starters(docx_bytes: bytes, starters: dict[str, str]) -> bytes:
+    """标题下一段为空或短于 30 字时，写入该章节的起稿。"""
+    if not starters:
+        return docx_bytes
+    root = _document_root(docx_bytes)
+    paras = _body_paragraphs(root)
+    changed = False
+    for index, node in enumerate(paras):
+        style = _paragraph_style(node)
+        text = _paragraph_text(node).strip()
+        heading = style.lower().startswith("heading") or "标题" in style
+        starter = starters.get(text) or ""
+        if not heading or not starter:
+            continue
+        nxt = paras[index + 1] if index + 1 < len(paras) else None
+        if nxt is None:
+            parent = _parent_map(root)[node]
+            inserted = ET.fromstring(_paragraph_xml(starter))
+            parent.insert(list(parent).index(node) + 1, inserted)
+            changed = True
+            continue
+        nxt_text = _paragraph_text(nxt).strip()
+        if len(nxt_text) > 30:
+            continue
+        _set_paragraph_text(nxt, starter)
+        changed = True
+    if not changed:
+        return docx_bytes
+    return _save_document(docx_bytes, root)
 
 
 def _table_xml(rows: int, cols: int, cells: list[list[str]] | None = None) -> str:

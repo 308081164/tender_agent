@@ -15,7 +15,12 @@ from app.services.word import is_field_code_text
 RULE_HINTS: list[tuple[str, list[str]]] = [
     (
         "project_name",
-        [r"[\u4e00-\u9fffA-Za-z0-9（）()\-·]{10,120}(?:工程|项目|采购|标段|包件)"],
+        [
+            r"[\u4e00-\u9fffA-Za-z0-9（）()\-·]{10,120}(?:工程|项目|采购|标段|包件)",
+            # 标签后的名称不必再带「项目/工程」后缀
+            r"(?<=项目名称：)[\u4e00-\u9fffA-Za-z0-9（）()\-·]{2,80}",
+            r"(?<=项目名称:)[\u4e00-\u9fffA-Za-z0-9（）()\-·]{2,80}",
+        ],
     ),
     ("bid_amount", [r"人民币[\u4e00-\u9fff]{2,30}整", r"\d+(?:\.\d+)?(?:万|亿)?元"]),
     ("bid_date", [r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日"]),
@@ -141,6 +146,52 @@ def _blank_fill_candidates(paragraphs: list[dict], catalog: list[dict]) -> list[
     return found
 
 
+_TABLE_LABELS = {
+    "项目名称": "project_name",
+    "招标编号": "tender_no",
+    "项目编号": "tender_no",
+    "采购编号": "tender_no",
+    "投标报价": "bid_amount",
+    "投标总价": "bid_amount",
+    "金额": "bid_amount",
+    "报价": "bid_amount",
+}
+
+
+def _table_row_candidates(docx_bytes: bytes, catalog: list[dict]) -> list[dict]:
+    """表格里「标签 | 值」两列，值本身不必再带项目/工程后缀。"""
+    from app.services.docx_ooxml import document_blocks
+
+    keys = {item["key"] for item in catalog}
+    names = {item["key"]: item["name"] for item in catalog}
+    found: list[dict] = []
+    try:
+        blocks = document_blocks(docx_bytes)
+    except Exception:
+        return found
+    for block in blocks:
+        if block.get("kind") != "table":
+            continue
+        for row in block.get("rows") or []:
+            if len(row) < 2:
+                continue
+            label = str(row[0] or "").strip().rstrip("：:")
+            value = str(row[1] or "").strip()
+            key = _TABLE_LABELS.get(label)
+            if not key or key not in keys or len(value) < 2 or _is_junk_text(value):
+                continue
+            found.append({
+                "key": key,
+                "field_name": names.get(key) or key,
+                "original_text": value,
+                "confidence": 0.9,
+                "reason": "表格标签列",
+                "source": "rule",
+                "bind_type": "field",
+            })
+    return found
+
+
 def _rule_candidates(text: str, catalog: list[dict]) -> list[dict]:
     keys = {c["key"] for c in catalog}
     found: list[dict] = []
@@ -219,7 +270,21 @@ async def detect_placeholder_candidates(
 ) -> dict[str, Any]:
     preview = word.extract_preview(docx_bytes, max_paragraphs=400)
     paragraphs = preview.get("paragraphs") or []
-    text = "\n".join(p["text"] for p in paragraphs if p.get("text"))
+    lines = [p["text"] for p in paragraphs if p.get("text")]
+    for para in paragraphs:
+        for row in para.get("table_rows") or []:
+            for cell in row:
+                cell_text = str(cell or "").strip()
+                if cell_text:
+                    lines.append(cell_text)
+    try:
+        from app.services.docx_ooxml import document_text as ooxml_document_text
+        extra = ooxml_document_text(docx_bytes)
+        if extra:
+            lines.append(extra)
+    except Exception:
+        pass
+    text = "\n".join(lines)
     catalog = _field_catalog(field_defs)
     existing = word.extract_placeholders(docx_bytes)
 
@@ -228,6 +293,7 @@ async def detect_placeholder_candidates(
 
     llm_items = await ai.detect_placeholder_candidates(text, catalog, db=db)
     rule_items = _rule_candidates(text, catalog)
+    rule_items.extend(_table_row_candidates(docx_bytes, catalog))
     index_paras = paragraphs
     try:
         from app.services.docx_ooxml import aspose_available

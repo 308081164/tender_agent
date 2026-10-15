@@ -22,7 +22,7 @@ from app.models import CompanyProfile, FieldDef
 from app.routers import admin as admin_router
 from app.routers import api as api_router
 from app.services import storage
-from app.services.docx_ooxml import build_docx, build_styled_docx, document_text
+from app.services.docx_ooxml import build_docx, build_styled_docx, build_table_docx, document_text
 
 engine = create_engine(
     "sqlite:///:memory:",
@@ -402,3 +402,105 @@ def test_bound_template_fill_request_opens_workspace_without_upload_prompt(monke
     assert known["project_name"] == "SSH示范项目"
     assert known["tenderer"] == "新城轨道建设有限公司"
     assert known["duration"] == "12个月"
+
+
+def test_table_cells_are_replaced_and_greeting_does_not_claim_leftovers():
+    """项目名称、招标编号、金额只在表格单元格里时，下载件必须换成新值。"""
+    _seed_fields()
+    table = build_table_docx([
+        ["项目名称", OLD_PROJECT],
+        ["招标编号", OLD_TENDER],
+        ["投标报价", OLD_AMOUNT],
+    ])
+    uploaded = _post_docx("/api/templates/upload", "表格历史标书.docx", table, "history")
+    assert uploaded.status_code == 200, uploaded.text
+    project = _project_with_fields(uploaded.json()["id"], {
+        "project_name": NEW_PROJECT,
+        "tender_no": NEW_TENDER,
+        "tenderer": NEW_TENDERER,
+        "duration": "180日历天",
+        "bid_amount": "人民币贰佰万元整",
+    })
+    opened = _bind_and_open(project["id"])
+    text = _workspace_text(opened["session_id"])
+    greeting = opened["opening"]["assistant_message"]["content"]
+    assert NEW_PROJECT in text
+    assert NEW_TENDER in text
+    assert "人民币贰佰万元整" in text
+    assert OLD_PROJECT not in text
+    assert OLD_TENDER not in text
+    assert OLD_AMOUNT not in text
+    if any(old in text for old in (OLD_PROJECT, OLD_TENDER, OLD_AMOUNT)):
+        assert "已写入草稿" not in greeting
+    assert "已写入草稿" in greeting
+
+
+def test_project_name_without_suffix_is_replaced():
+    _seed_fields()
+    old_name = "南山医院迁建"
+    new_name = "湾区配套迁建"
+    doc = build_docx([
+        f"项目名称：{old_name}",
+        f"招标编号：{OLD_TENDER}",
+    ])
+    uploaded = _post_docx("/api/templates/upload", "无后缀项目名.docx", doc, "history")
+    assert uploaded.status_code == 200, uploaded.text
+    project = _project_with_fields(uploaded.json()["id"], {
+        "project_name": new_name,
+        "tender_no": NEW_TENDER,
+        "tenderer": NEW_TENDERER,
+        "duration": "90日历天",
+    })
+    opened = _bind_and_open(project["id"])
+    text = _workspace_text(opened["session_id"])
+    assert old_name not in text
+    assert new_name in text
+    assert OLD_TENDER not in text
+    assert NEW_TENDER in text
+
+
+def test_confirm_price_writes_into_the_draft_immediately():
+    _seed_fields()
+    uploaded = _post_docx("/api/templates/upload", "待报价.docx", _historical_docx(), "history")
+    assert uploaded.status_code == 200, uploaded.text
+    project = _project_with_fields(uploaded.json()["id"], {
+        "project_name": NEW_PROJECT,
+        "tender_no": NEW_TENDER,
+        "tenderer": NEW_TENDERER,
+        "duration": "180日历天",
+    })
+    opened = _bind_and_open(project["id"])
+    message = opened["opening"]["assistant_message"]
+    new_amount = "人民币贰佰万元整"
+    confirmed = client.post(
+        f"/api/chat/sessions/{opened['session_id']}/actions",
+        json={
+            "message_id": message["id"],
+            "card_id": "creation-open-decisions",
+            "action": "confirm_fields",
+            "payload": {"fields": {"bid_amount": new_amount}},
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    text = _workspace_text(opened["session_id"])
+    assert new_amount in text
+    assert OLD_AMOUNT not in text
+
+
+def test_blank_sections_are_started_in_the_downloaded_docx():
+    _seed_fields()
+    uploaded = _post_docx("/api/templates/upload", "空白起稿.docx", _blank_docx(), "skeleton")
+    assert uploaded.status_code == 200, uploaded.text
+    project = _project_with_fields(uploaded.json()["id"], {
+        "project_name": "空白起点项目",
+        "tenderer": NEW_TENDERER,
+        "duration": "6个月",
+    })
+    opened = _bind_and_open(project["id"])
+    greeting = opened["opening"]["assistant_message"]["content"]
+    text = _workspace_text(opened["session_id"])
+    assert "投标函" in greeting
+    assert "技术方案" in greeting
+    assert "我方参加「空白起点项目」投标，现提交投标函" in text
+    assert "技术方案从实施范围、质量措施和进度安排写起" in text
+    assert BLANK_MARKER in text
