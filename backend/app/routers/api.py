@@ -575,13 +575,20 @@ def get_project_context(project_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/projects/{project_id}/sessions")
-def get_or_create_project_chat_session(project_id: int, db: Session = Depends(get_db)):
+async def get_or_create_project_chat_session(project_id: int, db: Session = Depends(get_db)):
+    from app.services.creation_draft import materialize_creation_draft, should_write_draft
     from app.services.project_sessions import get_or_create_project_session
 
     p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
     if not p:
         raise HTTPException(404, "项目不存在")
     s = get_or_create_project_session(db, p)
+    if should_write_draft(p):
+        try:
+            await materialize_creation_draft(db, p, s)
+            db.refresh(s)
+        except Exception:
+            pass
     return {"session": session_to_dict(s), "project_id": project_id}
 
 
@@ -1995,7 +2002,7 @@ async def _finalize_chat_message_turn(
             meta["revised_preview"] = revised[:1000]
 
     pid = ws.get("project_id")
-    if pid:
+    if pid and not meta.get("skip_intake_chrome"):
         try:
             from app.services.project_context import build_project_context
             from app.services import agent_tools, project_workspace_agent
@@ -2508,8 +2515,16 @@ def patch_chat_session_workspace(
 
 @router.get("/chat/sessions/{session_id}/workspace")
 def get_chat_workspace(session_id: int, db: Session = Depends(get_db)):
+    from app.services.project_sessions import attach_template_document
+
     s = get_session_or_404(db, session_id)
     ws = getattr(s, "workspace", None) or {}
+    if ws.get("project_id") and not (ws.get("draft_object_key") or ws.get("template_object_key")):
+        project = db.query(TenderProject).filter(TenderProject.id == int(ws["project_id"])).first()
+        if project and attach_template_document(db, s, project):
+            db.commit()
+            db.refresh(s)
+            ws = getattr(s, "workspace", None) or {}
     doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
     paragraphs = []
     if doc_key:
@@ -2603,64 +2618,38 @@ async def upload_chat_file(
 
     is_docx = fname.lower().endswith(".docx")
     if is_docx:
-        placeholders = word.extract_placeholders(data)
+        from app.services.template_persist import persist_uploaded_template
+
         preview = word.extract_preview(data, max_paragraphs=30)
         para_count = len(preview.get("paragraphs") or [])
+        tpl = persist_uploaded_template(db, data, fname, kind="auto")
+        placeholders = (tpl.placeholders or {}).get("list") or []
         ws = dict(getattr(s, "workspace", None) or {})
-        ws["template_object_key"] = key
-        ws["draft_object_key"] = key
+        ws["template_object_key"] = tpl.object_key
+        ws["draft_object_key"] = tpl.object_key
+        ws["template_id"] = tpl.id
         ws["filename"] = fname
         ws["version"] = 1
         ws["last_action"] = "upload"
-        ws["awaiting_file_intent"] = True
+        ws.pop("awaiting_file_intent", None)
         ws["upload_meta"] = {
             "placeholder_count": len(placeholders),
             "paragraph_count": para_count,
             "size_kb": len(data) // 1024,
+            "template_id": tpl.id,
         }
         s.workspace = ws
         answer = (
-            f"已收到并阅读文档「{fname}」（{len(data) // 1024} KB，约 {para_count} 段）。\n\n"
-            f"检测到 {len(placeholders)} 个占位符。\n\n"
-            "**在您明确下达指令前，我不会自动修改文档。** 请告诉我您希望进行哪种操作：\n"
-            "1. 工程化为可复用模板\n"
-            "2. 结合企业信息按此格式编写招标标书\n"
-            "3. 在文档中批量替换指定文字\n"
-            "4. 仅作为工作区文档预览/编辑\n\n"
-            "也可直接用自然语言描述您的需求。"
+            f"已保存文档「{tpl.name}」（{len(data) // 1024} KB，约 {para_count} 段），"
+            f"并作为可复用模板。文件里已有 {len(placeholders)} 个占位符，系统已收下。\n\n"
+            "这份模板现在就能用，也会出现在以后新建标书的选择列表里。"
+            "不必进入占位符编辑，也不必先确认映射。"
         )
         actions = [
             {"type": "link", "label": "下载当前文档", "url": f"/api/chat/sessions/{session_id}/workspace/download"},
         ]
-        uid = uuid.uuid4().hex[:8]
-        cards = [
-            {
-                "id": f"upload-tpl-{uid}",
-                "type": "confirm",
-                "title": "生成标书模板",
-                "state": "active",
-                "payload": {
-                    "message": "识别项目名称、招标人等字段并替换为占位符，生成可复用模板。",
-                    "confirm_label": "创建模板",
-                    "cancel_label": "暂不",
-                    "confirm_action": "start_template_create",
-                    "cancel_action": "dismiss_card",
-                },
-            },
-            {
-                "id": f"upload-gen-{uid}",
-                "type": "confirm",
-                "title": "按此格式编写标书",
-                "state": "active",
-                "payload": {
-                    "message": "将结合系统内企业信息，按当前文档版式生成招标标书（需补充编写要求）。",
-                    "confirm_label": "开始编写",
-                    "cancel_label": "暂不",
-                    "confirm_action": "dismiss_card",
-                    "cancel_action": "dismiss_card",
-                },
-            },
-        ]
+        cards = []
+        key = tpl.object_key
     else:
         answer = f"已收到文件「{fname}」。当前支持 DOCX 标书文件的模板化分析，其他格式可作为参考资料。"
         actions = [{"type": "link", "label": "前往数据管理", "url": "/admin"}]
@@ -2934,23 +2923,17 @@ def list_faqs(db: Session = Depends(get_db)):
 
 
 @router.post("/templates/upload")
-async def upload_template(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_template(
+    file: UploadFile = File(...),
+    kind: str = "auto",
+    db: Session = Depends(get_db),
+):
+    """立项时临时上传：存成可再次选用的模板，不进入占位符编辑器。"""
+    from app.services.template_persist import persist_uploaded_template, template_choice_dict
+
     data = await file.read()
+    if not data:
+        raise HTTPException(400, "文件为空")
     name = file.filename or "uploaded.docx"
-    key = f"templates/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{name}"
-    storage.upload_bytes(
-        key, data,
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-    placeholders = word.extract_placeholders(data)
-    structure = word.extract_structure(data)
-    tpl = Template(
-        name=name.rsplit(".", 1)[0],
-        description="用户上传模板",
-        object_key=key,
-        placeholders={"list": placeholders, "structure": structure},
-    )
-    db.add(tpl)
-    db.commit()
-    db.refresh(tpl)
-    return {"id": tpl.id, "name": tpl.name, "placeholders": placeholders}
+    tpl = persist_uploaded_template(db, data, name, name=name, kind=kind or "auto")
+    return template_choice_dict(tpl)

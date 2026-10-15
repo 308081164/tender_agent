@@ -16,6 +16,9 @@ LOC_IMAGE = re.compile(r"^img:(\d+)$")
 
 
 def _load(docx_bytes: bytes) -> aw.Document:
+    from app.services.docx_ooxml import aspose_available
+    if not aspose_available():
+        raise RuntimeError("Aspose 不可用，改走 OOXML")
     ensure_license()
     return aw.Document(BytesIO(docx_bytes))
 

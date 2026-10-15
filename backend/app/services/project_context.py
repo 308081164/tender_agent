@@ -156,6 +156,11 @@ def build_project_context(db: Session, project_id: int) -> dict[str, Any]:
         ],
         "memo_prompt": memo_prompt_block(project.fields),
         "guided_intake_enabled": bool((project.fields or {}).get("_guided_intake", True)),
+        "known_fields": {
+            key: value
+            for key, value in (project.fields or {}).items()
+            if not str(key).startswith("_") and value not in (None, "")
+        },
     }
 
 

@@ -150,12 +150,44 @@ async def ensure_workspace_opening_message(
     if guided is None:
         guided = bool(ws.get("guided_intake", True))
 
+    from app.services.creation_draft import (
+        format_creation_greeting,
+        materialize_creation_draft,
+        open_decision_card,
+        should_write_draft,
+    )
+
+    if should_write_draft(project):
+        try:
+            await materialize_creation_draft(db, project, session)
+            db.refresh(project)
+        except Exception as err:
+            logger.warning("creation draft failed project=%s: %s", project.id, err)
+
     ctx = build_project_context(db, project.id)
-    intake = await agent_tools.list_missing_intake_questions(db, project.id)
-    content = _opening_body(ctx, intake)
-    meta = await build_guided_intake_metadata(db, project.id, guided=guided)
-    meta["kind"] = WORKSPACE_OPENING_KIND
-    meta["project_context"] = ctx
+    report = (project.fields or {}).get("_creation_report") if isinstance((project.fields or {}).get("_creation_report"), dict) else None
+    if report:
+        content = format_creation_greeting(report)
+        meta: dict[str, Any] = {
+            "kind": WORKSPACE_OPENING_KIND,
+            "skip_intake_chrome": True,
+            "project_context": ctx,
+            "creation_report": {
+                "known": report.get("known") or [],
+                "written": report.get("written") or [],
+                "open_decisions": report.get("open_decisions") or [],
+                "empty_sections": report.get("empty_sections") or [],
+            },
+        }
+        card = open_decision_card(report)
+        if card and guided:
+            meta["cards"] = [card]
+    else:
+        intake = await agent_tools.list_missing_intake_questions(db, project.id)
+        content = _opening_body(ctx, intake)
+        meta = await build_guided_intake_metadata(db, project.id, guided=guided)
+        meta["kind"] = WORKSPACE_OPENING_KIND
+        meta["project_context"] = ctx
 
     bot = ChatMessage(
         session_id=session.id,

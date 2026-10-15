@@ -92,6 +92,14 @@ def build_context_system_block(
         if miss:
             names = [m.get("name") or m.get("key") for m in miss[:8]]
             parts.append("优先待填字段：" + "、".join(str(n) for n in names if n))
+        known = ctx_pack.get("known_fields") or {}
+        if known:
+            parts.append(
+                "模板已绑定到当前项目。不要要求用户重新上传模板，"
+                "也不要重复询问已经填写且无冲突的项目名称、招标人和工期。"
+                "已填写字段："
+                + "、".join(f"{key}={value}" for key, value in list(known.items())[:12])
+            )
         tender_block = str(ctx_pack.get("tender_prompt") or "").strip()
         if tender_block:
             parts.append(tender_block)

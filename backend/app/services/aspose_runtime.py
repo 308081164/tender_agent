@@ -48,6 +48,43 @@ def _load_aspose():
     return aw
 
 
+_runtime_usable: bool | None = None
+
+
+def aspose_runtime_usable() -> bool:
+    """授权能加载才使用 Aspose。授权原生崩溃时返回 False，调用方改走 OOXML。"""
+    global _runtime_usable
+    if os.environ.get("TENDER_DISABLE_ASPOSE") == "1":
+        return False
+    if _runtime_usable is not None:
+        return _runtime_usable
+    try:
+        import aspose.words  # noqa: F401
+    except Exception:
+        _runtime_usable = False
+        return False
+    import subprocess
+    import sys
+
+    from app.config import BACKEND_ROOT
+
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from app.services.aspose_runtime import ensure_license; ensure_license()",
+            ],
+            cwd=str(BACKEND_ROOT),
+            capture_output=True,
+            timeout=30,
+        )
+        _runtime_usable = proc.returncode == 0
+    except Exception:
+        _runtime_usable = False
+    return _runtime_usable
+
+
 def ensure_license(path: str | None = None) -> None:
     global _license_ready
     if _license_ready:

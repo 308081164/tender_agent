@@ -287,8 +287,29 @@ async def _handle_create_template(db: Session, session=None) -> dict[str, Any]:
     }
 
 
-async def _handle_generate_document(db: Session, text: str, workspace: dict | None) -> dict[str, Any]:
+def _asks_to_fill_bound_template(text: str) -> bool:
+    q = text or ""
+    if any(token in q for token in ("填入", "写入模板", "填到模板", "填入标书", "将这些信息")):
+        return True
+    if "文档工作区" in q and any(token in q for token in ("打开", "查阅", "填", "模板")):
+        return True
+    if any(token in q for token in ("按模板生成", "根据模板写", "开始编写", "开始写标书")):
+        return True
+    return False
+
+
+async def _handle_generate_document(
+    db: Session,
+    text: str,
+    workspace: dict | None,
+    session=None,
+) -> dict[str, Any]:
     ws = workspace or {}
+    project = _latest_bound_project(db, ws, {})
+    if project is not None and project.template_id:
+        from app.services.creation_draft import respond_creation_handoff
+
+        return await respond_creation_handoff(db, project, session, text)
     if not ws.get("draft_object_key") and not ws.get("template_object_key"):
         return {
             "answer": (
@@ -1071,6 +1092,11 @@ async def process_chat_message(
             if hint:
                 return hint
 
+    if project is not None and project.template_id and _asks_to_fill_bound_template(text):
+        from app.services.creation_draft import respond_creation_handoff
+
+        return await respond_creation_handoff(db, project, session, text)
+
     from app.services.agent_qual_folder import detect_local_folder_import
 
     folder_path, folder_score = detect_local_folder_import(text)
@@ -1118,7 +1144,7 @@ async def process_chat_message(
     faqs = faq_items or []
 
     if intent == "generate_document":
-        return await _handle_generate_document(db, text, workspace)
+        return await _handle_generate_document(db, text, workspace, session=session)
     if intent == "edit_fragment":
         return await _handle_edit_fragment(text, context)
     if intent == "insert_table":

@@ -560,11 +560,26 @@ async def _on_confirm_fields(
         p.fields = merged
         flag_modified(p, "fields")
         db.commit()
+        from app.services.creation_draft import materialize_creation_draft
+
+        report: dict = {}
+        try:
+            report = await materialize_creation_draft(db, p, session)
+        except Exception:
+            report = {}
+        written = report.get("written") or []
+        answer = "已更新项目字段。"
+        if written:
+            answer += "\n\n已写入草稿：" + "、".join(
+                f"{item.get('name')} {item.get('detail') or item.get('value')}"
+                for item in written
+            )
         return "保存字段", _result(
-            "已更新项目字段。",
+            answer,
             intent="project_fields",
             project_id=p.id,
-        ), False
+            workspace_updated=bool(report.get("draft_object_key")),
+        ), bool(report.get("draft_object_key"))
 
     if not pa or pa.get("flow") != FLOW_PROJECT_CREATE or pa.get("stage") != "collect_fields":
         return "", _result("该表单已失效，请重新告诉我「帮我写标书」。", intent="error"), False

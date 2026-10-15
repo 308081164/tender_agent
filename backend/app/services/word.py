@@ -221,7 +221,104 @@ def _extract_placeholders_from_xml(docx_bytes: bytes) -> list[str]:
     return found
 
 
+def _aspose_ready() -> bool:
+    from app.services.docx_ooxml import aspose_available
+    return aspose_available()
+
+
+def _ooxml_replace_all(docx_bytes: bytes, old: str, new: str) -> bytes:
+    """在没有 Aspose 时替换全部出现。新文本仍含原文时停止，避免死循环。"""
+    from app.services.docx_ooxml import document_text, replace_text
+
+    if not old or old == new or new is None:
+        return docx_bytes
+    data = docx_bytes
+    for _ in range(40):
+        try:
+            current = document_text(data)
+        except Exception:
+            return data
+        before = current.count(old)
+        if before <= 0:
+            break
+        try:
+            nxt = replace_text(data, old, new)
+        except Exception:
+            break
+        try:
+            after = document_text(nxt).count(old)
+        except Exception:
+            return data
+        if after >= before:
+            break
+        data = nxt
+    return data
+
+
+def _render_document_ooxml(
+    template_bytes: bytes,
+    fields: dict,
+    chapters: dict | None = None,
+    source_snapshot: dict | None = None,
+) -> bytes:
+    from app.services.docx_ooxml import document_text
+
+    mapping = {k: ("" if v is None else str(v)) for k, v in (fields or {}).items()}
+    if chapters:
+        for k, v in chapters.items():
+            content = v.get("content", v) if isinstance(v, dict) else str(v)
+            mapping[f"ai::{k}"] = content
+            mapping[k] = content
+    if "bid_amount" in mapping and "bid_amount_upper" not in mapping:
+        mapping["bid_amount_upper"] = mapping["bid_amount"]
+    try:
+        text_before = document_text(template_bytes)
+    except Exception:
+        return template_bytes
+    data = template_bytes
+    if PLACEHOLDER_RE.search(text_before):
+        for key in PLACEHOLDER_RE.findall(text_before):
+            mapping.setdefault(key, "")
+        seen: set[str] = set()
+        for match in PLACEHOLDER_RE.finditer(text_before):
+            token = match.group(0)
+            if token in seen:
+                continue
+            seen.add(token)
+            data = _ooxml_replace_all(data, token, mapping.get(match.group(1), ""))
+        for key, val in mapping.items():
+            if key.startswith("ai::"):
+                data = _ooxml_replace_all(data, f"【AI_GENERATED:{key[4:]}】", val)
+            else:
+                data = _ooxml_replace_all(data, f"【AI_GENERATED:{key}】", val)
+        return data
+    snap = source_snapshot or {}
+    if isinstance(snap.get("fields"), dict):
+        snap = {
+            k: (v.get("value") if isinstance(v, dict) else v)
+            for k, v in snap["fields"].items()
+        }
+    pairs: list[tuple[str, str]] = []
+    for key, new_val in mapping.items():
+        if str(key).startswith("ai::") or str(key).startswith("_"):
+            continue
+        old_val = snap.get(key) if isinstance(snap, dict) else None
+        if isinstance(old_val, dict):
+            old_val = old_val.get("value")
+        if not old_val:
+            continue
+        new_s = "" if new_val is None else str(new_val)
+        if not new_s or str(old_val) == new_s:
+            continue
+        pairs.append((str(old_val), new_s))
+    for old, new in sorted(pairs, key=lambda item: len(item[0]), reverse=True):
+        data = _ooxml_replace_all(data, old, new)
+    return data
+
+
 def extract_placeholders(docx_bytes: bytes) -> list[str]:
+    if not _aspose_ready():
+        return _extract_placeholders_from_xml(docx_bytes)
     doc = _load_document(docx_bytes)
     found: list[str] = []
     for m in PLACEHOLDER_RE.finditer(_document_text(doc)):
@@ -296,7 +393,46 @@ def _append_preview_paragraph(
     return True
 
 
+def _extract_preview_ooxml(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
+    from app.services.docx_ooxml import paragraph_records
+
+    try:
+        records = paragraph_records(docx_bytes)
+    except Exception:
+        return {"headings": [], "paragraphs": [], "truncated": False, "format_info": {}}
+    paragraphs = []
+    headings = []
+    truncated = False
+    for idx, rec in enumerate(records):
+        text = (rec.get("text") or "").strip()
+        if not text:
+            continue
+        style = rec.get("style") or ""
+        is_heading = style.lower().startswith("heading") or "标题" in style
+        item = {
+            "index": idx,
+            "text": text,
+            "style": style or "Normal",
+            "is_heading": is_heading,
+            "level": 1 if is_heading else 0,
+        }
+        paragraphs.append(item)
+        if is_heading:
+            headings.append({"level": 1, "text": text})
+        if len(paragraphs) >= max_paragraphs:
+            truncated = True
+            break
+    return {
+        "headings": headings,
+        "paragraphs": paragraphs,
+        "truncated": truncated,
+        "format_info": {},
+    }
+
+
 def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
+    if not _aspose_ready():
+        return _extract_preview_ooxml(docx_bytes, max_paragraphs)
     doc = _load_document(docx_bytes)
     _prepare_doc_for_preview(doc)
     headings = []
@@ -377,6 +513,12 @@ def apply_literal_replacements(
     highlight: bool = False,
 ) -> bytes:
     """将文档中的指定原文批量替换为目标文本（用于模板工程化）。"""
+    if not _aspose_ready():
+        data = docx_bytes
+        for old, new in sorted(replacements or [], key=lambda item: len(item[0] or ""), reverse=True):
+            if old and new is not None and old != new:
+                data = _ooxml_replace_all(data, old, new)
+        return data
     doc = _load_document(docx_bytes)
     for old, new in sorted(replacements, key=lambda x: len(x[0]), reverse=True):
         if old and new is not None and old != new:
@@ -426,6 +568,11 @@ def render_document(
     # 兼容旧字段名
     if "bid_amount" in mapping and "bid_amount_upper" not in mapping:
         mapping["bid_amount_upper"] = mapping["bid_amount"]
+
+    if not _aspose_ready():
+        return _render_document_ooxml(
+            template_bytes, fields, chapters, source_snapshot,
+        )
 
     doc = _load_document(template_bytes)
     text_before = _document_text(doc)
