@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { api } from '../api/client'
 import { STEPS } from '../constants'
+import { step2EnterAgentRequest, step2EnterAgentStatus } from '../utils/projectRouting'
 
 export function useProject(showToast) {
   const [project, setProject] = useState(null)
@@ -35,15 +36,18 @@ export function useProject(showToast) {
     activeStep,
     templates = [],
     advance = false,
+    enterAgent = false,
     silent = false,
   } = {}) => {
     if (!project) return null
     setLoading(true)
     try {
       const step = activeStep
+      const handoff = enterAgent ? step2EnterAgentRequest(fields) : null
       const payload = {
         current_step: step,
         advance: Boolean(advance),
+        enter_agent: false,
         create_snapshot: true,
       }
       if (step === 1) {
@@ -82,15 +86,26 @@ export function useProject(showToast) {
         payload.inserted_quals = selectedQuals
         payload.checklist_result = checklist || project.checklist_result || {}
       }
+      if (handoff) {
+        payload.current_step = handoff.current_step
+        payload.advance = handoff.advance
+        payload.enter_agent = handoff.enter_agent
+        payload.fields = handoff.fields
+        payload.create_snapshot = handoff.create_snapshot
+      }
 
       const p = await api.saveProgress(project.id, payload)
       await applyProject(p)
       if (!silent) {
-        showToast?.(
-          advance
-            ? `已保存并进入：${STEPS.find((s) => s.step === Math.min(p.current_step, 6))?.name || '下一步'}`
-            : '本步进度已保存'
-        )
+        if (handoff) {
+          showToast?.(step2EnterAgentStatus())
+        } else {
+          showToast?.(
+            advance
+              ? `已保存并进入：${STEPS.find((s) => s.step === Math.min(p.current_step, 6))?.name || '下一步'}`
+              : '本步进度已保存'
+          )
+        }
       }
       return p
     } catch (e) {

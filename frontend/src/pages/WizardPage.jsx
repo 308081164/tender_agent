@@ -1,9 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../App'
 import { api } from '../api/client'
 import { STEPS } from '../constants'
-import { projectAgentChatPath, projectContinuePath, WIZARD_STEPS } from '../utils/projectRouting'
+import {
+  projectAgentChatPath,
+  projectContinuePath,
+  step2EnterAgentDestination,
+  WIZARD_STEPS,
+} from '../utils/projectRouting'
 import { useProject } from '../hooks/useProject'
 import { highlightText } from '../utils/highlight'
 import { formatTime } from '../utils/format'
@@ -200,7 +205,23 @@ export default function WizardPage() {
   const confirmFields = async () => {
     const missing = fieldDefs.filter((f) => f.required && !fields[f.key])
     if (missing.length) return showToast(`请填写必填项：${missing.map((m) => m.name).join('、')}`)
-    await saveStep({ advance: true })
+    const p = await saveCurrentStep({
+      activeStep: 2,
+      templates,
+      enterAgent: true,
+    })
+    if (!p) return
+    setLoading(true)
+    try {
+      try {
+        await refreshProjects()
+      } catch {
+        /* 列表刷新失败仍进入该项目的 Agent */
+      }
+      navigate(step2EnterAgentDestination(p.id))
+    } finally {
+      setLoading(false)
+    }
   }
 
   const doGenerate = async () => {
@@ -505,10 +526,9 @@ export default function WizardPage() {
               }}
             />
             <div className="actions">
-              <button className="secondary" onClick={() => goStep(1)}>返回上一步</button>
-              <button className="secondary" onClick={() => saveStep()} disabled={loading}>保存本步</button>
-              <Link className="button secondary linkish" to={projectAgentChatPath(project.id)}>打开 Agent 对话</Link>
-              <button onClick={confirmFields} disabled={loading}>保存并进入 Agent 对话</button>
+              <button className="secondary" type="button" onClick={() => goStep(1)}>返回上一步</button>
+              <button className="secondary" type="button" onClick={() => saveStep()} disabled={loading}>保存本步</button>
+              <button type="button" onClick={confirmFields} disabled={loading}>保存并进入 Agent 对话</button>
             </div>
           </>
         )}

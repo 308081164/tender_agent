@@ -40,6 +40,33 @@ export function legacyWorkspaceRedirectPath(projectId) {
   return projectAgentChatPath(projectId)
 }
 
+/** 旧六步向导的导出步。信息录入确认不得把项目标成这一步。 */
+export const LEGACY_EXPORT_STEP = 6
+
+/**
+ * 第 2 步「保存并进入 Agent 对话」的保存请求。
+ * 只提交信息录入，不沿旧向导 advance 到审查或导出。
+ */
+export function step2EnterAgentRequest(fields) {
+  return {
+    fields: fields || {},
+    current_step: WIZARD_MAX_STEP,
+    advance: false,
+    enter_agent: true,
+    create_snapshot: true,
+  }
+}
+
+/** 保存第 2 步之后打开的页面：该项目的 Agent 对话。 */
+export function step2EnterAgentDestination(projectOrId) {
+  return projectAgentChatPath(projectOrId)
+}
+
+/** 该动作的状态文案。不能出现旧向导的「已保存并进入：导出」。 */
+export function step2EnterAgentStatus() {
+  return '已保存，进入 Agent 对话'
+}
+
 export function workspacePhaseFromStep(currentStep, status) {
   if (status === 'exported') return 'export'
   const step = currentStep || 3

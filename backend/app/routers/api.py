@@ -142,6 +142,7 @@ class SaveProgressRequest(BaseModel):
     checklist_result: dict | None = None
     current_step: int | None = None
     advance: bool = False  # True 时进入下一步
+    enter_agent: bool = False  # 信息录入确认后进入该项目的 Agent，不推进到审查/导出
     create_snapshot: bool = True
 
 
@@ -972,8 +973,12 @@ def save_progress(project_id: int, body: SaveProgressRequest, db: Session = Depe
         flag_modified(p, "checklist_result")
 
     step_for_snap = body.current_step or p.current_step or 1
-    # 保存本步不回退总进度；仅在 advance 或前进到更高步骤时更新 current_step
-    if body.advance:
+    # 保存本步不回退总进度；仅在 advance 或前进到更高步骤时更新 current_step。
+    # enter_agent 只离开两步向导（停在 3），忽略同时带上的 advance / 导出步号。
+    if body.enter_agent:
+        if (p.current_step or 1) <= 2:
+            p.current_step = 3
+    elif body.advance:
         base = body.current_step or p.current_step or 1
         p.current_step = min(6, max(p.current_step or 1, base) + 1)
     elif body.current_step is not None and body.current_step > (p.current_step or 1):
