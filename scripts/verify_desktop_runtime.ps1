@@ -34,6 +34,8 @@ try {
   Assert-PathExists $Python "Python runtime"
   Assert-PathExists $Launcher "backend_launcher.py"
   Assert-PathExists (Join-Path $InstallDir "desktop\onlyoffice_sidecar.py") "onlyoffice_sidecar.py"
+  Assert-PathExists (Join-Path $InstallDir "desktop\onlyoffice_rabbit\onlyoffice_rabbit_boot.erl") "onlyoffice rabbit boot"
+  Assert-PathExists (Join-Path $InstallDir "desktop\onlyoffice_rabbit\rabbit_prelaunch_dist.erl") "onlyoffice rabbit prelaunch shim"
   Assert-PathExists $Starter "start_backend.cmd"
   Assert-PathExists (Join-Path $InstallDir "aspose\Aspose.License.txt") "Aspose license"
   Assert-PathExists (Join-Path $InstallDir "frontend\dist\index.html") "frontend index.html"

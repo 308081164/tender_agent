@@ -4,6 +4,12 @@ The Windows installer stages Community Edition files under tools/onlyoffice
 (see scripts/ci/download-onlyoffice-windows.ps1). This module does not download
 them. It writes local.json, reuses the app's PostgreSQL, and starts RabbitMQ,
 FileConverter, DocService, and nginx bound to 127.0.0.1.
+
+RabbitMQ 3.13 prelaunch always tries to start a shortname node
+`<nodename>_prelaunch_<pid>@localhost` before it listens for AMQP. On this
+Windows bundle that child exits with {'EXIT', nodistribution} when epmd or
+shortname distribution to localhost fails, so 127.0.0.1:18080 never opens.
+The desktop broker is a single loopback queue and does not need that node.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from app.onlyoffice_const import (  # noqa: E402
     ONLYOFFICE_DESKTOP_JWT,
     ONLYOFFICE_DESKTOP_PORT,
     ONLYOFFICE_DIST_PORT,
-    ONLYOFFICE_EPMD_PORT,
+    ONLYOFFICE_RABBIT_NODENAME,
     ONLYOFFICE_STATE_FILE,
 )
 from app.services.onlyoffice_runtime import (  # noqa: E402
@@ -82,6 +88,40 @@ _INSTALL_PREFIXES = (
     r"C:\Program Files\ONLYOFFICE\DocumentServer",
     r"C:\Program Files (x86)\ONLYOFFICE\DocumentServer",
 )
+_RABBIT_BOOT_DIR_NAME = "onlyoffice_rabbit"
+# Same VM flags as RabbitMQ 3.13.7 rabbitmq-server.bat / rabbitmq-env.bat.
+# They are resource limits only; none of them starts distribution.
+_RABBIT_ALLOC_ARGS = (
+    "+MBas",
+    "ageffcbf",
+    "+MHas",
+    "ageffcbf",
+    "+MBlmbcs",
+    "512",
+    "+MHlmbcs",
+    "512",
+    "+MMmcs",
+    "30",
+)
+_RABBIT_SERVER_ARGS = (
+    "+pc",
+    "unicode",
+    "+P",
+    "1048576",
+    "+t",
+    "5000000",
+    "+stbt",
+    "db",
+    "+zdbbl",
+    "128000",
+    "+sbwt",
+    "none",
+    "+sbwtdcpu",
+    "none",
+    "+sbwtdio",
+    "none",
+)
+_PRELAUNCH_LOCALHOST_NODE = re.compile(r"onlyoffice_prelaunch_[A-Za-z0-9_]*@localhost")
 
 
 def bundle_problem(install_dir: Path) -> str | None:
@@ -463,7 +503,137 @@ def _ensure_database(
     log("onlyoffice: schema imported")
 
 
-def _rabbitmq_env(erlang_home: Path, data_dir: Path) -> dict[str, str]:
+def rabbitmq_home(server_bat: Path) -> Path:
+    """Directory that contains sbin/ and plugins/ in the Windows zip."""
+    return server_bat.resolve().parent.parent
+
+
+def rabbitmq_launch_command(erl: Path, boot_dir: Path) -> list[str]:
+    """Boot the broker without `-name`/`-sname`.
+
+    Stock `rabbitmq-server.bat` runs `-s rabbit boot` immediately. Prelaunch
+    then starts `<nodename>_prelaunch_<pid>@localhost` with shortnames and
+    the VM terminates if that node cannot open distribution. This command
+    loads `onlyoffice_rabbit_boot` first; that module pins a shim and only
+    then calls `rabbit:boot()`. `-erl_epmd_port` answers the listener's
+    epmd lookup locally so the AMQP port opens with epmd stopped.
+    """
+    return [
+        str(erl),
+        "-noshell",
+        "-noinput",
+        "-pa",
+        str(boot_dir),
+        "-s",
+        "onlyoffice_rabbit_boot",
+        "start",
+        "-boot",
+        "start_sasl",
+        "+W",
+        "w",
+        *_RABBIT_ALLOC_ARGS,
+        *_RABBIT_SERVER_ARGS,
+        "-syslog",
+        "logger",
+        "[]",
+        "-syslog",
+        "syslog_error_logger",
+        "false",
+        "-kernel",
+        "prevent_overlapping_partitions",
+        "false",
+        # rabbit_networking:boot/0 calls erl_epmd:port_please/3 with timeout
+        # infinity before it binds AMQP. OTP 26 returns this port and does
+        # not contact epmd when the flag is set. It does not start a node.
+        "-erl_epmd_port",
+        str(ONLYOFFICE_DIST_PORT),
+    ]
+
+
+def local_broker_requires_erlang_distribution(
+    env: dict[str, str],
+    command: list[str],
+    prelaunch_source: str,
+) -> bool:
+    """True when boot still dies unless distribution to localhost works."""
+    if re.search(r"net_kernel\s*:\s*start", prelaunch_source):
+        return True
+    if "@localhost" in prelaunch_source and "shortnames" in prelaunch_source:
+        return True
+    if _PRELAUNCH_LOCALHOST_NODE.search(prelaunch_source):
+        return True
+    if "onlyoffice_rabbit_boot" not in command:
+        return True
+    if any(part in ("-name", "-sname") for part in command):
+        return True
+    # Without this flag, listener startup waits on epmd forever.
+    if "-erl_epmd_port" not in command:
+        return True
+    nodename = env.get("RABBITMQ_NODENAME", "")
+    if nodename.endswith("@localhost"):
+        return True
+    if env.get("ERL_EPMD_PORT") or env.get("ERL_EPMD_ADDRESS"):
+        return True
+    return False
+
+
+def _rabbit_boot_source_dir() -> Path:
+    return DESKTOP_DIR / _RABBIT_BOOT_DIR_NAME
+
+
+def _install_rabbit_boot_sources(boot_dir: Path) -> None:
+    source_dir = _rabbit_boot_source_dir()
+    boot_dir.mkdir(parents=True, exist_ok=True)
+    names = ("onlyoffice_rabbit_boot.erl", "rabbit_prelaunch_dist.erl")
+    for name in names:
+        source = source_dir / name
+        if not source.is_file():
+            raise FileNotFoundError(f"缺少 RabbitMQ 启动源码：{source}")
+        (boot_dir / name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _erlang_tool(erlang_home: Path, stem: str) -> Path:
+    for name in (f"{stem}.exe", stem):
+        path = erlang_home / "bin" / name
+        if path.is_file():
+            return path
+    raise FileNotFoundError(f"未找到 {stem}：{erlang_home / 'bin'}")
+
+
+def _compile_rabbit_boot(erlang_home: Path, boot_dir: Path, log: LogFn) -> None:
+    erlc = _erlang_tool(erlang_home, "erlc")
+    sources = [boot_dir / name for name in ("onlyoffice_rabbit_boot.erl", "rabbit_prelaunch_dist.erl")]
+    missing = [path.name for path in sources if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"缺少 RabbitMQ 启动源码：{', '.join(missing)}")
+    compile_env = os.environ.copy()
+    compile_env["ERLANG_HOME"] = str(erlang_home)
+    proc = subprocess.run(
+        [str(erlc), "-o", str(boot_dir), *[str(path) for path in sources]],
+        env=compile_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=_creationflags(),
+        timeout=60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"编译 RabbitMQ 启动模块失败：{detail[:500]}")
+    for source in sources:
+        beam = boot_dir / f"{source.stem}.beam"
+        if not beam.is_file():
+            raise RuntimeError(f"未生成 {beam.name}")
+    log("onlyoffice rabbitmq boot modules compiled")
+
+
+def _rabbitmq_env(
+    erlang_home: Path,
+    data_dir: Path,
+    rabbit_home: Path | None = None,
+) -> dict[str, str]:
     base = data_dir / "onlyoffice" / "rabbitmq"
     for name in ("", "log", "mnesia"):
         (base / name).mkdir(parents=True, exist_ok=True)
@@ -482,7 +652,14 @@ def _rabbitmq_env(erlang_home: Path, data_dir: Path) -> dict[str, str]:
         ),
         encoding="utf-8",
     )
+    boot_dir = data_dir / "onlyoffice" / "rabbit-boot"
+    _install_rabbit_boot_sources(boot_dir)
     env = os.environ.copy()
+    # A parent process may export epmd settings. The local broker must not
+    # inherit them, or prelaunch still waits on epmd.
+    env.pop("ERL_EPMD_PORT", None)
+    env.pop("ERL_EPMD_ADDRESS", None)
+    env.pop("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", None)
     env["ERLANG_HOME"] = str(erlang_home)
     env["RABBITMQ_BASE"] = str(base)
     env["RABBITMQ_CONFIG_FILE"] = str(base / "rabbitmq")
@@ -490,9 +667,14 @@ def _rabbitmq_env(erlang_home: Path, data_dir: Path) -> dict[str, str]:
     env["RABBITMQ_MNESIA_BASE"] = str(base / "mnesia")
     env["RABBITMQ_NODE_PORT"] = str(ONLYOFFICE_AMQP_PORT)
     env["RABBITMQ_DIST_PORT"] = str(ONLYOFFICE_DIST_PORT)
-    env["RABBITMQ_NODENAME"] = "onlyoffice@localhost"
-    env["ERL_EPMD_PORT"] = str(ONLYOFFICE_EPMD_PORT)
-    env["ERL_EPMD_ADDRESS"] = "127.0.0.1"
+    env["RABBITMQ_NODENAME"] = ONLYOFFICE_RABBIT_NODENAME
+    env["RABBITMQ_USE_LONGNAME"] = "true"
+    env["ONLYOFFICE_RABBIT_BOOT_DIR"] = str(boot_dir)
+    if rabbit_home is not None:
+        env["RABBITMQ_HOME"] = str(rabbit_home)
+        plugins = str(rabbit_home / "plugins")
+        existing_libs = env.get("ERL_LIBS", "")
+        env["ERL_LIBS"] = plugins + (os.pathsep + existing_libs if existing_libs else "")
     path = str(erlang_home / "bin") + os.pathsep + env.get("PATH", "")
     env["PATH"] = path
     return env
@@ -608,11 +790,23 @@ def ensure_onlyoffice(
         _ensure_database(psql, pg_host, pg_port, pg_env, schema, log)
         nginx_conf = _prepare_nginx(nginx_exe, ONLYOFFICE_DESKTOP_PORT)
 
-        log("starting onlyoffice rabbitmq")
+        rabbit_home = rabbitmq_home(rabbit)
+        rabbit_env = _rabbitmq_env(erlang_home, data_dir, rabbit_home)
+        boot_dir = Path(rabbit_env["ONLYOFFICE_RABBIT_BOOT_DIR"])
+        _compile_rabbit_boot(erlang_home, boot_dir, log)
+        erl = _erlang_tool(erlang_home, "erl")
+        rabbit_cmd = rabbitmq_launch_command(erl, boot_dir)
+        prelaunch_source = (boot_dir / "rabbit_prelaunch_dist.erl").read_text(encoding="utf-8")
+        if local_broker_requires_erlang_distribution(rabbit_env, rabbit_cmd, prelaunch_source):
+            raise RuntimeError(
+                "RabbitMQ 启动仍依赖 Erlang 分布，已中止以免 "
+                "onlyoffice_prelaunch_*@localhost 因 nodistribution 退出"
+            )
+        log("starting onlyoffice rabbitmq without erlang distribution")
         rabbit_proc = _spawn(
-            ["cmd.exe", "/d", "/c", str(rabbit)],
-            rabbit.parent,
-            _rabbitmq_env(erlang_home, data_dir),
+            rabbit_cmd,
+            rabbit_home,
+            rabbit_env,
             log_file,
         )
         pids["rabbitmq"] = rabbit_proc.pid

@@ -357,6 +357,7 @@ New-Item -ItemType Directory -Path $DesktopDest -Force | Out-Null
 Copy-Item (Join-Path $Root "desktop\backend_launcher.py") (Join-Path $DesktopDest "backend_launcher.py") -Force
 Copy-Item (Join-Path $Root "desktop\onlyoffice_sidecar.py") (Join-Path $DesktopDest "onlyoffice_sidecar.py") -Force
 Copy-Item (Join-Path $Root "desktop\start_backend.cmd") (Join-Path $DesktopDest "start_backend.cmd") -Force
+Copy-Item (Join-Path $Root "desktop\onlyoffice_rabbit") (Join-Path $DesktopDest "onlyoffice_rabbit") -Recurse -Force
 
 Write-Host "==> Syncing brand icons"
 $BrandIco = Join-Path $Root "assets\brand\icon.ico"

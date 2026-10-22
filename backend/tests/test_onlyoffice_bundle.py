@@ -118,6 +118,75 @@ def test_rabbitmq_config_uses_distribution_port_range(tmp_path: Path):
     assert env["RABBITMQ_DIST_PORT"] == str(ONLYOFFICE_DIST_PORT)
 
 
+def test_rabbitmq_boot_does_not_require_distribution(tmp_path: Path):
+    """Prelaunch must not die on onlyoffice_prelaunch_*@localhost nodistribution.
+
+    The local broker also must not need a working Erlang distribution node
+    or epmd just to open the AMQP port.
+    """
+    from app.onlyoffice_const import ONLYOFFICE_DIST_PORT, ONLYOFFICE_RABBIT_NODENAME
+    from onlyoffice_sidecar import (
+        _rabbitmq_env,
+        local_broker_requires_erlang_distribution,
+        rabbitmq_launch_command,
+    )
+
+    erlang = tmp_path / "erlang"
+    (erlang / "bin").mkdir(parents=True)
+    env = _rabbitmq_env(erlang, tmp_path)
+    boot = Path(env["ONLYOFFICE_RABBIT_BOOT_DIR"])
+    prelaunch = (boot / "rabbit_prelaunch_dist.erl").read_text(encoding="utf-8")
+    starter = (boot / "onlyoffice_rabbit_boot.erl").read_text(encoding="utf-8")
+    command = rabbitmq_launch_command(erlang / "bin" / "erl.exe", boot)
+
+    assert env["RABBITMQ_NODENAME"] == ONLYOFFICE_RABBIT_NODENAME
+    assert not env["RABBITMQ_NODENAME"].endswith("@localhost")
+    assert "ERL_EPMD_PORT" not in env
+    assert "ERL_EPMD_ADDRESS" not in env
+    assert "onlyoffice_rabbit_boot" in command
+    assert "-sname" not in command
+    assert "-name" not in command
+    assert command[command.index("-erl_epmd_port") + 1] == str(ONLYOFFICE_DIST_PORT)
+    assert "rabbitmq-server.bat" not in " ".join(command)
+    assert "net_kernel:start" not in prelaunch
+    assert "@localhost" not in prelaunch
+    assert "shortnames" not in prelaunch
+    assert "onlyoffice_prelaunch_" not in prelaunch
+    assert starter.index("stick_mod(rabbit_prelaunch_dist)") < starter.index("rabbit:boot()")
+    assert local_broker_requires_erlang_distribution(env, command, prelaunch) is False
+
+
+def test_stock_prelaunch_localhost_requires_distribution():
+    from onlyoffice_sidecar import local_broker_requires_erlang_distribution
+
+    env = {
+        "RABBITMQ_NODENAME": "onlyoffice@localhost",
+        "ERL_EPMD_PORT": "25679",
+        "ERL_EPMD_ADDRESS": "127.0.0.1",
+    }
+    command = ["cmd.exe", "/d", "/c", "rabbitmq-server.bat"]
+    source = (
+        'PrelaunchName = onlyoffice_prelaunch_56120@localhost,\n'
+        "net_kernel:start([PrelaunchName, shortnames])."
+    )
+    assert local_broker_requires_erlang_distribution(env, command, source) is True
+
+
+def test_windows_package_copies_rabbit_boot_shim():
+    root = Path(__file__).resolve().parents[2]
+    build = (root / "desktop" / "build.ps1").read_text(encoding="utf-8")
+    verify = (root / "scripts" / "verify_desktop_runtime.ps1").read_text(encoding="utf-8")
+    assert "onlyoffice_rabbit" in build
+    assert "rabbit_prelaunch_dist.erl" in verify
+    assert "onlyoffice_rabbit_boot.erl" in verify
+
+
+def test_settings_labels_listening_onlyoffice_as_normal():
+    page = Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "SettingsPage.jsx"
+    text = page.read_text(encoding="utf-8")
+    assert "ok: '正常'" in text
+
+
 def test_tender_database_create_is_its_own_statement(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TENDER_DATA_DIR", str(tmp_path))
     desktop = Path(__file__).resolve().parents[2] / "desktop"
