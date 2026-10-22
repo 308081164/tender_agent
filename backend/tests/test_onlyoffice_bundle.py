@@ -4,8 +4,15 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import signal
+import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "desktop"))
@@ -116,6 +123,266 @@ def test_rabbitmq_config_uses_distribution_port_range(tmp_path: Path):
     assert f"distribution.listener.port_range.max = {ONLYOFFICE_DIST_PORT}" in text
     assert f"listeners.tcp.default = 127.0.0.1:{ONLYOFFICE_AMQP_PORT}" in text
     assert env["RABBITMQ_DIST_PORT"] == str(ONLYOFFICE_DIST_PORT)
+
+
+def test_rabbitmq_boot_does_not_require_distribution(tmp_path: Path):
+    """Prelaunch must not die on onlyoffice_prelaunch_*@localhost nodistribution.
+
+    The local broker also must not need a working Erlang distribution node
+    or epmd just to open the AMQP port.
+    """
+    from app.onlyoffice_const import ONLYOFFICE_DIST_PORT, ONLYOFFICE_RABBIT_NODENAME
+    from onlyoffice_sidecar import (
+        _rabbitmq_env,
+        local_broker_requires_erlang_distribution,
+        rabbitmq_launch_command,
+    )
+
+    erlang = tmp_path / "erlang"
+    (erlang / "bin").mkdir(parents=True)
+    env = _rabbitmq_env(erlang, tmp_path)
+    boot = Path(env["ONLYOFFICE_RABBIT_BOOT_DIR"])
+    prelaunch = (boot / "rabbit_prelaunch_dist.erl").read_text(encoding="utf-8")
+    starter = (boot / "onlyoffice_rabbit_boot.erl").read_text(encoding="utf-8")
+    command = rabbitmq_launch_command(erlang / "bin" / "erl.exe", boot)
+
+    assert env["RABBITMQ_NODENAME"] == ONLYOFFICE_RABBIT_NODENAME
+    assert not env["RABBITMQ_NODENAME"].endswith("@localhost")
+    assert "ERL_EPMD_PORT" not in env
+    assert "ERL_EPMD_ADDRESS" not in env
+    assert "onlyoffice_rabbit_boot" in command
+    assert "-sname" not in command
+    assert "-name" not in command
+    assert command[command.index("-erl_epmd_port") + 1] == str(ONLYOFFICE_DIST_PORT)
+    assert "rabbitmq-server.bat" not in " ".join(command)
+    assert "net_kernel:start" not in prelaunch
+    assert "@localhost" not in prelaunch
+    assert "shortnames" not in prelaunch
+    assert "onlyoffice_prelaunch_" not in prelaunch
+    assert starter.index("stick_mod(rabbit_prelaunch_dist)") < starter.index("rabbit:boot()")
+    assert local_broker_requires_erlang_distribution(env, command, prelaunch) is False
+
+
+def _locate_erl() -> Path | None:
+    home = os.environ.get("ERLANG_HOME", "").strip()
+    if home:
+        for name in ("erl", "erl.exe"):
+            candidate = Path(home) / "bin" / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+    found = shutil.which("erl")
+    if not found:
+        return None
+    candidate = Path(found)
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def _erlang_home_of(erl: Path) -> Path:
+    home = os.environ.get("ERLANG_HOME", "").strip()
+    if home and (Path(home) / "bin" / erl.name).exists():
+        return Path(home)
+    return erl.resolve().parent.parent
+
+
+def _locate_rabbitmq_home() -> Path | None:
+    for key in ("RABBITMQ_HOME", "ONLYOFFICE_RABBITMQ_HOME"):
+        raw = os.environ.get(key, "").strip()
+        if raw and (Path(raw) / "plugins").is_dir():
+            return Path(raw)
+    found = shutil.which("rabbitmq-server") or shutil.which("rabbitmq-server.bat")
+    if not found:
+        return None
+    home = Path(found).resolve().parent.parent
+    if (home / "plugins").is_dir():
+        return home
+    return None
+
+
+def _write_dead_epmd(path: Path) -> None:
+    path.write_text(
+        "#!/bin/sh\n"
+        "echo 'epmd disabled for onlyoffice regression' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def _erlang_home_with_dead_epmd(erlang_home: Path, dest: Path) -> Path:
+    """Copy the emulator tree and replace epmd with a program that exits.
+
+    The VM starts epmd from its own erts bin directory, not from PATH, so a
+    PATH shim is not enough to make shortname distribution fail.
+    """
+    fake = dest / "erlang-no-epmd"
+    fake.mkdir(parents=True)
+    for name in ("lib", "releases", "usr", "misc"):
+        source = erlang_home / name
+        if source.exists():
+            (fake / name).symlink_to(source, target_is_directory=True)
+    erts_dirs = [path for path in erlang_home.glob("erts-*") if path.is_dir()]
+    if not erts_dirs:
+        raise RuntimeError(f"Erlang installation has no erts directory: {erlang_home}")
+    for erts in erts_dirs:
+        bin_dir = fake / erts.name / "bin"
+        bin_dir.mkdir(parents=True)
+        for item in (erts / "bin").iterdir():
+            target = bin_dir / item.name
+            if item.name == "epmd":
+                _write_dead_epmd(target)
+                continue
+            try:
+                os.link(item, target)
+            except OSError:
+                if item.is_symlink():
+                    target.symlink_to(os.readlink(item))
+                else:
+                    shutil.copy2(item, target)
+    bin_dir = fake / "bin"
+    bin_dir.mkdir()
+    for item in (erlang_home / "bin").iterdir():
+        target = bin_dir / item.name
+        if item.name == "epmd":
+            _write_dead_epmd(target)
+            continue
+        if item.is_dir():
+            target.symlink_to(item, target_is_directory=True)
+        else:
+            target.symlink_to(item)
+    return fake
+
+
+def _amqp_connection_start(port: int, timeout: float) -> bytes:
+    deadline = time.time() + timeout
+    last = "not attempted"
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1.0) as sock:
+                sock.settimeout(3)
+                sock.sendall(b"AMQP\x00\x00\x09\x01")
+                data = b""
+                while len(data) < 11:
+                    chunk = sock.recv(128)
+                    if not chunk:
+                        break
+                    data += chunk
+                if len(data) >= 11 and data[0] == 1:
+                    return data
+                last = repr(data)
+        except OSError as exc:
+            last = str(exc)
+        time.sleep(0.3)
+    raise AssertionError(f"127.0.0.1:{port} did not return an AMQP frame ({last})")
+
+
+def _stop_process_group(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        proc.kill()
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+
+
+def test_amqp_connection_start_when_epmd_is_unusable(tmp_path: Path):
+    """Boot the sidecar broker with epmd unusable and read connection.start.
+
+    The old prelaunch path dies with nodistribution before 25673 opens.
+    Absent erl skips; a string compare is not treated as the handshake.
+    """
+    erl = _locate_erl()
+    if erl is None:
+        pytest.skip(
+            "erl is not available; refusing to treat a string match as an AMQP handshake"
+        )
+    rabbit_home = _locate_rabbitmq_home()
+    if rabbit_home is None:
+        pytest.fail(
+            f"erl is available at {erl} but RabbitMQ plugins were not found "
+            "(set RABBITMQ_HOME); the AMQP handshake was not performed"
+        )
+    from app.onlyoffice_const import ONLYOFFICE_AMQP_PORT
+    from onlyoffice_sidecar import (
+        _compile_rabbit_boot,
+        _erlang_tool,
+        _rabbitmq_env,
+        rabbitmq_launch_command,
+    )
+
+    real_home = _erlang_home_of(erl)
+    fake_home = _erlang_home_with_dead_epmd(real_home, tmp_path)
+    data = tmp_path / "data"
+    env = _rabbitmq_env(fake_home, data, rabbit_home)
+    env["ERL_ROOTDIR"] = str(fake_home)
+    env["ERLANG_HOME"] = str(fake_home)
+    boot = Path(env["ONLYOFFICE_RABBIT_BOOT_DIR"])
+    _compile_rabbit_boot(real_home, boot, lambda _message: None)
+    command = rabbitmq_launch_command(_erlang_tool(fake_home, "erl"), boot)
+    log_path = tmp_path / "broker.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        command,
+        cwd=str(rabbit_home),
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        start_new_session=os.name != "nt",
+    )
+    try:
+        frame = _amqp_connection_start(ONLYOFFICE_AMQP_PORT, 45)
+    except AssertionError:
+        log_file.flush()
+        detail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+        raise AssertionError(
+            f"broker did not accept AMQP on 127.0.0.1:{ONLYOFFICE_AMQP_PORT}\n{detail}"
+        )
+    finally:
+        log_file.flush()
+        _stop_process_group(proc)
+        log_file.close()
+    # method frame, connection.start (class 10, method 10)
+    assert frame[0] == 1
+    assert int.from_bytes(frame[7:9], "big") == 10
+    assert int.from_bytes(frame[9:11], "big") == 10
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    assert "nodistribution" not in text
+    assert "onlyoffice_prelaunch_" not in text
+
+
+def test_stock_prelaunch_localhost_requires_distribution():
+    from onlyoffice_sidecar import local_broker_requires_erlang_distribution
+
+    env = {
+        "RABBITMQ_NODENAME": "onlyoffice@localhost",
+        "ERL_EPMD_PORT": "25679",
+        "ERL_EPMD_ADDRESS": "127.0.0.1",
+    }
+    command = ["cmd.exe", "/d", "/c", "rabbitmq-server.bat"]
+    source = (
+        'PrelaunchName = onlyoffice_prelaunch_56120@localhost,\n'
+        "net_kernel:start([PrelaunchName, shortnames])."
+    )
+    assert local_broker_requires_erlang_distribution(env, command, source) is True
+
+
+def test_windows_package_copies_rabbit_boot_shim():
+    root = Path(__file__).resolve().parents[2]
+    build = (root / "desktop" / "build.ps1").read_text(encoding="utf-8")
+    verify = (root / "scripts" / "verify_desktop_runtime.ps1").read_text(encoding="utf-8")
+    assert "onlyoffice_rabbit" in build
+    assert "rabbit_prelaunch_dist.erl" in verify
+    assert "onlyoffice_rabbit_boot.erl" in verify
+
+
+def test_settings_labels_listening_onlyoffice_as_normal():
+    page = Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "SettingsPage.jsx"
+    text = page.read_text(encoding="utf-8")
+    assert "ok: '正常'" in text
 
 
 def test_tender_database_create_is_its_own_statement(tmp_path: Path, monkeypatch):
