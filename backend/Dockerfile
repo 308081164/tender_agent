@@ -29,6 +29,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
+# Aspose.Words (.NET) needs OpenSSL 1.1 on Linux; Debian slim ships OpenSSL 3 only.
+RUN set -eux; \
+    for url in \
+      "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb" \
+      "http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1l-1ubuntu1_amd64.deb"; do \
+      if curl -fsSL -o /tmp/libssl1.1.deb "$url"; then break; fi; \
+    done; \
+    apt-get install -y --no-install-recommends /tmp/libssl1.1.deb; \
+    rm -f /tmp/libssl1.1.deb; \
+    ldconfig -p | grep -q 'libssl\.so\.1\.1'
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -39,6 +50,7 @@ RUN chmod +x /entrypoint.sh
 
 ENV PYTHONPATH=/app
 ENV SOFFICE_PATH=/usr/bin/soffice
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 EXPOSE 8000
 
 ENTRYPOINT ["/entrypoint.sh"]

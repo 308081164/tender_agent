@@ -34,4 +34,5 @@ install_aspose_if_needed() {
 }
 
 install_aspose_if_needed
+export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT="${DOTNET_SYSTEM_GLOBALIZATION_INVARIANT:-1}"
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

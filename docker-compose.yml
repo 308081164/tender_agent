@@ -27,7 +27,12 @@ services:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # Official image includes curl; some mirrors (e.g. ghcr.io/coollabsio/minio) only ship mc.
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 || mc ready local",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -51,6 +56,7 @@ services:
     build: ./backend
     platform: linux/amd64
     environment:
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
       DATABASE_URL: postgresql://tender:tender123@db:5432/tender_agent
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -59,6 +65,7 @@ services:
       SAMPLE_DATA_DIR: /app/sample_data
       CORS_ORIGINS: "*"
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      KIMI_API_KEY: ${KIMI_API_KEY:-}
       QWEN_API_KEY: ${QWEN_API_KEY:-}
       ASPOSE_LICENSE_PATH: /aspose/Aspose.License.txt
       CUSTOMER_DATA_DIR: /app/customer_data/heyuanzhineng_20260729
