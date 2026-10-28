@@ -98,7 +98,7 @@ async def main() -> int:
         print(f"MISSING template: {TEMPLATE}", file=sys.stderr)
         return 1
 
-    timeout = httpx.Timeout(900.0, connect=60.0)
+    timeout = httpx.Timeout(1800.0, connect=60.0)
     async with httpx.AsyncClient(base_url=BASE, timeout=timeout) as client:
         r = await client.get("/health")
         r.raise_for_status()
