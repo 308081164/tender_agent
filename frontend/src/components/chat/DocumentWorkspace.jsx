@@ -12,7 +12,7 @@ export default function DocumentWorkspace({
   onSelectAnchor,
   onParagraphEdit,
   onRefresh,
-  onlyOfficeEnabled = false,
+  onlyOfficeReady = false,
   toolbarLeading = null,
   highlightTexts = [],
 }) {
@@ -20,18 +20,27 @@ export default function DocumentWorkspace({
   const [editingIndex, setEditingIndex] = useState(null)
   const [editText, setEditText] = useState('')
   const [pdfFailed, setPdfFailed] = useState(false)
+  const [onlyOfficeFailed, setOnlyOfficeFailed] = useState(false)
 
   const hasDoc = !!(workspace?.draft_object_key || workspace?.template_object_key)
+  const hasParagraphs = (paragraphs || []).some((p) => (p.text || '').trim().length > 0)
   const pdfSrc = hasDoc && sessionId ? `/api/chat/sessions/${sessionId}/workspace/preview.pdf` : null
 
   useEffect(() => {
     setPdfFailed(false)
-    if (hasDoc && onlyOfficeEnabled) {
+    setOnlyOfficeFailed(false)
+    if (hasDoc && onlyOfficeReady) {
       setMode('onlyoffice')
     } else {
       setMode(hasDoc ? 'pdf' : 'structure')
     }
-  }, [sessionId, hasDoc, onlyOfficeEnabled])
+  }, [sessionId, hasDoc, onlyOfficeReady])
+
+  const fallbackToReadable = () => {
+    setOnlyOfficeFailed(true)
+    if (!pdfFailed && hasDoc) setMode('pdf')
+    else setMode('structure')
+  }
 
   const startEdit = (p) => {
     setEditingIndex(p.index)
@@ -54,8 +63,8 @@ export default function DocumentWorkspace({
           {workspace?.version ? <span className="muted"> v{workspace.version}</span> : null}
         </div>
         <div className="doc-workspace-tabs">
-          {onlyOfficeEnabled && hasDoc ? (
-            <button type="button" className={mode === 'onlyoffice' ? 'active' : ''} onClick={() => setMode('onlyoffice')}>Word 编辑</button>
+          {onlyOfficeReady && hasDoc ? (
+            <button type="button" className={mode === 'onlyoffice' ? 'active' : ''} onClick={() => { setOnlyOfficeFailed(false); setMode('onlyoffice') }}>Word 编辑</button>
           ) : null}
           <button type="button" className={mode === 'pdf' ? 'active' : ''} onClick={() => setMode('pdf')} disabled={!hasDoc}>PDF 预览</button>
           <button type="button" className={mode === 'structure' ? 'active' : ''} onClick={() => setMode('structure')}>段落编辑</button>
@@ -70,15 +79,16 @@ export default function DocumentWorkspace({
           <div className="doc-workspace-empty">
             <p>请通过右侧聊天框上传模板 DOCX，或点击 📎 按钮。</p>
             <p className="muted">上传后可按编写要求生成标书，并支持选中片段多轮修改。</p>
-            {onlyOfficeEnabled ? <p className="muted">OnlyOffice 已启用，上传后将自动进入 Word 在线编辑模式。</p> : null}
+            {onlyOfficeReady ? <p className="muted">OnlyOffice 已就绪，上传后将自动进入 Word 在线编辑模式。</p> : null}
           </div>
-        ) : mode === 'onlyoffice' && onlyOfficeEnabled ? (
+        ) : mode === 'onlyoffice' && onlyOfficeReady && !onlyOfficeFailed ? (
           <OnlyOfficeEditor
             sessionId={sessionId}
             workspace={workspace}
             onSaved={onRefresh}
             onAnchor={onSelectAnchor}
             highlightTexts={highlightTexts}
+            onUnavailable={fallbackToReadable}
           />
         ) : mode === 'pdf' && pdfSrc && !pdfFailed ? (
           <PdfPreview
@@ -89,6 +99,11 @@ export default function DocumentWorkspace({
           />
         ) : (
           <div className="doc-structure-pane">
+            {!hasParagraphs && hasDoc ? (
+              <div className="doc-workspace-empty">
+                <p className="muted">PDF/OnlyOffice 暂不可用，且未能解析段落。请尝试「下载 DOCX」本地打开，或稍后重试预览。</p>
+              </div>
+            ) : null}
             <SelectableDocPreview
               paragraphs={paragraphs}
               mappings={[]}

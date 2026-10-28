@@ -29,6 +29,43 @@ def _docx_filename(name: str) -> str:
     return f"{text}.docx"
 
 
+def ensure_session_workspace_document(
+    db: Session,
+    session: ChatSession,
+    *,
+    commit: bool = True,
+) -> dict:
+    """绑定项目模板/草稿，并剔除无效 object_key。"""
+    from app.services import storage
+
+    ws = dict(session.workspace or {})
+    project_id = ws.get("project_id")
+    project = None
+    if project_id:
+        project = db.query(TenderProject).filter(TenderProject.id == int(project_id)).first()
+    if project:
+        attach_template_document(db, session, project)
+        ws = dict(session.workspace or {})
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if doc_key:
+        try:
+            blob = storage.download_bytes(doc_key)
+        except Exception:
+            blob = b""
+        if not blob or len(blob) < 200:
+            ws.pop("draft_object_key", None)
+            if ws.get("template_object_key") == doc_key:
+                ws.pop("template_object_key", None)
+            session.workspace = ws
+            if project:
+                attach_template_document(db, session, project)
+                ws = dict(session.workspace or {})
+    if commit:
+        db.commit()
+        db.refresh(session)
+    return ws
+
+
 def attach_template_document(db: Session, session: ChatSession, project: TenderProject) -> bool:
     """工作区打开已选模板。没有草稿时直接引用模板 docx，避免空的「请上传」。"""
     from app.models import Template

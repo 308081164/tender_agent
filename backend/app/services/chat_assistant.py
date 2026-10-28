@@ -73,6 +73,10 @@ INTENT_PATTERNS: list[tuple[str, list[str], float]] = [
         "按模板生成", "根据模板写", "严格按模板", "生成一份标书", "生成全新标书",
         "模板文档", "编写要求", "照模板格式", "按格式生成",
     ], 1.0),
+    ("compose_full_bid", [
+        "完整标书", "各章节", "全部章节", "撰写正文", "生成完整", "完整投标",
+        "投标函", "技术方案", "商务标", "整本标书", "填满各章",
+    ], 1.05),
     ("edit_fragment", [
         "修改选中", "修改这段", "改写这段", "润色", "替换为", "把这段", "选中内容",
     ], 0.95),
@@ -298,6 +302,24 @@ def _asks_to_fill_bound_template(text: str) -> bool:
     return False
 
 
+async def _handle_compose_full_bid(
+    db: Session,
+    text: str,
+    workspace: dict | None,
+    session=None,
+) -> dict[str, Any]:
+    from app.services.bid_full_compose import respond_full_bid_compose
+
+    project = _latest_bound_project(db, workspace or {}, {})
+    if project is None or not project.template_id:
+        return {
+            "answer": "请先绑定铁路投标模板并保存项目基础信息，再让我生成完整标书各章节。",
+            "mode": "action",
+            "metadata": {"intent": "compose_full_bid"},
+        }
+    return await respond_full_bid_compose(db, project, session, text)
+
+
 async def _handle_generate_document(
     db: Session,
     text: str,
@@ -427,7 +449,7 @@ async def _handle_insert_image(text: str, context: dict | None, workspace: dict 
 async def _handle_edit_fragment(text: str, context: dict | None) -> dict[str, Any]:
     from app.services.agent_capabilities import ANCHOR_MISSING, resolve_document_anchor
 
-    anchor = resolve_document_anchor(context)
+    anchor = resolve_document_anchor({**(context or {}), "instruction": text})
     if not anchor.get("ok"):
         return {
             "answer": ANCHOR_MISSING,
@@ -1143,6 +1165,8 @@ async def process_chat_message(
     hist = history or []
     faqs = faq_items or []
 
+    if intent == "compose_full_bid":
+        return await _handle_compose_full_bid(db, text, workspace, session=session)
     if intent == "generate_document":
         return await _handle_generate_document(db, text, workspace, session=session)
     if intent == "edit_fragment":

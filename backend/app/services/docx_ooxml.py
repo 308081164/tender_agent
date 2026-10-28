@@ -358,6 +358,49 @@ def write_section_starters(docx_bytes: bytes, starters: dict[str, str]) -> bytes
     return _save_document(docx_bytes, root)
 
 
+def write_section_bodies(
+    docx_bytes: bytes,
+    bodies: dict[str, str],
+    *,
+    replace_if_shorter_than: int = 120,
+) -> bytes:
+    """按章节标题写入正文；标题下一段过短或为空时替换为完整内容。"""
+    if not bodies:
+        return docx_bytes
+    root = _document_root(docx_bytes)
+    paras = _body_paragraphs(root)
+    changed = False
+    for index, node in enumerate(paras):
+        style = _paragraph_style(node)
+        text = _paragraph_text(node).strip()
+        heading = style.lower().startswith("heading") or "标题" in style
+        if not heading or not text:
+            continue
+        body = bodies.get(text) or ""
+        if not body:
+            for key, val in bodies.items():
+                if key in text or text in key:
+                    body = val
+                    break
+        if not body:
+            continue
+        nxt = paras[index + 1] if index + 1 < len(paras) else None
+        if nxt is None:
+            parent = _parent_map(root)[node]
+            inserted = ET.fromstring(_paragraph_xml(body))
+            parent.insert(list(parent).index(node) + 1, inserted)
+            changed = True
+            continue
+        nxt_text = _paragraph_text(nxt).strip()
+        if len(nxt_text) >= replace_if_shorter_than:
+            continue
+        _set_paragraph_text(nxt, body)
+        changed = True
+    if not changed:
+        return docx_bytes
+    return _save_document(docx_bytes, root)
+
+
 def _table_xml(rows: int, cols: int, cells: list[list[str]] | None = None) -> str:
     row_count = max(1, len(cells) if cells else rows)
     col_count = max(1, max((len(row) for row in cells), default=cols) if cells else cols)
