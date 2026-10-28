@@ -26,9 +26,10 @@ def apply_field_replacements(
     field_snap = snap.get("fields") if isinstance(snap.get("fields"), dict) else snap
 
     replaced_keys: set[str] = set()
+    use_location_snap = not bool((fields or {}).get("_creation_prepared"))
 
     # 历史标书：旧值→新值（位置优先）
-    if isinstance(field_snap, dict):
+    if isinstance(field_snap, dict) and use_location_snap:
         for key, new_val in fields.items():
             if key.startswith("ai::"):
                 continue

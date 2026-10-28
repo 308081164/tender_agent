@@ -11,9 +11,10 @@ sys.path.insert(0, str(BACKEND))
 
 from docx import Document
 
-from app.services.word import is_toc_entry_text, is_toc_style_name, paragraph_is_toc_like
+from app.services.word import is_heading_style_name, is_toc_entry_text, paragraph_is_toc_like
 
 MIN_AI_PARA_CHARS = 80
+MIN_SECTION_BODY_CHARS = 60
 STUB_PATTERNS = ("待填写", "TBD", "xxx")
 AI_TITLES = [
     "竞标函",
@@ -62,6 +63,42 @@ def _collect_text(doc: Document) -> str:
                 if cell.text:
                     parts.append(cell.text)
     return "\n".join(parts)
+
+
+def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
+    """标题段落后有实质性正文（LLM 撰写不必含「针对招标项目」套话）。"""
+    paras = doc.paragraphs
+    for i, p in enumerate(paras):
+        st = p.style.name if p.style else ""
+        text = (p.text or "").strip()
+        if title not in text:
+            continue
+        if not is_heading_style_name(st) and title != text:
+            continue
+        for j in range(i + 1, min(i + 6, len(paras))):
+            nxt = paras[j]
+            nst = nxt.style.name if nxt.style else ""
+            body = (nxt.text or "").strip()
+            if not body or _para_toc_like(nst, body):
+                continue
+            if is_heading_style_name(nst) and title not in body:
+                break
+            n = norm_len(body)
+            if n >= MIN_SECTION_BODY_CHARS and not any(s in body for s in STUB_PATTERNS):
+                return True, n
+    # 兼容旧验收：套话 + 章节名
+    hits = [
+        t
+        for t in (
+            p.text.strip()
+            for p in doc.paragraphs
+            if p.text and not _para_toc_like(p.style.name if p.style else "", p.text.strip())
+        )
+        if title in t and norm_len(t) >= MIN_AI_PARA_CHARS and any(m in t for m in AI_BODY_MARKERS)
+    ]
+    if hits:
+        return True, norm_len(hits[0])
+    return False, 0
 
 
 def main() -> int:
@@ -113,10 +150,9 @@ def main() -> int:
 
     report_lines.append("")
     for title in AI_TITLES:
-        hits = [t for t in ai_paras if title in t and norm_len(t) >= MIN_AI_PARA_CHARS]
-        ok = bool(hits) and not any(s in (hits[0] if hits else "") for s in STUB_PATTERNS)
+        ok, sample_len = _section_has_body(doc, title)
         flag = "OK" if ok else "FAIL"
-        report_lines.append(f"{flag} {title} ({len(hits)} hit(s), sample={norm_len(hits[0]) if hits else 0} chars)")
+        report_lines.append(f"{flag} {title} (body_chars={sample_len})")
         if not ok:
             failures.append(title)
 

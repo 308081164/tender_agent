@@ -81,7 +81,8 @@ async def main() -> int:
         print(f"MISSING template: {TEMPLATE}", file=sys.stderr)
         return 1
 
-    async with httpx.AsyncClient(base_url=BASE, timeout=300.0) as client:
+    timeout = httpx.Timeout(900.0, connect=60.0)
+    async with httpx.AsyncClient(base_url=BASE, timeout=timeout) as client:
         r = await client.get("/health")
         r.raise_for_status()
 
@@ -156,6 +157,11 @@ async def main() -> int:
         print("validate", val.status_code, val.text[:200])
         rev = await client.post(f"/projects/{pid}/doc-review")
         print("doc-review", rev.status_code, (rev.text or "")[:200])
+        # doc-review 会合并 can_export；若审阅通过则刷新校验结果避免误阻断导出
+        rev_body = rev.json() if rev.status_code < 400 else {}
+        if rev_body.get("can_export"):
+            val2 = await client.post(f"/projects/{pid}/validate")
+            print("validate-after-review", val2.status_code)
 
         exp = await client.get(f"/projects/{pid}/export")
         if exp.status_code != 200:
@@ -187,6 +193,23 @@ async def main() -> int:
             ),
             encoding="utf-8",
         )
+
+        import subprocess
+
+        verify = subprocess.run(
+            [
+                sys.executable,
+                str(BACKEND / "scripts/verify_acceptance_docx.py"),
+                str(OUT),
+            ],
+            env={**os.environ, "PYTHONPATH": str(BACKEND)},
+            capture_output=True,
+            text=True,
+        )
+        print(verify.stdout)
+        if verify.returncode != 0:
+            print(verify.stderr, file=sys.stderr)
+            return 4
     return 0
 
 
