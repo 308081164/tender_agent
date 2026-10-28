@@ -1425,8 +1425,12 @@ async def compose_project(
         p.fields = fields
         flag_modified(p, "fields")
     chapters = dict(p.chapters or {})
+    from app.services.doc_engine.compose_policy import should_generate_ai_narrative
+
     for k, v in contents.items():
         if k and v and not k.startswith("field.") and not k.startswith("ai."):
+            if not should_generate_ai_narrative(str(k)):
+                continue
             chapters[k] = {"content": v, "source": "ai", "engine": "doc_engine_v2"}
     p.chapters = chapters
     flag_modified(p, "chapters")

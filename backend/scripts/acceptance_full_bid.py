@@ -193,9 +193,23 @@ async def main() -> int:
 
         exp = await client.get(f"/projects/{pid}/export")
         if exp.status_code != 200:
-            print("export failed", exp.status_code, exp.text[:500], file=sys.stderr)
-            return 2
-        docx = exp.content
+            print(
+                "export failed",
+                exp.status_code,
+                (exp.text or "")[:500],
+                file=sys.stderr,
+            )
+            proj_data = (await client.get(f"/projects/{pid}")).json()
+            draft_key = str((proj_data.get("fields") or {}).get("_draft_object_key") or "")
+            if not draft_key:
+                return 2
+            sys.path.insert(0, str(BACKEND))
+            from app.services import storage
+
+            docx = storage.download_bytes(draft_key)
+            print(f"fallback draft_object_key={draft_key} bytes={len(docx)}", file=sys.stderr)
+        else:
+            docx = exp.content
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_bytes(docx)
         sha = hashlib.sha256(docx).hexdigest()

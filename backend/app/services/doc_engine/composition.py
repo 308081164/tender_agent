@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.services import ai
+from app.services.doc_engine.compose_policy import should_generate_ai_narrative
 
 
 async def build_composition_plan(
@@ -34,9 +35,14 @@ async def build_composition_plan(
             "value": fields.get(key, ""),
         })
 
-    if ai_blocks:
+    eligible_ai = [
+        b for b in ai_blocks
+        if should_generate_ai_narrative(str(b.get("title") or ""))
+    ]
+
+    if eligible_ai:
         catalog = json.dumps(
-            [{"id": b.get("id"), "title": b.get("title")} for b in ai_blocks],
+            [{"id": b.get("id"), "title": b.get("title")} for b in eligible_ai],
             ensure_ascii=False,
         )
         prompt = (
@@ -53,7 +59,7 @@ async def build_composition_plan(
         ], db=db)
         llm_plan = _parse_json_array(raw)
         by_id = {x.get("block_id"): x for x in llm_plan if x.get("block_id")}
-        for b in ai_blocks:
+        for b in eligible_ai:
             bid = b.get("id")
             extra = by_id.get(bid) or {}
             plan_items.append({
@@ -64,7 +70,7 @@ async def build_composition_plan(
                 "constraints": extra.get("constraints") or ["不得编造资质编号", "与项目信息一致"],
             })
     else:
-        for b in ai_blocks:
+        for b in eligible_ai:
             plan_items.append({
                 "block_id": b.get("id"),
                 "type": "ai_section",
@@ -115,6 +121,8 @@ async def generate_block_contents(
         if item.get("type") != "ai_section":
             continue
         title = item.get("title") or item.get("block_id")
+        if not should_generate_ai_narrative(str(title or "")):
+            continue
         outline = item.get("outline") or []
         constraints = item.get("constraints") or []
         prompt = (
