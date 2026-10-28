@@ -120,6 +120,10 @@ def _parse_json_array(raw: str | None) -> list[dict]:
         return []
 
 
+def _clean_col(col: str) -> str:
+    return (col or "").replace("\x07", "").replace("\a", "").strip()
+
+
 def _column_value(col: str, index: int, qual: Any) -> str:
     if "序号" in col:
         return str(index)
@@ -154,7 +158,7 @@ def seed_rows_for_slot(
     if not columns or not bind:
         return []
     title = str(slot.get("title") or bind)
-    if not any(k in title for k in ("认证", "许可", "资质", "证书")):
+    if not any(k in title or k in bind for k in ("认证", "许可", "资质", "证书")):
         return []
     quals = []
     overview = ""
@@ -172,7 +176,7 @@ def seed_rows_for_slot(
         overview = str(getattr(company, "qual_overview", "") or "").strip()
     rows: list[dict[str, Any]] = []
     for idx, qual in enumerate(quals[:12], 1):
-        row = {col: _column_value(col, idx, qual) for col in columns}
+        row = {col: _column_value(_clean_col(col), idx, qual) for col in columns}
         if any(str(v).strip() for v in row.values()):
             rows.append(row)
     if not rows and overview:

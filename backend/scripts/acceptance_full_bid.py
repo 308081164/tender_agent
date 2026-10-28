@@ -174,6 +174,8 @@ async def main() -> int:
         rend = await client.post(f"/projects/{pid}/render")
         print("render", rend.status_code)
         rend.raise_for_status()
+        render_body = rend.json()
+        rendered_draft_key = str(render_body.get("draft_object_key") or "")
 
         await client.post(f"/projects/{pid}/sessions")
 
@@ -200,7 +202,9 @@ async def main() -> int:
                 file=sys.stderr,
             )
             proj_data = (await client.get(f"/projects/{pid}")).json()
-            draft_key = str((proj_data.get("fields") or {}).get("_draft_object_key") or "")
+            draft_key = rendered_draft_key or str(
+                (proj_data.get("fields") or {}).get("_draft_object_key") or ""
+            )
             if not draft_key:
                 return 2
             sys.path.insert(0, str(BACKEND))
