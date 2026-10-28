@@ -151,7 +151,7 @@ def runtime_status(install_dir: Path | None = None) -> dict[str, Any]:
     enabled = bool(settings.onlyoffice_enabled and configured_url)
     visible_url = configured_url if (enabled or required or bundled) else ""
     healthy = False
-    if (required or bundled) and visible_url:
+    if enabled and visible_url:
         healthy = probe_health(visible_url)
     payload: dict[str, Any] = {
         "enabled": enabled,

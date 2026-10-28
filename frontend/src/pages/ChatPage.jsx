@@ -412,7 +412,7 @@ export default function ChatPage() {
                   onSelectAnchor={rememberAnchor}
                   onParagraphEdit={onParagraphEdit}
                   onRefresh={() => refreshWorkspace(sessionId)}
-                  onlyOfficeEnabled={!!features.onlyoffice?.enabled}
+                  onlyOfficeReady={!!(features.onlyoffice?.enabled && features.onlyoffice?.healthy)}
                   highlightTexts={workspace?.review_highlight_texts || []}
                   toolbarLeading={showFileTree ? (
                     <DocWorkspaceSidebarToggle

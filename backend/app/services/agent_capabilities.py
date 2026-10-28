@@ -1002,6 +1002,22 @@ def _copy_item(raw: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _infer_section_from_hint(text: str) -> str:
+    if not text:
+        return ""
+    if not re.search(r"(填写|写入|撰写|补充|介绍|简介)", text):
+        return ""
+    if re.search(r"(公司|企业).{0,8}(介绍|简介)", text):
+        return "投标人简介"
+    if "技术方案" in text:
+        return "技术方案"
+    if "投标函" in text:
+        return "投标函"
+    if re.search(r"(报价|商务)", text):
+        return "分项报价说明"
+    return ""
+
+
 def _optional_index(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -1048,6 +1064,18 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
     if not path and file_mention and not selected and not block_id and index is None:
         path = file_mention.get("path") or ""
     if not selected and not block_id and index is None and not path:
+        hint = str(ctx.get("instruction") or ctx.get("content") or "").strip()
+        auto_title = _infer_section_from_hint(hint)
+        if auto_title:
+            return {
+                "ok": True,
+                "message": "",
+                "selected_text": auto_title,
+                "block_id": f"section:{auto_title}",
+                "paragraph_index": None,
+                "path": "",
+                "auto_section": True,
+            }
         return {"ok": False, "message": ANCHOR_MISSING}
     return {
         "ok": True,

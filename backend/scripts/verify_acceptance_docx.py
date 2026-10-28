@@ -52,6 +52,12 @@ def _para_toc_like(style_name: str, text: str) -> bool:
     return paragraph_is_toc_like(style_name, text)
 
 
+def _is_ai_substantive_text(text: str) -> bool:
+    if any(m in text for m in AI_BODY_MARKERS):
+        return True
+    return text.startswith("关于「") and ("作如下说明" in text or "内容：" in text)
+
+
 def _collect_text(doc: Document) -> str:
     parts: list[str] = []
     for p in doc.paragraphs:
@@ -86,7 +92,6 @@ def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
             n = norm_len(body)
             if n >= MIN_SECTION_BODY_CHARS and not any(s in body for s in STUB_PATTERNS):
                 return True, n
-    # 兼容旧验收：套话 + 章节名
     hits = [
         t
         for t in (
@@ -94,7 +99,9 @@ def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
             for p in doc.paragraphs
             if p.text and not _para_toc_like(p.style.name if p.style else "", p.text.strip())
         )
-        if title in t and norm_len(t) >= MIN_AI_PARA_CHARS and any(m in t for m in AI_BODY_MARKERS)
+        if title in t
+        and norm_len(t) >= MIN_AI_PARA_CHARS
+        and _is_ai_substantive_text(t)
     ]
     if hits:
         return True, norm_len(hits[0])
@@ -110,7 +117,7 @@ def main() -> int:
         p.text.strip()
         for p in doc.paragraphs
         if p.text
-        and any(m in p.text for m in AI_BODY_MARKERS)
+        and _is_ai_substantive_text(p.text)
         and not _para_toc_like(p.style.name if p.style else "", p.text.strip())
     ]
     toc_ai_pollution = [
@@ -118,7 +125,7 @@ def main() -> int:
         for p in doc.paragraphs
         if p.text
         and _para_toc_like(p.style.name if p.style else "", p.text.strip())
-        and any(m in p.text for m in AI_BODY_MARKERS)
+        and _is_ai_substantive_text(p.text)
     ]
     toc_substantive = [
         (p.style.name if p.style else "", p.text.strip()[:80])

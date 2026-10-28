@@ -1353,6 +1353,36 @@ async def project_guided_intake(
     )
 
 
+class ComposeFullBidIn(BaseModel):
+    requirements: str = ""
+
+
+@router.post("/projects/{project_id}/compose-full-bid")
+async def compose_full_bid_project(
+    project_id: int,
+    body: ComposeFullBidIn | None = None,
+    db: Session = Depends(get_db),
+):
+    """空白/骨架模板：批量撰写各章节正文并写入项目草稿与工作区。"""
+    from app.services.bid_full_compose import compose_full_bid_for_project
+    from app.services.project_sessions import get_or_create_project_session
+
+    p = db.query(TenderProject).filter(TenderProject.id == project_id).first()
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    session = get_or_create_project_session(db, p)
+    req = (body.requirements if body else "") or ""
+    report = await compose_full_bid_for_project(db, p, session, requirements=req)
+    if not report.get("ok"):
+        raise HTTPException(400, detail=report)
+    return {
+        "report": report,
+        "session_id": session.id,
+        "workspace": getattr(session, "workspace", None) or {},
+        "project": project_to_dict(p),
+    }
+
+
 @router.post("/projects/{project_id}/compose")
 async def compose_project(
     project_id: int,
@@ -2541,39 +2571,58 @@ def patch_chat_session_workspace(
 
 @router.get("/chat/sessions/{session_id}/workspace")
 def get_chat_workspace(session_id: int, db: Session = Depends(get_db)):
-    from app.services.project_sessions import attach_template_document
+    from app.services.project_sessions import ensure_session_workspace_document
 
     s = get_session_or_404(db, session_id)
-    ws = getattr(s, "workspace", None) or {}
-    if ws.get("project_id") and not (ws.get("draft_object_key") or ws.get("template_object_key")):
-        project = db.query(TenderProject).filter(TenderProject.id == int(ws["project_id"])).first()
-        if project and attach_template_document(db, s, project):
-            db.commit()
-            db.refresh(s)
-            ws = getattr(s, "workspace", None) or {}
+    ws = ensure_session_workspace_document(db, s)
     doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
     paragraphs = []
+    doc_bytes = b""
     if doc_key:
-        data = storage.download_bytes(doc_key)
-        preview = word.extract_preview(data, max_paragraphs=800)
-        paragraphs = preview.get("paragraphs") or []
+        try:
+            doc_bytes = storage.download_bytes(doc_key)
+            preview = word.extract_preview(doc_bytes, max_paragraphs=800)
+            paragraphs = preview.get("paragraphs") or []
+        except Exception:
+            doc_bytes = b""
+    from app.services import onlyoffice as oo_svc
+
+    oo = oo_svc.status_payload()
     return {
         "workspace": ws,
         "paragraphs": paragraphs,
+        "doc_size": len(doc_bytes),
         "pdf_preview_url": f"/api/chat/sessions/{session_id}/workspace/preview.pdf" if doc_key else None,
         "download_url": f"/api/chat/sessions/{session_id}/workspace/download" if doc_key else None,
+        "preview_fallback": {
+            "onlyoffice_ready": bool(oo.get("enabled") and oo.get("healthy")),
+            "pdf_engine": pdf_convert.get_pdf_engine(),
+            "paragraph_count": len(paragraphs),
+        },
     }
 
 
 @router.get("/chat/sessions/{session_id}/workspace/preview.pdf")
 def chat_workspace_preview_pdf(session_id: int, db: Session = Depends(get_db)):
+    from app.services.project_sessions import ensure_session_workspace_document
+
     s = get_session_or_404(db, session_id)
-    ws = getattr(s, "workspace", None) or {}
+    ws = ensure_session_workspace_document(db, s, commit=False)
     doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
     if not doc_key:
         raise HTTPException(404, "工作区暂无文档")
-    data = storage.download_bytes(doc_key)
-    pdf_bytes = word.convert_docx_to_pdf(data)
+    try:
+        data = storage.download_bytes(doc_key)
+    except Exception as err:
+        raise HTTPException(404, f"文档读取失败：{err}") from err
+    if not data or len(data) < 200:
+        raise HTTPException(404, "工作区文档为空或损坏")
+    try:
+        pdf_bytes = pdf_convert.convert_docx_to_pdf(data)
+    except RuntimeError as err:
+        raise HTTPException(503, str(err)) from err
+    if not pdf_bytes or len(pdf_bytes) < 100:
+        raise HTTPException(503, "PDF 预览生成失败")
     fname = ws.get("filename") or "workspace.pdf"
     return Response(
         content=pdf_bytes,
@@ -2584,12 +2633,19 @@ def chat_workspace_preview_pdf(session_id: int, db: Session = Depends(get_db)):
 
 @router.get("/chat/sessions/{session_id}/workspace/download")
 def chat_workspace_download(session_id: int, db: Session = Depends(get_db)):
+    from app.services.project_sessions import ensure_session_workspace_document
+
     s = get_session_or_404(db, session_id)
-    ws = getattr(s, "workspace", None) or {}
+    ws = ensure_session_workspace_document(db, s, commit=False)
     doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
     if not doc_key:
         raise HTTPException(404, "工作区暂无文档")
-    data = storage.download_bytes(doc_key)
+    try:
+        data = storage.download_bytes(doc_key)
+    except Exception as err:
+        raise HTTPException(404, f"文档读取失败：{err}") from err
+    if not data or len(data) < 200:
+        raise HTTPException(404, "工作区文档为空或损坏")
     fname = ws.get("filename") or "document.docx"
     return Response(
         content=data,

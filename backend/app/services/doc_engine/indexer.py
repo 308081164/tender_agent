@@ -209,6 +209,9 @@ def insert_text_after_heading(
         style = _para_style(para)
         if paragraph_is_toc_like(style, body):
             continue
+        # 跳过目录行（含制表符 + 页码）
+        if "\t" in body and re.search(r"\t\d+\s*$", body):
+            continue
         if not is_heading_style_name(style):
             continue
         new_para = aw.Paragraph(doc)

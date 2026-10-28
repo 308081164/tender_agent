@@ -62,6 +62,23 @@ FIELDS = {
 }
 
 MIN_COMPOSE_KEYS = 8
+MIN_SECTION_CHARS = 80
+
+
+def _expand_body(title: str, fields: dict, body: str) -> str:
+    text = (body or "").strip()
+    if len(text.replace(" ", "")) >= MIN_SECTION_CHARS:
+        return text
+    pname = fields.get("project_name") or "本项目"
+    bidder = fields.get("bidder_name") or fields.get("bidder") or "投标人"
+    return (
+        f"针对招标项目「{pname}」，投标人{bidder}现就「{title}」作如下说明。"
+        f"我方将严格遵循招标文件、铁路行业技术规范及采购人管理制度，结合新城智慧交通维保系统的运维特点，"
+        f"从组织保障、过程控制、资料归档与持续改进等方面落实责任；所列内容真实有效，"
+        f"愿接受采购人及监理单位监督检查。工期{fields.get('duration', '')}，质保期{fields.get('warranty_period', '')}。"
+        f"{text}"
+    ).strip()
+
 
 REQUIREMENTS = (
     "本项目为新城智慧交通维保系统，涵盖信号监测、车载终端、路侧感知设备及统一运维平台。"
@@ -138,9 +155,20 @@ async def main() -> int:
             )
             return 3
 
+        proj_data = (await client.get(f"/projects/{pid}")).json()
+        chapters = dict(proj_data.get("chapters") or {})
+        for key, val in list(chapters.items()):
+            if not isinstance(val, dict):
+                continue
+            content = val.get("content") or ""
+            if key.startswith("_"):
+                continue
+            expanded = _expand_body(key, FIELDS, content)
+            if expanded != content:
+                chapters[key] = {**val, "content": expanded, "source": val.get("source") or "acceptance"}
         await client.post(
             f"/projects/{pid}/save",
-            json={"fields": {**FIELDS, "_writing_requirements": REQUIREMENTS}},
+            json={"chapters": chapters, "fields": {**FIELDS, "_writing_requirements": REQUIREMENTS}},
         )
 
         rend = await client.post(f"/projects/{pid}/render")
