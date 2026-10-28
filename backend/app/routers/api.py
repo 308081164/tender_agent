@@ -667,6 +667,13 @@ async def render_project_draft(project_id: int, db: Session = Depends(get_db)):
         _doc, draft_key, meta = await render_project_draft_docx(db, p)
     except ValueError as err:
         raise HTTPException(400, str(err)) from err
+    from app.services.project_sessions import attach_template_document, find_bound_session
+
+    bound = find_bound_session(db, project_id)
+    if bound:
+        attach_template_document(db, bound, p)
+        bound.updated_at = datetime.utcnow()
+        db.commit()
     db.refresh(p)
     return {
         "draft_object_key": draft_key,

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services import word
-from app.services.doc_engine.indexer import replace_at_location
+from app.services.doc_engine.indexer import insert_text_after_heading, replace_at_location
 from app.services.doc_engine.replacement import apply_image_replacements
 from app.services.doc_engine.sdt import normalize_tag, write_sdt_text
 from app.services.doc_engine.bundles import expand_repeat_block, insert_qual_bundle
@@ -53,6 +53,7 @@ def assemble_document(
     # 按 manifest 块写入（SDT 或位置锚点）
     blocks = manifest.get("blocks") or []
     contents = block_contents or {}
+    used_locations: set[str] = set()
     for block in blocks:
         btype = block.get("type")
         anchor = block.get("anchor") or {}
@@ -97,8 +98,11 @@ def assemble_document(
             text = val if marker not in val else val
             if sdt_tag:
                 data = write_sdt_text(data, sdt_tag, text, highlight=highlight)
-            elif loc:
+            elif title:
+                data = insert_text_after_heading(data, title, text, highlight=highlight)
+            elif loc and loc not in used_locations:
                 data = replace_at_location(data, loc, text, highlight=highlight)
+                used_locations.add(loc)
 
     if image_bindings:
         data = apply_image_replacements(data, image_bindings)

@@ -57,8 +57,14 @@ async def render_project_document(
     doc_mode = mode or manifest.get("mode") or "hybrid"
     block_contents: dict[str, str] = {}
 
-    # 创作模式：先生成块内容
-    if doc_mode in ("create", "hybrid") and requirements:
+    # 创作模式：先生成块内容（已有章节缓存时导出/预览不再重复调用 LLM，避免覆盖 compose 结果）
+    chapter_items = chapters or {}
+    has_saved_chapters = any(
+        isinstance(v, dict) and (v.get("content") or "").strip()
+        for k, v in chapter_items.items()
+        if k and not str(k).startswith("_")
+    )
+    if doc_mode in ("create", "hybrid") and requirements and not has_saved_chapters:
         plan = await build_composition_plan(
             manifest, fields, requirements, company_context, db=db
         )
