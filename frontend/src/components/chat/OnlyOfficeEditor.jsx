@@ -35,7 +35,14 @@ function subscribeOnlyOfficeSelection(editor, onAnchor, highlights) {
   }
 }
 
-export default function OnlyOfficeEditor({ sessionId, workspace, onSaved, onAnchor, highlightTexts = [] }) {
+export default function OnlyOfficeEditor({
+  sessionId,
+  workspace,
+  onSaved,
+  onAnchor,
+  highlightTexts = [],
+  onUnavailable,
+}) {
   const containerRef = useRef(null)
   const editorRef = useRef(null)
   const onAnchorRef = useRef(onAnchor)
@@ -53,6 +60,7 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved, onAnch
     if (!sessionId || !docKey) return undefined
 
     let cancelled = false
+    let loadTimer = null
     const mount = async () => {
       setLoading(true)
       setError('')
@@ -80,14 +88,27 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved, onAnch
             },
             onRequestClose: () => onSaved?.(),
             onError: (event) => {
-              setError(event?.data || 'OnlyOffice 编辑器错误')
+              const msg = event?.data || 'OnlyOffice 编辑器错误'
+              setError(msg)
+              onUnavailable?.(msg)
             },
           },
         })
         editorRef.current = editor
         subscribeOnlyOfficeSelection(editor, onAnchorRef.current, highlightRef.current)
+        loadTimer = window.setTimeout(() => {
+          if (!cancelled && containerRef.current && !containerRef.current.querySelector('iframe')) {
+            const msg = 'OnlyOffice 未加载文档，已切换预览模式'
+            setError(msg)
+            onUnavailable?.(msg)
+          }
+        }, 12000)
       } catch (e) {
-        if (!cancelled) setError(e.message || '加载编辑器失败')
+        if (!cancelled) {
+          const msg = e.message || '加载编辑器失败'
+          setError(msg)
+          onUnavailable?.(msg)
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -96,12 +117,13 @@ export default function OnlyOfficeEditor({ sessionId, workspace, onSaved, onAnch
     mount()
     return () => {
       cancelled = true
+      if (loadTimer) window.clearTimeout(loadTimer)
       if (editorRef.current?.destroyEditor) {
         editorRef.current.destroyEditor()
         editorRef.current = null
       }
     }
-  }, [sessionId, docKey, version, onSaved])
+  }, [sessionId, docKey, version, onSaved, onUnavailable])
 
   useEffect(() => {
     const timer = window.setInterval(() => {

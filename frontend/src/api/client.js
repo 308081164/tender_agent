@@ -68,6 +68,10 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ guided_intake: true }),
   }),
+  composeFullBid: (id, requirements = '') => request(`/projects/${id}/compose-full-bid`, {
+    method: 'POST',
+    body: JSON.stringify({ requirements }),
+  }),
   uploadReusableTemplate: async (file, meta = {}) => {
     const fd = new FormData()
     fd.append('file', file)
