@@ -21,6 +21,23 @@ def test_is_field_code_text_filters_toc_hyperlink():
     assert not is_field_code_text('目录')
 
 
+def test_toc_style_and_entry_detection():
+    from app.services.word import (
+        is_heading_style_name,
+        is_toc_entry_text,
+        is_toc_style_name,
+        paragraph_is_toc_like,
+    )
+
+    assert is_toc_style_name("toc 1")
+    assert is_toc_style_name("TOC 2")
+    assert not is_heading_style_name("toc 1")
+    assert is_heading_style_name("Heading 1")
+    assert is_toc_entry_text("2. 法定代表人身份证明\t2")
+    assert paragraph_is_toc_like("toc 1", "4. 资格证明资料\t4")
+    assert not paragraph_is_toc_like("Heading 1", "竞标函")
+
+
 def test_is_junk_text_delegates_to_field_code():
     assert _is_junk_text('PAGEREF _Toc5562 \\h 1')
     assert not _is_junk_text('2025年7月1日')

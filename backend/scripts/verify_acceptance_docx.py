@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Verify acceptance docx: sections and minimum word counts per major heading."""
+"""Verify acceptance docx: TOC clean, forms filled, AI sections in chapter bodies."""
 from __future__ import annotations
 
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
+
 from docx import Document
+
+from app.services.word import is_toc_entry_text, is_toc_style_name, paragraph_is_toc_like
 
 MIN_AI_PARA_CHARS = 80
 STUB_PATTERNS = ("待填写", "TBD", "xxx")
@@ -23,36 +27,91 @@ AI_TITLES = [
     "拟投入本项目的主要生产设备、检验设备表",
     "关于产品符合相关标准的承诺书",
 ]
+AI_BODY_MARKERS = (
+    "针对招标项目「",
+    "华远智通",
+)
+EXPECTED_FORM_SNIPPETS = (
+    ("华远智通科技有限公司", "bidder_name"),
+    ("XCZHJT-2026-1027-A", "tender_no"),
+    ("王明", "legal_name"),
+    ("9800000", "bid_amount_lower"),
+)
+LEGACY_TEMPLATE_MARKERS = (
+    "和远智能科技股份有限公司",
+    "CRCEBG5-2026-CQSNTP011",
+)
 
 
 def norm_len(text: str) -> int:
     return len(re.sub(r"\s+", "", text or ""))
 
 
+def _para_toc_like(style_name: str, text: str) -> bool:
+    return paragraph_is_toc_like(style_name, text)
+
+
+def _collect_text(doc: Document) -> str:
+    parts: list[str] = []
+    for p in doc.paragraphs:
+        if p.text:
+            parts.append(p.text)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.text:
+                    parts.append(cell.text)
+    return "\n".join(parts)
+
+
 def main() -> int:
     path = Path(sys.argv[1] if len(sys.argv) > 1 else "/cursor/stores/self/media/acceptance-full-bid-sample.docx")
     doc = Document(str(path))
-    full = "\n".join(p.text for p in doc.paragraphs if p.text)
+    full = _collect_text(doc)
     total = norm_len(full)
     ai_paras = [
         p.text.strip()
         for p in doc.paragraphs
         if p.text
-        and (
-            "针对招标项目「" in p.text
-            or "华远智通" in p.text
-            or (p.text.startswith("关于「") and ("作如下说明" in p.text or "内容：" in p.text))
-        )
+        and any(m in p.text for m in AI_BODY_MARKERS)
+        and not _para_toc_like(p.style.name if p.style else "", p.text.strip())
     ]
+    toc_ai_pollution = [
+        p.text.strip()[:80]
+        for p in doc.paragraphs
+        if p.text
+        and _para_toc_like(p.style.name if p.style else "", p.text.strip())
+        and any(m in p.text for m in AI_BODY_MARKERS)
+    ]
+    toc_substantive = [
+        (p.style.name if p.style else "", p.text.strip()[:80])
+        for p in doc.paragraphs
+        if p.text
+        and _para_toc_like(p.style.name if p.style else "", p.text.strip())
+        and norm_len(p.text) > 45
+        and not is_toc_entry_text(p.text)
+    ]
+    form_hits = {label: (snippet in full) for snippet, label in EXPECTED_FORM_SNIPPETS}
+    legacy_left = [m for m in LEGACY_TEMPLATE_MARKERS if m in full]
+
     failures: list[str] = []
     report_lines = [
         f"DOCX: {path}",
         f"paragraphs_total={len(doc.paragraphs)}",
         f"total_chars={total}",
         f"ai_substantive_paragraphs={len(ai_paras)}",
+        f"toc_ai_pollution={len(toc_ai_pollution)}",
+        f"toc_substantive_paragraphs={len(toc_substantive)}",
         "",
+        "form_fields:",
     ]
+    for snippet, label in EXPECTED_FORM_SNIPPETS:
+        flag = "OK" if form_hits[label] else "FAIL"
+        report_lines.append(f"  {flag} {label} ({snippet[:24]}...)")
+        if not form_hits[label]:
+            failures.append(f"form:{label}")
 
+    report_lines.append("")
     for title in AI_TITLES:
         hits = [t for t in ai_paras if title in t and norm_len(t) >= MIN_AI_PARA_CHARS]
         ok = bool(hits) and not any(s in (hits[0] if hits else "") for s in STUB_PATTERNS)
@@ -60,6 +119,13 @@ def main() -> int:
         report_lines.append(f"{flag} {title} ({len(hits)} hit(s), sample={norm_len(hits[0]) if hits else 0} chars)")
         if not ok:
             failures.append(title)
+
+    if toc_ai_pollution:
+        failures.append("toc_ai_pollution")
+    if toc_substantive:
+        failures.append("toc_substantive_body")
+    if legacy_left:
+        failures.append(f"legacy_template_text:{legacy_left}")
 
     print("\n".join(report_lines))
     if failures or total < 5000:

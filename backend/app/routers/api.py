@@ -1515,7 +1515,11 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     tpl = db.query(Template).filter(Template.id == p.template_id).first()
     if getattr(tpl, "kind", "") == "tender_doc":
         raise HTTPException(400, "招标文件仅供参考，不能作为导出起点")
-    tpl_bytes = storage.download_bytes(tpl.object_key)
+    from app.services.creation_draft import get_project_render_base_docx
+
+    tpl_bytes, snap = get_project_render_base_docx(p, tpl)
+    if snap is None:
+        snap = getattr(tpl, "source_snapshot", None) or {}
     chapters = dict(p.chapters or {})
     quals = []
     if p.inserted_quals:
@@ -1524,7 +1528,6 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
             "content": "\n".join(f"- {q.category} / {q.name}（{q.issuer}）" for q in quals),
             "source": "system",
         }
-    snap = getattr(tpl, "source_snapshot", None) or {}
     export_fields = _fill_field_defaults(db, p.fields)
     if export_fields != (p.fields or {}):
         p.fields = export_fields

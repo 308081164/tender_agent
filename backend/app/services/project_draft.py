@@ -28,7 +28,9 @@ async def render_project_draft_docx(db: Session, project: TenderProject) -> tupl
     tpl = db.query(Template).filter(Template.id == project.template_id).first()
     if not tpl:
         raise ValueError("模板不存在")
-    tpl_bytes = storage.download_bytes(tpl.object_key)
+    from app.services.creation_draft import get_project_render_base_docx
+
+    tpl_bytes, snap = get_project_render_base_docx(project, tpl)
     chapters = dict(project.chapters or {})
     quals = []
     if project.inserted_quals:
@@ -57,7 +59,8 @@ async def render_project_draft_docx(db: Session, project: TenderProject) -> tupl
     writing_req = (export_fields.get("_writing_requirements") or "") or (
         (project.chapters or {}).get("_writing_requirements") or ""
     )
-    snap = getattr(tpl, "source_snapshot", None) or {}
+    if snap is None:
+        snap = getattr(tpl, "source_snapshot", None) or {}
     from app.services.doc_engine.engine import render_project_document
 
     doc_bytes, meta = await render_project_document(

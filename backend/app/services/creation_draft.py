@@ -337,6 +337,24 @@ def open_decision_card(report: dict) -> dict | None:
     }
 
 
+def get_project_render_base_docx(project: TenderProject, tpl: Template) -> tuple[bytes, dict | None]:
+    """导出/预览优先用创作草稿（含占位符映射与字段初填），否则回退原始模板。"""
+    stored = dict(project.fields or {})
+    draft_key = str(stored.get("_draft_object_key") or "").strip()
+    snap = getattr(tpl, "source_snapshot", None) or {}
+    snap_dict = snap if isinstance(snap, dict) else {}
+    if draft_key and stored.get("_creation_prepared"):
+        try:
+            data = storage.download_bytes(draft_key)
+            if data:
+                return data, snap_dict or None
+        except Exception:
+            pass
+    if not tpl.object_key:
+        raise ValueError("template_missing")
+    return storage.download_bytes(tpl.object_key), snap_dict or None
+
+
 def _bind_session(session, project: TenderProject, filename: str) -> None:
     if session is None:
         return

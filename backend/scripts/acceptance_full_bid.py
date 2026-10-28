@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deep acceptance: 铁路工程投标模板2-空白 → 完整 docx（API 驱动）。"""
+"""Deep acceptance: 铁路工程投标模板2-空白 → 完整 docx（API 驱动，必须真实 LLM）。"""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,11 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
+BACKEND = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND))
+
+from app.services.acceptance_llm import require_llm_api_keys
+
 TEMPLATE = ROOT / "docs/标书智能体参考资料-和远智能-20260729/02-word标书模板/1-标准投标word模板/铁路工程投标模板2-空白.docx"
 BASE = os.environ.get("ACCEPTANCE_API_BASE", "http://127.0.0.1:8000/api")
 OUT = Path(os.environ.get("ACCEPTANCE_DOCX_OUT", "/cursor/stores/self/media/acceptance-full-bid-sample.docx"))
@@ -56,23 +61,7 @@ FIELDS = {
     "warranty_period": "24个月",
 }
 
-MIN_SECTION_CHARS = 80
-
-
-def _expand_body(title: str, fields: dict, body: str) -> str:
-    text = (body or "").strip()
-    if len(text.replace(" ", "")) >= MIN_SECTION_CHARS:
-        return text
-    pname = fields.get("project_name") or "本项目"
-    bidder = fields.get("bidder_name") or fields.get("bidder") or "投标人"
-    return (
-        f"针对招标项目「{pname}」，投标人{bidder}现就「{title}」作如下说明。"
-        f"我方将严格遵循招标文件、铁路行业技术规范及采购人管理制度，结合新城智慧交通维保系统的运维特点，"
-        f"从组织保障、过程控制、资料归档与持续改进等方面落实责任；所列内容真实有效，"
-        f"愿接受采购人及监理单位监督检查。工期{fields.get('duration', '')}，质保期{fields.get('warranty_period', '')}。"
-        f"{text}"
-    ).strip()
-
+MIN_COMPOSE_KEYS = 8
 
 REQUIREMENTS = (
     "本项目为新城智慧交通维保系统，涵盖信号监测、车载终端、路侧感知设备及统一运维平台。"
@@ -82,6 +71,12 @@ REQUIREMENTS = (
 
 
 async def main() -> int:
+    try:
+        require_llm_api_keys()
+    except RuntimeError as err:
+        print(str(err), file=sys.stderr)
+        return 2
+
     if not TEMPLATE.is_file():
         print(f"MISSING template: {TEMPLATE}", file=sys.stderr)
         return 1
@@ -123,6 +118,10 @@ async def main() -> int:
         )
         print(f"project_id={pid} session_id={session_id}")
 
+        proj_data = (await client.get(f"/projects/{pid}")).json()
+        if not (proj_data.get("fields") or {}).get("_creation_prepared"):
+            print("WARN: creation draft not prepared; form placeholders may be incomplete", file=sys.stderr)
+
         comp = await client.post(
             f"/projects/{pid}/compose",
             json={"requirements": REQUIREMENTS},
@@ -130,21 +129,17 @@ async def main() -> int:
         comp.raise_for_status()
         gen = comp.json().get("generated_keys") or []
         print(f"compose generated {len(gen)} keys")
+        if len(gen) < MIN_COMPOSE_KEYS:
+            print(
+                f"compose returned too few keys ({len(gen)}<{MIN_COMPOSE_KEYS}); "
+                "check LLM keys and backend logs",
+                file=sys.stderr,
+            )
+            return 3
 
-        proj_data = (await client.get(f"/projects/{pid}")).json()
-        chapters = dict(proj_data.get("chapters") or {})
-        for key, val in list(chapters.items()):
-            if not isinstance(val, dict):
-                continue
-            content = val.get("content") or ""
-            if key.startswith("_"):
-                continue
-            expanded = _expand_body(key, FIELDS, content)
-            if expanded != content:
-                chapters[key] = {**val, "content": expanded, "source": val.get("source") or "acceptance"}
         await client.post(
             f"/projects/{pid}/save",
-            json={"chapters": chapters, "fields": {**FIELDS, "_writing_requirements": REQUIREMENTS}},
+            json={"fields": {**FIELDS, "_writing_requirements": REQUIREMENTS}},
         )
 
         rend = await client.post(f"/projects/{pid}/render")
@@ -185,6 +180,7 @@ async def main() -> int:
                     "sha256": sha,
                     "bytes": len(docx),
                     "generated_keys": gen,
+                    "llm_required": True,
                 },
                 ensure_ascii=False,
                 indent=2,
