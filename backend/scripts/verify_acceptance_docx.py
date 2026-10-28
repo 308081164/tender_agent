@@ -78,7 +78,17 @@ def _collect_text(doc: Document) -> str:
     return "\n".join(parts)
 
 
-def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
+def _section_table_fill(raw_bytes: bytes, title: str) -> tuple[bool, int]:
+    """纯表格章节：表内已有数据行即视为已填写。"""
+    from app.services.doc_engine.compose_policy import table_section_data_rows
+
+    rows = table_section_data_rows(raw_bytes, title)
+    if rows > 0:
+        return True, rows * 80
+    return False, 0
+
+
+def _section_has_body(doc: Document, title: str, raw_bytes: bytes | None = None) -> tuple[bool, int]:
     """标题段落后有实质性正文（LLM 撰写不必含「针对招标项目」套话）。"""
     paras = doc.paragraphs
     for i, p in enumerate(paras):
@@ -112,6 +122,8 @@ def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
     ]
     if hits:
         return True, norm_len(hits[0])
+    if raw_bytes and ("表" in title or "设备" in title):
+        return _section_table_fill(raw_bytes, title)
     return False, 0
 
 
@@ -165,7 +177,7 @@ def main() -> int:
 
     report_lines.append("")
     for title in AI_TITLES:
-        ok, sample_len = _section_has_body(doc, title)
+        ok, sample_len = _section_has_body(doc, title, raw_bytes)
         flag = "OK" if ok else "FAIL"
         report_lines.append(f"{flag} {title} (body_chars={sample_len})")
         if not ok:

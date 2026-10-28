@@ -142,7 +142,7 @@ def fill_table_slot(
 
     for row_data in rows:
         new_row = template_row_node.clone(True).as_row()
-        for col in columns:
+        for c, col in enumerate(columns):
             if c >= new_row.cells.count:
                 break
             cell = new_row.cells[c]

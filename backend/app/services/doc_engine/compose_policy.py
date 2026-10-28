@@ -122,13 +122,22 @@ def section_slice_after_heading(docx_bytes: bytes, heading_title: str) -> list[t
         if kind != "p":
             continue
         text = _paragraph_text(node).strip()
-        if needle not in text:
+        style = _paragraph_style(node)
+        if needle not in text or paragraph_is_toc_like(style, text):
             continue
-        if not _is_heading_node(node, text):
-            if text != needle and needle not in text:
+        if text == needle or _is_heading_node(node, text):
+            start = idx + 1
+            break
+    if start < 0:
+        for idx, (kind, node) in enumerate(elements):
+            if kind != "p":
                 continue
-        start = idx + 1
-        break
+            text = _paragraph_text(node).strip()
+            style = _paragraph_style(node)
+            if needle not in text or paragraph_is_toc_like(style, text):
+                continue
+            start = idx + 1
+            break
     if start < 0:
         return []
     slice_out: list[tuple[str, ET.Element]] = []
@@ -136,19 +145,22 @@ def section_slice_after_heading(docx_bytes: bytes, heading_title: str) -> list[t
         if kind == "p":
             text = _paragraph_text(node).strip()
             style = _paragraph_style(node)
-            if text and _is_heading_node(node, text) and needle not in text:
-                break
             if text and paragraph_is_toc_like(style, text):
                 continue
-        slice_out.append((kind, node))
-        if kind == "p":
-            text = _paragraph_text(node).strip()
-            if text and _is_heading_node(node, text) and len(slice_out) > 2:
+            if text and _is_heading_node(node, text) and needle not in text and slice_out:
                 break
+        slice_out.append((kind, node))
     return slice_out
 
 
-def section_has_letter_skeleton(docx_bytes: bytes, heading_title: str) -> bool:
+def table_section_data_rows(docx_bytes: bytes, heading_title: str) -> int:
+    """章节范围内表格数据行数（用于验收纯表格章节）。"""
+    total = 0
+    for kind, node in section_slice_after_heading(docx_bytes, heading_title):
+        if kind != "tbl":
+            continue
+        total += _table_data_row_count(node, header_rows=1)
+    return total
     if not title_is_structured_letter(heading_title):
         return False
     parts = section_slice_after_heading(docx_bytes, heading_title)

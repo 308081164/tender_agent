@@ -182,6 +182,10 @@ async def main() -> int:
         tables = await client.post(f"/projects/{pid}/generate-tables", json={"requirements": REQUIREMENTS})
         if tables.status_code < 400:
             print("generate-tables ok")
+            rend2 = await client.post(f"/projects/{pid}/render")
+            print("render-after-tables", rend2.status_code)
+            if rend2.status_code < 400:
+                rendered_draft_key = str((rend2.json() or {}).get("draft_object_key") or rendered_draft_key)
 
         val = await client.post(f"/projects/{pid}/validate")
         print("validate", val.status_code, val.text[:200])
@@ -193,12 +197,17 @@ async def main() -> int:
             val2 = await client.post(f"/projects/{pid}/validate")
             print("validate-after-review", val2.status_code)
 
-        exp = await client.get(f"/projects/{pid}/export")
-        if exp.status_code != 200:
+        try:
+            exp = await client.get(f"/projects/{pid}/export")
+        except httpx.HTTPError as err:
+            print(f"export request failed: {err}", file=sys.stderr)
+            exp = None
+        if exp is None or exp.status_code != 200:
+            status = exp.status_code if exp is not None else "error"
             print(
                 "export failed",
-                exp.status_code,
-                (exp.text or "")[:500],
+                status,
+                ((exp.text or "")[:500] if exp is not None else ""),
                 file=sys.stderr,
             )
             proj_data = (await client.get(f"/projects/{pid}")).json()
