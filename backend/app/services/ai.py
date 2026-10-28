@@ -322,10 +322,12 @@ def local_chapter_text(chapter_key: str, fields: dict) -> str:
             f"投标人{fields.get('bidder', '')}将严格按照招标文件及行业规范组织实施，"
             f"确保工期{fields.get('duration', '')}、质量与安全目标全面达成。"
         )
+    bidder = fields.get("bidder") or fields.get("bidder_name") or ""
     safe = {k: fields.get(k, "") or "" for k in (
-        "project_name", "tender_no", "tenderer", "bidder",
+        "project_name", "tender_no", "tenderer",
         "bid_amount", "duration", "project_manager", "warranty_period",
     )}
+    safe["bidder"] = bidder
     try:
         return tpl.format(**safe)
     except Exception:

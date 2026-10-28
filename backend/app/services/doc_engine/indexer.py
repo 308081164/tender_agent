@@ -180,6 +180,43 @@ def replace_at_location(
     return out.getvalue()
 
 
+def insert_text_after_heading(
+    docx_bytes: bytes,
+    heading_substr: str,
+    new_text: str,
+    *,
+    highlight: bool = False,
+) -> bytes:
+    """在首个包含 heading_substr 的段落后插入正文（创作模板多块共享 p:N 锚点时的兜底）。"""
+    needle = (heading_substr or "").strip()
+    text = (new_text or "").strip()
+    if not needle or not text:
+        return docx_bytes
+    doc = _load(docx_bytes)
+    nodes = doc.get_child_nodes(aw.NodeType.PARAGRAPH, True)
+    for i in range(nodes.count):
+        para = nodes[i].as_paragraph()
+        body = (para.get_text() or "").strip()
+        if needle not in body:
+            continue
+        # 跳过目录行（含制表符 + 页码）
+        if "\t" in body and re.search(r"\t\d+\s*$", body):
+            continue
+        new_para = aw.Paragraph(doc)
+        run = aw.Run(doc, text)
+        if highlight:
+            try:
+                run.font.highlight_color = aw.HighlightColor.YELLOW
+            except Exception:
+                pass
+        new_para.append_child(run)
+        para.parent_node.insert_after(new_para, para)
+        break
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
 def replace_image_at_location(
     docx_bytes: bytes,
     location: str,
