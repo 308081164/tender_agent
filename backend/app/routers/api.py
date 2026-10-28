@@ -1281,11 +1281,14 @@ async def doc_review_project(project_id: int, db: Session = Depends(get_db)):
     if not p.template_id:
         raise HTTPException(400, "未选择模板")
     tpl = db.query(Template).filter(Template.id == p.template_id).first()
-    tpl_bytes = storage.download_bytes(tpl.object_key)
+    from app.services.creation_draft import get_project_render_base_docx
+
+    tpl_bytes, snap = get_project_render_base_docx(p, tpl)
+    if snap is None:
+        snap = getattr(tpl, "source_snapshot", None) or {}
     export_fields = _fill_field_defaults(db, p.fields)
     from app.services.doc_engine.engine import render_project_document, review_project_document
 
-    snap = getattr(tpl, "source_snapshot", None) or {}
     writing_req = str(export_fields.get("_writing_requirements") or "")
     doc_bytes, _ = await render_project_document(
         tpl_bytes,
@@ -1527,8 +1530,16 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     if not p.checklist_result:
         validate_project(project_id, db)
         db.refresh(p)
-    if p.checklist_result and not p.checklist_result.get("can_export", True):
-        raise HTTPException(400, detail={"message": "条目校验未通过，无法导出", "result": p.checklist_result})
+    if p.checklist_result:
+        reds = [
+            i for i in (p.checklist_result.get("items") or [])
+            if i.get("level") == "red"
+        ]
+        if reds:
+            raise HTTPException(
+                400,
+                detail={"message": "条目校验未通过，无法导出", "result": p.checklist_result},
+            )
 
     from app.services.field_verify import unconfirmed_sensitive_keys
 
@@ -1545,7 +1556,11 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
     tpl = db.query(Template).filter(Template.id == p.template_id).first()
     if getattr(tpl, "kind", "") == "tender_doc":
         raise HTTPException(400, "招标文件仅供参考，不能作为导出起点")
-    tpl_bytes = storage.download_bytes(tpl.object_key)
+    from app.services.creation_draft import get_project_render_base_docx
+
+    tpl_bytes, snap = get_project_render_base_docx(p, tpl)
+    if snap is None:
+        snap = getattr(tpl, "source_snapshot", None) or {}
     chapters = dict(p.chapters or {})
     quals = []
     if p.inserted_quals:
@@ -1554,7 +1569,6 @@ async def export_project(project_id: int, db: Session = Depends(get_db)):
             "content": "\n".join(f"- {q.category} / {q.name}（{q.issuer}）" for q in quals),
             "source": "system",
         }
-    snap = getattr(tpl, "source_snapshot", None) or {}
     export_fields = _fill_field_defaults(db, p.fields)
     if export_fields != (p.fields or {}):
         p.fields = export_fields

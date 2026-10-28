@@ -331,13 +331,17 @@ def write_section_starters(docx_bytes: bytes, starters: dict[str, str]) -> bytes
     """标题下一段为空或短于 30 字时，写入该章节的起稿。"""
     if not starters:
         return docx_bytes
+    from app.services.word import is_heading_style_name, paragraph_is_toc_like
+
     root = _document_root(docx_bytes)
     paras = _body_paragraphs(root)
     changed = False
     for index, node in enumerate(paras):
         style = _paragraph_style(node)
         text = _paragraph_text(node).strip()
-        heading = style.lower().startswith("heading") or "标题" in style
+        if paragraph_is_toc_like(style, text):
+            continue
+        heading = is_heading_style_name(style)
         starter = starters.get(text) or ""
         if not heading or not starter:
             continue

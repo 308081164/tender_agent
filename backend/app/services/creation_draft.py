@@ -46,6 +46,70 @@ FIELD_LABELS = {
     "address": "地址",
 }
 
+RAILWAY_BLANK_COVER_LINES: tuple[tuple[str, str, str], ...] = (
+    ("谈判编号：CRCEBG5-2026-CQSNTP011", "tender_no", "谈判编号：{val}"),
+    ("包件号：DL05", "package_no", "包件号：{val}"),
+    ("竞标人：和远智能科技股份有限公司（盖单位章）", "bidder_name", "竞标人：{val}（盖单位章）"),
+    ("2026年 04 月 28 日", "bid_date", "{val}"),
+)
+
+
+def _format_bid_date_line(fields: dict[str, Any]) -> str:
+    raw = str(fields.get("bid_date") or fields.get("sign_date") or "").strip()
+    if not raw:
+        return ""
+    if "年" in raw and "月" in raw:
+        return raw
+    parts = raw.replace("/", "-").split("-")
+    if len(parts) >= 3:
+        y, m, d = parts[0], int(parts[1]), int(parts[2])
+        return f"{y}年{m}月{d}日"
+    return raw
+
+
+def apply_railway_blank_cover_lines(docx_bytes: bytes, fields: dict[str, Any]) -> bytes:
+    pairs: list[tuple[str, str]] = []
+    bid_line = _format_bid_date_line(fields)
+    for old, key, fmt in RAILWAY_BLANK_COVER_LINES:
+        if key == "bid_date":
+            val = bid_line
+        else:
+            val = str(fields.get(key) or "").strip()
+        if not val:
+            continue
+        new_line = fmt.format(val=val)
+        if old != new_line:
+            pairs.append((old, new_line))
+    if not pairs:
+        return docx_bytes
+    return word.apply_literal_replacements(docx_bytes, pairs, highlight=False)
+
+
+def _deterministic_field_mappings(docx_bytes: bytes, fields: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        text = document_text(docx_bytes)
+    except Exception:
+        text = ""
+    out: list[dict[str, Any]] = []
+    for snippet, key in (
+        ("CRCEBG5-2026-CQSNTP011", "tender_no"),
+        ("DL05", "package_no"),
+        ("和远智能科技股份有限公司", "bidder_name"),
+    ):
+        val = str(fields.get(key) or "").strip()
+        if snippet in text and val and snippet != val:
+            out.append({
+                "key": key,
+                "field_name": FIELD_LABELS.get(key, key),
+                "original_text": snippet,
+                "confidence": 1.0,
+                "reason": "铁路空白模板样例值",
+                "source": "deterministic",
+                "bind_type": "field",
+                "approved": True,
+            })
+    return out
+
 
 def _norm(value: str) -> str:
     return "".join(str(value or "").split())
@@ -337,6 +401,24 @@ def open_decision_card(report: dict) -> dict | None:
     }
 
 
+def get_project_render_base_docx(project: TenderProject, tpl: Template) -> tuple[bytes, dict | None]:
+    """导出/预览优先用创作草稿（含占位符映射与字段初填），否则回退原始模板。"""
+    stored = dict(project.fields or {})
+    draft_key = str(stored.get("_draft_object_key") or "").strip()
+    snap = getattr(tpl, "source_snapshot", None) or {}
+    snap_dict = snap if isinstance(snap, dict) else {}
+    if draft_key and stored.get("_creation_prepared"):
+        try:
+            data = storage.download_bytes(draft_key)
+            if data:
+                return data, snap_dict or None
+        except Exception:
+            pass
+    if not tpl.object_key:
+        raise ValueError("template_missing")
+    return storage.download_bytes(tpl.object_key), snap_dict or None
+
+
 def _bind_session(session, project: TenderProject, filename: str) -> None:
     if session is None:
         return
@@ -392,6 +474,19 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
     mappings, written, opens = _select_mappings(
         detected.get("candidates") or [], fields, company_name,
     )
+    det = _deterministic_field_mappings(data, fields)
+    seen_keys = {m.get("key") for m in mappings}
+    for item in det:
+        if item.get("key") in seen_keys:
+            continue
+        mappings.append(item)
+        written.append({
+            "key": item["key"],
+            "name": item.get("field_name") or item["key"],
+            "value": str(fields.get(item["key"]) or ""),
+            "detail": item.get("reason") or "",
+            "original": item.get("original_text") or "",
+        })
     qual = _qualification_decision(db, data)
     if qual:
         opens.append(qual)
@@ -411,6 +506,7 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
         highlight=False,
         source_snapshot=snapshot or None,
     )
+    rendered = apply_railway_blank_cover_lines(rendered, fields)
     try:
         rendered_text = document_text(rendered)
     except Exception:
@@ -436,6 +532,10 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
     if starters:
         from app.services.docx_ooxml import write_section_starters
         rendered = write_section_starters(rendered, starters)
+
+    from app.services.doc_engine.assembler import _fill_parenthesis_form_tokens
+
+    rendered = _fill_parenthesis_form_tokens(rendered, fields, highlight=False)
 
     draft_key = f"projects/{project.id}/creation_draft.docx"
     storage.upload_bytes(

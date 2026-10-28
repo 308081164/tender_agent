@@ -88,6 +88,41 @@ def is_field_code_text(text: str) -> bool:
     return any(p.search(t) for p in FIELD_CODE_PATTERNS)
 
 
+def is_toc_style_name(style_name: str) -> bool:
+    """Word 自动目录段落样式（TOC 1 / toc 1 等）。"""
+    s = (style_name or "").strip().lower()
+    return s.startswith("toc") or s in ("目录", "table of contents")
+
+
+def is_heading_style_name(style_name: str) -> bool:
+    s = (style_name or "").strip()
+    if not s:
+        return False
+    if s.startswith("Heading") or s.startswith("标题"):
+        return True
+    return bool(re.match(r"^heading\s*\d", s, re.I))
+
+
+def is_toc_entry_text(text: str) -> bool:
+    """目录行：标题 + 制表符 + 页码（域更新后的常见形态）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if "\t" in t and re.search(r"\t\d+\s*$", t):
+        return True
+    if re.match(r"^\d+(\.\d+)*\.\s+.+\t\d+\s*$", t):
+        return True
+    return False
+
+
+def paragraph_is_toc_like(style_name: str, text: str) -> bool:
+    if is_toc_style_name(style_name):
+        return True
+    if is_toc_entry_text(text):
+        return True
+    return False
+
+
 def _prepare_doc_for_preview(doc: aw.Document) -> None:
     """更新域与版式，使目录/页码等显示为渲染结果而非域代码。"""
     for fn_name in ("update_fields", "update_page_layout"):

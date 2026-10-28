@@ -8,7 +8,14 @@ from typing import Any
 import aspose.words as aw
 
 from app.services.aspose_runtime import ensure_license, iter_collection
-from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE, _prepare_doc_for_preview, is_field_code_text
+from app.services.word import (
+    AI_MARKER_RE,
+    PLACEHOLDER_RE,
+    _prepare_doc_for_preview,
+    is_field_code_text,
+    is_heading_style_name,
+    paragraph_is_toc_like,
+)
 
 LOC_PARA = re.compile(r"^p:(\d+)$")
 LOC_TABLE = re.compile(r"^tbl:(\d+):r(\d+):c(\d+)$")
@@ -199,8 +206,13 @@ def insert_text_after_heading(
         body = (para.get_text() or "").strip()
         if needle not in body:
             continue
+        style = _para_style(para)
+        if paragraph_is_toc_like(style, body):
+            continue
         # 跳过目录行（含制表符 + 页码）
         if "\t" in body and re.search(r"\t\d+\s*$", body):
+            continue
+        if not is_heading_style_name(style):
             continue
         new_para = aw.Paragraph(doc)
         run = aw.Run(doc, text)
