@@ -14,7 +14,7 @@ const emptyForm = {
   kimi_model: '',
   kimi_k3_model: '',
   preferred_provider: 'auto',
-  web_search_provider: 'duckduckgo',
+  web_search_provider: 'deepseek',
   web_search_api_key: '',
 }
 
@@ -29,7 +29,7 @@ export function useSettings(showToast) {
     setSettingsForm({
       deepseek_api_key: '',
       deepseek_base_url: s.deepseek_base_url || '',
-      deepseek_model: s.deepseek_model || 'deepseek-v4-pro',
+      deepseek_model: s.deepseek_model || 'deepseek-flash',
       qwen_api_key: '',
       qwen_base_url: s.qwen_base_url || '',
       qwen_model: s.qwen_model || 'qwen-plus',
@@ -58,7 +58,7 @@ export function useSettings(showToast) {
         kimi_model: settingsForm.kimi_model,
         kimi_k3_model: settingsForm.kimi_k3_model,
         preferred_provider: settingsForm.preferred_provider,
-        web_search_provider: settingsForm.web_search_provider || 'duckduckgo',
+        web_search_provider: settingsForm.web_search_provider || 'deepseek',
       }
       if (settingsForm.web_search_api_key.trim()) {
         payload.web_search_api_key = settingsForm.web_search_api_key.trim()

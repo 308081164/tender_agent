@@ -1413,10 +1413,13 @@ async def compose_project(
         ref_block = "\n---\n".join(s for s in body.reference_snippets if s and str(s).strip())
         req = f"{req}\n\n参照段落：\n{ref_block}".strip()
     plan = await build_composition_plan(
-        manifest, fields, req, _company_context(db), db=db
+        manifest, fields, req, _company_context(db), db=db,
+        docx_bytes=tpl_bytes,
     )
     contents, table_rows = await generate_block_contents(
-        plan, fields, req, _company_context(db), db=db
+        plan, fields, req, _company_context(db), db=db,
+        docx_bytes=tpl_bytes,
+        manifest=manifest,
     )
     if table_rows:
         fields = dict(fields)
@@ -1429,7 +1432,7 @@ async def compose_project(
 
     for k, v in contents.items():
         if k and v and not k.startswith("field.") and not k.startswith("ai."):
-            if not should_generate_ai_narrative(str(k)):
+            if not should_generate_ai_narrative(str(k), tpl_bytes):
                 continue
             chapters[k] = {"content": v, "source": "ai", "engine": "doc_engine_v2"}
     p.chapters = chapters

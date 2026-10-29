@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     onlyoffice_internal_url: str = "http://backend:8000"
     agent_tool_loop: bool = True
     # 联网搜索：默认 DuckDuckGo，无需密钥。tavily / bing / serpapi 需要 web_search_api_key。
-    web_search_provider: str = "duckduckgo"
+    web_search_provider: str = "deepseek"
     web_search_api_key: str = ""
 
     @model_validator(mode="before")

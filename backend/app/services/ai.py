@@ -42,6 +42,8 @@ def pick_model(task_kind: str, cfg: dict) -> list[str]:
     kind = (task_kind or "text").strip().lower()
     if kind in MULTIMODAL_TASK_KINDS:
         order: list[str] = []
+        if settings_svc.deepseek_multimodal_ready(cfg):
+            order.append("deepseek")
         if settings_svc.qwen_vl_ready(cfg):
             order.append("qwen_vl")
         if settings_svc.kimi_k3_ready(cfg):
@@ -280,7 +282,7 @@ async def chat_completion_vision(
     image_data_urls: list[str] | None = None,
     db: Session | None = None,
 ) -> str:
-    """多模态对话：仅走千问 VL / Kimi K3，禁止 DeepSeek；未配置多模态则返回空字符串。"""
+    """多模态对话：优先 DeepSeek Flash，其次千问 VL / Kimi K3。"""
     imgs = [u for u in (image_data_urls or []) if u]
     if not imgs:
         return await chat_completion(messages, db=db, task_kind="text")
@@ -571,7 +573,7 @@ async def test_provider(provider: str, db: Session | None = None) -> dict:
             text = await _openai_compat(
                 cfg["deepseek_base_url"],
                 cfg["deepseek_api_key"],
-                cfg.get("deepseek_model") or "deepseek-v4-pro",
+                cfg.get("deepseek_model") or settings_svc.DEEPSEEK_DEFAULT_MODEL,
                 [{"role": "user", "content": "请只回复：ok"}],
             )
             return {"ok": True, "message": "DeepSeek 连接成功", "sample": (text or "")[:80]}

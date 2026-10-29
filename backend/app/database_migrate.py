@@ -27,8 +27,10 @@ ALTERS = [
     "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS workspace JSON DEFAULT '{}'::json",
     "ALTER TABLE tender_projects ADD COLUMN IF NOT EXISTS workspace_dir VARCHAR(1000) DEFAULT ''",
     # DeepSeek V4 Pro 默认模型升级（保留用户自定义的其他模型名）
-    "UPDATE system_settings SET deepseek_model = 'deepseek-v4-pro' "
-    "WHERE deepseek_model IS NULL OR deepseek_model IN ('', 'deepseek-chat', 'deepseek-reasoner')",
+    "UPDATE system_settings SET deepseek_model = 'deepseek-flash' "
+    "WHERE deepseek_model IS NULL OR deepseek_model IN ('', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-pro')",
+    "UPDATE system_settings SET web_search_provider = 'deepseek' "
+    "WHERE web_search_provider IS NULL OR web_search_provider IN ('', 'duckduckgo')",
     "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_api_key TEXT DEFAULT ''",
     "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_base_url VARCHAR(300) DEFAULT 'https://api.moonshot.cn/v1'",
     "ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS kimi_model VARCHAR(100) DEFAULT 'moonshot-v1-8k'",

@@ -66,10 +66,13 @@ async def render_project_document(
     )
     if doc_mode in ("create", "hybrid") and requirements and not has_saved_chapters:
         plan = await build_composition_plan(
-            manifest, fields, requirements, company_context, db=db
+            manifest, fields, requirements, company_context, db=db,
+            docx_bytes=docx_bytes,
         )
         block_contents, table_updates = await generate_block_contents(
-            plan, fields, requirements, company_context, db=db
+            plan, fields, requirements, company_context, db=db,
+            docx_bytes=docx_bytes,
+            manifest=manifest,
         )
         if table_updates:
             fields = dict(fields)

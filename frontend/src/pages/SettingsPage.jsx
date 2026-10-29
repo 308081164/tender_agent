@@ -82,24 +82,29 @@ export default function SettingsPage() {
         <div className="chapter-head">
           <h4>联网搜索</h4>
           <span className="badge">
-            {(settingsForm.web_search_provider || 'duckduckgo') === 'duckduckgo'
+            {(settingsForm.web_search_provider || 'deepseek') === 'duckduckgo'
               ? 'DuckDuckGo · 无需密钥'
-              : settingsInfo?.web_search_api_key_set
+              : (settingsForm.web_search_provider || 'deepseek') === 'deepseek'
+                ? (settingsInfo?.deepseek_api_key_set
+                  ? 'DeepSeek 搜索 · 复用 DeepSeek API Key'
+                  : 'DeepSeek 搜索 · 需配置 DeepSeek Key')
+                : settingsInfo?.web_search_api_key_set
                 ? `已配置 ${settingsInfo.web_search_api_key_masked}`
                 : '未配置密钥'}
           </span>
         </div>
         <p className="lead" style={{ marginBottom: 10 }}>
-          对话里说「联网查一下」或打开输入框的「联网」，会检索公开网页并附上来源。默认 DuckDuckGo，不需要另买 API Key。
+          对话里说「联网查一下」或打开输入框的「联网」，会检索公开网页并附上来源。默认 DeepSeek 搜索（与 DeepSeek API Key 共用）；也可选 DuckDuckGo（无需密钥）。
         </p>
         <div className="form-grid">
           <div className="field">
             <label>搜索来源</label>
             <select
-              value={settingsForm.web_search_provider || 'duckduckgo'}
+              value={settingsForm.web_search_provider || 'deepseek'}
               onChange={(e) => setSettingsForm({ ...settingsForm, web_search_provider: e.target.value })}
             >
-              <option value="duckduckgo">DuckDuckGo（默认，无需密钥）</option>
+              <option value="deepseek">DeepSeek 搜索（默认，复用 DeepSeek Key）</option>
+              <option value="duckduckgo">DuckDuckGo（无需密钥）</option>
               <option value="tavily">Tavily（需要 API Key）</option>
               <option value="bing">Bing Web Search（需要 API Key）</option>
               <option value="serpapi">SerpAPI（需要 API Key）</option>
@@ -113,11 +118,11 @@ export default function SettingsPage() {
               placeholder={settingsInfo?.web_search_api_key_set ? '已配置，留空则保持不变' : '仅 Tavily / Bing / SerpAPI 需要'}
               value={settingsForm.web_search_api_key}
               onChange={(e) => setSettingsForm({ ...settingsForm, web_search_api_key: e.target.value })}
-              disabled={(settingsForm.web_search_provider || 'duckduckgo') === 'duckduckgo'}
+              disabled={['duckduckgo', 'deepseek'].includes(settingsForm.web_search_provider || 'deepseek')}
             />
           </div>
         </div>
-        {(settingsForm.web_search_provider || 'duckduckgo') !== 'duckduckgo'
+        {!['duckduckgo', 'deepseek'].includes(settingsForm.web_search_provider || 'deepseek')
           && !settingsForm.web_search_api_key.trim()
           && !settingsInfo?.web_search_api_key_set ? (
           <div className="card-block" style={{ marginTop: 12, borderColor: 'var(--warn, #c9a227)' }}>
@@ -171,10 +176,10 @@ export default function SettingsPage() {
             <input
               value={settingsForm.deepseek_model}
               onChange={(e) => setSettingsForm({ ...settingsForm, deepseek_model: e.target.value })}
-              placeholder="deepseek-v4-pro"
+              placeholder="deepseek-flash"
             />
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              推荐 <code>deepseek-v4-pro</code>（V4 Pro GA）；轻量场景可用 <code>deepseek-v4-flash</code>
+              推荐 <code>deepseek-flash</code>（V4.1 Flash，多模态）；长文/复杂推理可用 <code>deepseek-v4-pro</code>
             </div>
           </div>
         </div>
