@@ -122,8 +122,10 @@ def _section_has_body(doc: Document, title: str, raw_bytes: bytes | None = None)
     ]
     if hits:
         return True, norm_len(hits[0])
-    if raw_bytes and ("表" in title or "设备" in title):
-        return _section_table_fill(raw_bytes, title)
+    if raw_bytes:
+        ok_tbl, n = _section_table_fill(raw_bytes, title)
+        if ok_tbl:
+            return True, n
     return False, 0
 
 
