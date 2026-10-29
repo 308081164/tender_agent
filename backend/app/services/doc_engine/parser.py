@@ -109,6 +109,29 @@ def parse_template_manifest(
                 "inferred": True,
             })
 
+    from app.services.doc_engine.compose_policy import title_requires_narrative_body
+
+    for para in index["paragraphs"]:
+        if not para.get("is_heading"):
+            continue
+        title = (para.get("text") or "").strip()
+        if not title_requires_narrative_body(title):
+            continue
+        bid = f"ai.{_slug(title)}"
+        if bid in seen_keys:
+            continue
+        seen_keys.add(bid)
+        loc = para.get("location") or ""
+        blocks.append({
+            "id": bid,
+            "type": "ai_section",
+            "title": title,
+            "anchor": {"kind": "location", "location": loc},
+            "required": True,
+            "inferred": True,
+            "narrative_section": True,
+        })
+
     # 5) 表格槽
     seen_ids: set[str] = {b.get("id") for b in blocks if b.get("id")}
     for tbl_block in infer_table_slots(index):

@@ -40,6 +40,20 @@ def set_table_slot_rows(fields: dict[str, Any], bind: str, rows: list[dict[str, 
     return out
 
 
+def _slot_skips_llm_rows(slot: dict[str, Any]) -> bool:
+    """封面标签表、诉讼声明表等不应被 LLM 当成多行数据表填充。"""
+    t_idx = int(slot.get("table_index") or -1)
+    if t_idx == 0:
+        return True
+    title = str(slot.get("title") or slot.get("bind") or "")
+    cols = " ".join(slot.get("columns") or [])
+    if "竞标人名称" in cols and t_idx <= 1:
+        return True
+    if any(k in title for k in ("诉讼", "仲裁", "合同诉讼")):
+        return True
+    return False
+
+
 async def generate_table_rows_for_slot(
     slot: dict[str, Any],
     fields: dict[str, Any],
@@ -51,6 +65,8 @@ async def generate_table_rows_for_slot(
     columns = slot.get("columns") or []
     if not columns:
         return []
+    if _slot_skips_llm_rows(slot):
+        return []
     bind = slot.get("bind") or ""
     existing = resolve_table_rows({"bind": bind, "columns": columns}, fields)
     if existing:
@@ -60,8 +76,15 @@ async def generate_table_rows_for_slot(
         return seeded
 
     title = slot.get("title") or bind
+    guard = ""
+    if any(k in title for k in ("业绩", "合同", "供货", "已完成", "诉讼")):
+        guard = (
+            "禁止将本次投标项目名称或采购人名称当作历史业绩填入；"
+            "须使用已完成的历史同类项目（含不同项目名、年份与合同金额）。"
+        )
     prompt = (
         f"你是铁路行业标书数据助手。请为表格「{title}」生成行数据。\n"
+        f"{guard}\n"
         f"列定义：{json.dumps(columns, ensure_ascii=False)}\n"
         f"编写要求：{requirements}\n"
         f"项目信息：{json.dumps({k: v for k, v in fields.items() if not str(k).startswith('_')}, ensure_ascii=False)}\n"
@@ -218,12 +241,14 @@ def apply_table_rows_to_docx(
     manifest: dict[str, Any],
     fields: dict[str, Any],
 ) -> bytes:
-    from app.services.doc_engine.tables import fill_table_slot
+    from app.services.doc_engine.tables import fill_cover_bidder_profile_table, fill_table_slot
 
-    data = docx_bytes
+    data = fill_cover_bidder_profile_table(docx_bytes, fields)
     for slot in list_table_slots(manifest):
         rows = resolve_table_rows(slot, fields)
         if not rows:
+            continue
+        if _slot_skips_llm_rows(slot):
             continue
         data = fill_table_slot(
             data,

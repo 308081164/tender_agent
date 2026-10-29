@@ -8,7 +8,7 @@ from typing import Any
 
 import aspose.words as aw
 
-from app.services.aspose_runtime import ensure_license
+from app.services.aspose_runtime import ensure_license, iter_collection
 from app.services.word import PLACEHOLDER_RE
 
 TABLE_ROW_BIND_RE = re.compile(r"^\{\{(.+?)\}\}$")
@@ -154,6 +154,42 @@ def fill_table_slot(
             cell.append_child(para)
         tbl.rows.add(new_row)
 
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
+def fill_cover_bidder_profile_table(docx_bytes: bytes, fields: dict[str, Any]) -> bytes:
+    """封面「竞标人名称/注册地址」等标签-值表：按字段填相邻单元格，不用 LLM 多行叙事。"""
+    bidder = str(fields.get("bidder_name") or fields.get("bidder") or "").strip()
+    address = str(fields.get("address") or fields.get("office_address") or "").strip()
+    if not bidder and not address:
+        return docx_bytes
+    label_map = {
+        "竞标人名称": bidder,
+        "注册地址": address,
+        "单位地址": address,
+        "通讯地址": address,
+    }
+    doc = _load(docx_bytes)
+    tbl_nodes = doc.get_child_nodes(aw.NodeType.TABLE, True)
+    if tbl_nodes.count < 1:
+        return docx_bytes
+    tbl = tbl_nodes[0].as_table()
+    max_rows = min(5, tbl.rows.count)
+    while tbl.rows.count > max_rows:
+        tbl.rows.remove_at(tbl.rows.count - 1)
+    for row in iter_collection(tbl.rows):
+        for c in range(row.cells.count - 1):
+            label = _clean_cell_text(row.cells[c].get_text())
+            if label not in label_map or not label_map[label]:
+                continue
+            val = label_map[label]
+            cell = row.cells[c + 1]
+            cell.remove_all_children()
+            p = aw.Paragraph(doc)
+            p.append_child(aw.Run(doc, val))
+            cell.append_child(p)
     out = BytesIO()
     doc.save(out, aw.SaveFormat.DOCX)
     return out.getvalue()

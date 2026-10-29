@@ -35,6 +35,13 @@ FORM_TABLE_TITLE_TOKENS = (
     "承诺",
 )
 FORM_TABLE_HEADER_TOKENS = ("序号", "认证名称", "证书编号", "编号", "名称", "备注")
+NARRATIVE_SECTION_TOKENS = (
+    "技术规格书",
+    "技术方案",
+    "供货方案",
+    "服务方案",
+    "实施方案",
+)
 NARRATIVE_AI_MARKERS = (
     "针对招标项目「",
     "针对「",
@@ -50,7 +57,14 @@ def title_is_structured_letter(title: str) -> bool:
 
 def title_prefers_table_fill(title: str) -> bool:
     t = (title or "").strip()
+    if title_requires_narrative_body(t):
+        return False
     return any(tok in t for tok in FORM_TABLE_TITLE_TOKENS)
+
+
+def title_requires_narrative_body(title: str) -> bool:
+    t = (title or "").strip()
+    return any(tok in t for tok in NARRATIVE_SECTION_TOKENS)
 
 
 def _paragraph_text(node: ET.Element) -> str:
@@ -200,6 +214,8 @@ def should_infer_ai_section_block(title: str, docx_bytes: bytes) -> bool:
     t = (title or "").strip()
     if not t:
         return False
+    if title_requires_narrative_body(t):
+        return True
     if title_is_structured_letter(t):
         return False
     if section_has_letter_skeleton(docx_bytes, t):
@@ -213,6 +229,12 @@ def should_generate_ai_narrative(title: str, docx_bytes: bytes | None = None) ->
     t = (title or "").strip()
     if not t:
         return False
+    if title_requires_narrative_body(t):
+        if title_is_structured_letter(t):
+            return False
+        if docx_bytes and section_has_letter_skeleton(docx_bytes, t):
+            return False
+        return True
     if title_is_structured_letter(t):
         return False
     if title_prefers_table_fill(t):
