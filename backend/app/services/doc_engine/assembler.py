@@ -12,6 +12,7 @@ from app.services.doc_engine.compose_policy import (
     filter_chapters_for_render,
     should_apply_ai_section_content,
 )
+from app.services.doc_engine.document_map import region_allows_ai_narrative_write
 from app.services.doc_engine.tables import fill_table_slot, resolve_table_rows
 
 
@@ -158,6 +159,10 @@ def assemble_document(
         if sdt_tag:
             data = write_sdt_text(data, sdt_tag, text, highlight=highlight)
         elif title:
+            if not region_allows_ai_narrative_write(
+                data, title, manifest=manifest,
+            ):
+                continue
             data = insert_text_after_heading(data, title, text, highlight=highlight)
         elif loc and loc not in used_locations:
             data = replace_at_location(data, loc, text, highlight=highlight)

@@ -112,9 +112,11 @@ def build_project_context(db: Session, project_id: int) -> dict[str, Any]:
     chapters = _chapter_summary(project.chapters, blocks)
 
     from app.services.agent_capabilities import memo_prompt_block, tender_prompt_block, tender_record
+    from app.services.doc_engine.document_map import compact_outline_for_agent
 
     mode = workflow.get("mode") or "compose"
     tender = tender_record(project.fields)
+    outline = compact_outline_for_agent((project.fields or {}).get("_document_outline"))
     return {
         "project_id": project.id,
         "project_title": project.title,
@@ -139,7 +141,11 @@ def build_project_context(db: Session, project_id: int) -> dict[str, Any]:
             "reference_rewrite",
             "check_against_tender",
             "project_memos",
+            "read_document_outline",
+            "fill_table_cells",
+            "insert_image_at_table_cell",
         ],
+        "document_outline": outline,
         "tender": {
             "name": tender.get("name") or "",
             "duration": tender.get("duration") or "",

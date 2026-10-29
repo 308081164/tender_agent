@@ -229,6 +229,38 @@ def insert_text_after_heading(
     return out.getvalue()
 
 
+def insert_image_in_table_cell(
+    docx_bytes: bytes,
+    table_index: int,
+    row: int,
+    col: int,
+    image_bytes: bytes,
+    *,
+    width_pt: float | None = 120.0,
+) -> bytes:
+    """在表格单元格内插入图片（清空原单元格文本）。"""
+    if not image_bytes:
+        return docx_bytes
+    doc = _load(docx_bytes)
+    tbl_nodes = doc.get_child_nodes(aw.NodeType.TABLE, True)
+    if table_index >= tbl_nodes.count:
+        return docx_bytes
+    tbl = tbl_nodes[table_index].as_table()
+    if row >= tbl.rows.count or col >= tbl.rows[row].cells.count:
+        return docx_bytes
+    cell = tbl.rows[row].cells[col]
+    cell.remove_all_children()
+    p = aw.Paragraph(doc)
+    cell.append_child(p)
+    builder = aw.DocumentBuilder(doc)
+    builder.move_to(p)
+    w = width_pt or 120.0
+    builder.insert_image(BytesIO(image_bytes), w, w * 0.75)
+    out = BytesIO()
+    doc.save(out, aw.SaveFormat.DOCX)
+    return out.getvalue()
+
+
 def replace_image_at_location(
     docx_bytes: bytes,
     location: str,

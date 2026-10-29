@@ -205,6 +205,91 @@ TOOL_SPECS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_document_outline",
+            "description": (
+                "读取当前标书草稿的结构大纲（章节类型、空表单元格、是否允许 AI 叙事）。"
+                "修改文档或填表前应先调用此工具或 read_document_section。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "refresh": {"type": "boolean", "description": "强制从 DOCX 重建大纲"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_document_section",
+            "description": "按章节标题读取正文段落与表格摘要（不含全文一次性灌入）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "heading_title": {"type": "string", "description": "章节标题，需与文档中一致或包含匹配"},
+                },
+                "required": ["heading_title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_empty_form_slots",
+            "description": "列出当前草稿中表单表格的空单元格坐标（tbl:t:r:c）。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill_table_cells",
+            "description": (
+                "向表格单元格写入文字。优先使用 location（如 tbl:0:r:1:c:2），"
+                "或 table_index+row+col。不要对 letter_skeleton/form_table 章节用 insert 段落代替填表。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cells": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string"},
+                                "table_index": {"type": "integer"},
+                                "row": {"type": "integer"},
+                                "col": {"type": "integer"},
+                                "text": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["cells"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "insert_image_at_table_cell",
+            "description": "将已上传图片插入指定表格单元格（证照贴图）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_index": {"type": "integer"},
+                    "row": {"type": "integer"},
+                    "col": {"type": "integer"},
+                    "attachment_object_key": {"type": "string"},
+                    "width_pt": {"type": "number"},
+                },
+                "required": ["table_index", "row", "col", "attachment_object_key"],
+            },
+        },
+    },
 ]
 
 
@@ -295,6 +380,39 @@ async def _execute_tool(
         return await _insert_table_tool(db, session, args, context)
     if name == "insert_image":
         return await _insert_image_tool(db, session, args, context)
+    if name == "read_document_outline":
+        from app.services import agent_document_tools
+
+        return agent_document_tools.read_document_outline(
+            db, session, refresh=bool(args.get("refresh")),
+        )
+    if name == "read_document_section":
+        from app.services import agent_document_tools
+
+        return agent_document_tools.read_document_section(
+            db, session, str(args.get("heading_title") or ""),
+        )
+    if name == "list_empty_form_slots":
+        from app.services import agent_document_tools
+
+        return agent_document_tools.list_empty_form_slots(db, session)
+    if name == "fill_table_cells":
+        from app.services import agent_document_tools
+
+        cells = args.get("cells") or []
+        return agent_document_tools.fill_table_cells(db, session, cells if isinstance(cells, list) else [])
+    if name == "insert_image_at_table_cell":
+        from app.services import agent_document_tools
+
+        return agent_document_tools.insert_image_at_table_cell(
+            db,
+            session,
+            table_index=int(args.get("table_index") or 0),
+            row=int(args.get("row") or 0),
+            col=int(args.get("col") or 0),
+            attachment_object_key=str(args.get("attachment_object_key") or ""),
+            width_pt=args.get("width_pt"),
+        )
     if name == "get_preview_status":
         ws = getattr(session, "workspace", None) or {}
         onlyoffice = {"enabled": False, "healthy": False, "message": ""}
@@ -650,7 +768,13 @@ def _with_tool_trace(content: str, tool_log: list[dict], meta: dict[str, Any]) -
             meta["workspace_updated"] = True
             if result.get("object_key"):
                 meta["draft_object_key"] = result.get("object_key")
-        if entry.get("tool") not in ("edit_document_anchor", "insert_table", "insert_image"):
+        if entry.get("tool") not in (
+            "edit_document_anchor",
+            "insert_table",
+            "insert_image",
+            "fill_table_cells",
+            "insert_image_at_table_cell",
+        ):
             continue
         if not result.get("ok"):
             if ANCHOR_MISSING not in content:

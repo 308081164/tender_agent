@@ -161,6 +161,10 @@ def table_section_data_rows(docx_bytes: bytes, heading_title: str) -> int:
             continue
         total += _table_data_row_count(node, header_rows=1)
     return total
+
+
+def section_has_letter_skeleton(docx_bytes: bytes, heading_title: str) -> bool:
+    """章节内是否已有模板函件正文骨架（勿再生成整段叙事）。"""
     if not title_is_structured_letter(heading_title):
         return False
     parts = section_slice_after_heading(docx_bytes, heading_title)

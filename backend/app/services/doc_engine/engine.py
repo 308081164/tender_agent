@@ -127,6 +127,13 @@ async def render_project_document(
                 meta["qual_insert"] = "append_end"
 
     meta["mode"] = doc_mode
+    from app.services.doc_engine.document_map import build_document_map, compact_outline_for_agent
+
+    try:
+        doc_map = build_document_map(docx_bytes, manifest)
+        meta["document_outline"] = compact_outline_for_agent(doc_map)
+    except Exception:
+        meta["document_outline"] = {}
     return data, meta
 
 

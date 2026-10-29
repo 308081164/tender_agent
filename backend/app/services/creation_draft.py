@@ -581,6 +581,9 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
     stored["_creation_prepared"] = True
     project.fields = stored
     flag_modified(project, "fields")
+    from app.services.agent_document_tools import refresh_project_document_map
+
+    refresh_project_document_map(db, project, rendered, manifest)
     _bind_session(session, project, filename)
     db.commit()
     db.refresh(project)
