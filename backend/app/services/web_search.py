@@ -26,7 +26,7 @@ MAX_FETCH_BYTES = 200_000
 MAX_QUERY_CHARS = 180
 MAX_SNIPPET_CHARS = 320
 
-_PROVIDERS = ("duckduckgo", "tavily", "bing", "serpapi")
+_PROVIDERS = ("deepseek", "duckduckgo", "tavily", "bing", "serpapi")
 _PAID_PROVIDERS = ("tavily", "bing", "serpapi")
 
 # 这些说法走 web_search，不走企业 FAQ 短路。
@@ -332,11 +332,11 @@ def _success(provider: str, query: str, results: list[dict[str, str]], message: 
 
 
 def resolve_search_settings(db: Session | None = None) -> tuple[str, str]:
-    """返回 (provider, api_key)。数据库优先，其次环境变量，默认 duckduckgo。"""
+    """返回 (provider, api_key)。DeepSeek 搜索复用 DeepSeek API Key。"""
     from app.config import get_settings
 
     env = get_settings()
-    provider = (getattr(env, "web_search_provider", None) or "duckduckgo").strip().lower()
+    provider = (getattr(env, "web_search_provider", None) or "deepseek").strip().lower()
     api_key = (getattr(env, "web_search_api_key", None) or "").strip()
     if db is not None:
         try:
@@ -352,16 +352,35 @@ def resolve_search_settings(db: Session | None = None) -> tuple[str, str]:
                 provider = row_provider
             if row_key:
                 api_key = row_key
+    if provider == "deepseek":
+        from app.services import settings_svc
+
+        cfg = settings_svc.resolve_ai_config(db)
+        ds_key = (cfg.get("deepseek_api_key") or "").strip()
+        if ds_key:
+            return "deepseek", ds_key
+        provider = "duckduckgo"
+        api_key = ""
     if provider not in _PROVIDERS:
         provider = "duckduckgo"
     return provider, api_key
 
 
 def _paid_empty_message(provider: str) -> str:
-    label = {"tavily": "Tavily", "bing": "Bing", "serpapi": "SerpAPI"}.get(provider, provider)
+    label = {
+        "tavily": "Tavily",
+        "bing": "Bing",
+        "serpapi": "SerpAPI",
+        "deepseek": "DeepSeek 搜索",
+    }.get(provider, provider)
+    if provider == "deepseek":
+        return (
+            "已选择 DeepSeek 联网搜索，但未配置 DeepSeek API Key。"
+            "请在系统设置填写 DeepSeek Key，或改回 DuckDuckGo。本次没有联网检索。"
+        )
     return (
         f"已选择 {label} 作为联网搜索，但没有填写 API Key。"
-        "请到系统设置填写密钥，或改回「DuckDuckGo（无需密钥）」。本次没有联网检索。"
+        "请到系统设置填写密钥，或改回「DeepSeek / DuckDuckGo」。本次没有联网检索。"
     )
 
 
@@ -552,6 +571,36 @@ async def _search_serpapi(query: str, api_key: str) -> list[dict[str, str]]:
     return items
 
 
+async def _search_deepseek(query: str, api_key: str) -> list[dict[str, str]]:
+    from app.config import get_settings
+
+    base = (get_settings().deepseek_base_url or "https://api.deepseek.com").rstrip("/")
+    url = f"{base}/v1/tools/search"
+    async with _httpx_client() as client:
+        resp = await client.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": query[:128],
+                "count": MAX_RESULTS,
+                "need_content": False,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in (data.get("results") or [])[:MAX_RESULTS]:
+        title = str(row.get("title") or "")
+        link = str(row.get("url") or "")
+        snippet = str(row.get("summary") or row.get("snippet") or "")
+        _push_result(items, seen, title, link, snippet)
+    return items
+
+
 async def search_web(
     query: str,
     db: Session | None = None,
@@ -579,8 +628,18 @@ async def search_web(
             error="empty_key",
             empty_state=True,
         )
+    if provider == "deepseek" and not api_key:
+        return _failure(
+            provider=provider,
+            query=q,
+            message=_paid_empty_message("deepseek"),
+            error="empty_key",
+            empty_state=True,
+        )
     try:
-        if provider == "tavily":
+        if provider == "deepseek":
+            results = await _search_deepseek(q, api_key)
+        elif provider == "tavily":
             results = await _search_tavily(q, api_key)
         elif provider == "bing":
             results = await _search_bing(q, api_key)

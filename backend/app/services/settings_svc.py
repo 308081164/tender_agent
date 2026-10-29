@@ -7,7 +7,7 @@ from app.models import SystemSetting
 
 env = get_settings()
 
-DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-pro"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-flash"
 KIMI_K3_DEFAULT_MODEL = "kimi-k3"
 KIMI_DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
 QWEN_VL_DEFAULT_MODEL = "qwen-vl-plus"
@@ -40,8 +40,8 @@ def get_or_create_setting(db: Session) -> SystemSetting:
         kimi_base_url=env.kimi_base_url or KIMI_DEFAULT_BASE_URL,
         kimi_model=env.kimi_model or KIMI_DEFAULT_MODEL,
         kimi_k3_model=getattr(env, "kimi_k3_model", None) or KIMI_K3_DEFAULT_MODEL,
-        preferred_provider="auto",
-        web_search_provider=getattr(env, "web_search_provider", None) or "duckduckgo",
+        preferred_provider="deepseek",
+        web_search_provider=getattr(env, "web_search_provider", None) or "deepseek",
         web_search_api_key=getattr(env, "web_search_api_key", None) or "",
     )
     db.add(row)
@@ -65,7 +65,7 @@ def resolve_ai_config(db: Session | None = None) -> dict:
         "kimi_model": env.kimi_model or KIMI_DEFAULT_MODEL,
         "kimi_k3_model": env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": "auto",
-        "web_search_provider": getattr(env, "web_search_provider", None) or "duckduckgo",
+        "web_search_provider": getattr(env, "web_search_provider", None) or "deepseek",
         "web_search_api_key": getattr(env, "web_search_api_key", None) or "",
     }
     if db is None:
@@ -119,15 +119,26 @@ def kimi_k3_ready(cfg: dict) -> bool:
     return bool((cfg.get("kimi_k3_model") or KIMI_K3_DEFAULT_MODEL).strip())
 
 
+def deepseek_multimodal_ready(cfg: dict) -> bool:
+    """DeepSeek V4.1 Flash（deepseek-flash）原生多模态。"""
+    if not (cfg.get("deepseek_api_key") or "").strip():
+        return False
+    model = (cfg.get("deepseek_model") or DEEPSEEK_DEFAULT_MODEL).strip().lower()
+    if model in ("deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash"):
+        return True
+    return "flash" in model and "deepseek" in model
+
+
 def multimodal_ready(cfg: dict) -> bool:
-    """资质文件夹扫描 / vision 等多模态能力：千问 VL 或 Kimi K3 至少配置其一。"""
-    return qwen_vl_ready(cfg) or kimi_k3_ready(cfg)
+    """资质文件夹扫描 / vision：DeepSeek Flash 或千问 VL 或 Kimi K3。"""
+    return deepseek_multimodal_ready(cfg) or qwen_vl_ready(cfg) or kimi_k3_ready(cfg)
 
 
 def multimodal_warning_message() -> str:
     return (
-        "资质文件夹扫描、图片/PDF 多模态理解需要 **通义千问 VL** 或 **Kimi K3** 至少配置一项（API Key + 多模态模型）。"
-        f"请前往系统设置 {SETTINGS_URL}。纯文本生成可单独使用 DeepSeek。"
+        "资质文件夹扫描、图片/PDF 多模态理解需要 **DeepSeek Flash（deepseek-flash）**、"
+        "**通义千问 VL** 或 **Kimi K3** 至少配置一项。"
+        f"请前往系统设置 {SETTINGS_URL}。"
     )
 
 
@@ -145,7 +156,7 @@ def _web_search_empty_state(row: SystemSetting, *, env_fallback: bool = True) ->
     key = (getattr(row, "web_search_api_key", None) or "").strip()
     if not key and env_fallback:
         key = (getattr(env, "web_search_api_key", None) or "").strip()
-    if provider in ("", "duckduckgo"):
+    if provider in ("", "duckduckgo", "deepseek"):
         return None
     if key:
         return None
@@ -178,17 +189,24 @@ def to_public_dict(row: SystemSetting, env_fallback: bool = True) -> dict:
         "kimi_model": row.kimi_model or env.kimi_model or KIMI_DEFAULT_MODEL,
         "kimi_k3_model": getattr(row, "kimi_k3_model", None) or env.kimi_k3_model or KIMI_K3_DEFAULT_MODEL,
         "preferred_provider": row.preferred_provider or "auto",
-        "web_search_provider": getattr(row, "web_search_provider", None) or "duckduckgo",
+        "web_search_provider": getattr(row, "web_search_provider", None) or "deepseek",
         "web_search_api_key_set": bool(getattr(row, "web_search_api_key", None) or (getattr(env, "web_search_api_key", "") if env_fallback else "")),
         "web_search_api_key_masked": _mask(getattr(row, "web_search_api_key", None) or ((getattr(env, "web_search_api_key", "") or "") if env_fallback else "")),
         "web_search_empty_state": _web_search_empty_state(row, env_fallback=env_fallback),
         "multimodal_ready": multimodal_ready({
+            "deepseek_api_key": ds_key,
+            "deepseek_model": row.deepseek_model or DEEPSEEK_DEFAULT_MODEL,
             "qwen_api_key": qw_key,
             "kimi_api_key": km_key,
         }),
         "multimodal_warning": (
             None
-            if multimodal_ready({"qwen_api_key": qw_key, "kimi_api_key": km_key})
+            if multimodal_ready({
+                "deepseek_api_key": ds_key,
+                "deepseek_model": row.deepseek_model or DEEPSEEK_DEFAULT_MODEL,
+                "qwen_api_key": qw_key,
+                "kimi_api_key": km_key,
+            })
             else multimodal_warning_message()
         ),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -241,7 +259,7 @@ def update_settings(db: Session, payload: dict) -> SystemSetting:
             row.preferred_provider = provider
     if "web_search_provider" in payload and payload["web_search_provider"] is not None:
         search_provider = str(payload["web_search_provider"]).strip().lower()
-        if search_provider in ("duckduckgo", "tavily", "bing", "serpapi"):
+        if search_provider in ("duckduckgo", "deepseek", "tavily", "bing", "serpapi"):
             row.web_search_provider = search_provider
 
     db.commit()

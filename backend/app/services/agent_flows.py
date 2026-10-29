@@ -688,9 +688,12 @@ async def _generate_project_draft(
             manifest = get_manifest(tpl.placeholders) or parse_template_manifest(doc_bytes)
             plan = await build_composition_plan(
                 manifest, fields, requirements, _company_context(db), db=db,
+                docx_bytes=doc_bytes,
             )
             contents, table_rows = await generate_block_contents(
                 plan, fields, requirements, _company_context(db), db=db,
+                docx_bytes=doc_bytes,
+                manifest=manifest,
             )
             chapters = dict(p.chapters or {})
             for k, v in contents.items():

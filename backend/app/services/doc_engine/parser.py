@@ -9,6 +9,7 @@ from app.services.doc_engine.manifest import empty_manifest, infer_mode
 from app.services.doc_engine.sdt import list_sdt_tags, normalize_tag
 from app.services.doc_engine.bundles import infer_qual_bundles, infer_repeat_blocks
 from app.services.doc_engine.image_bindings import suggest_image_slot_bindings
+from app.services.doc_engine.compose_policy import should_infer_ai_section_block
 from app.services.doc_engine.tables import infer_table_slots
 from app.services.word import AI_MARKER_RE, PLACEHOLDER_RE
 
@@ -92,6 +93,8 @@ def parse_template_manifest(
                 continue
             ntext = (next_para.get("text") or "").strip()
             if len(ntext) > 30 and "【AI_GENERATED" not in ntext:
+                continue
+            if not should_infer_ai_section_block(title, docx_bytes):
                 continue
             bid = f"ai.{_slug(title)}"
             if bid in seen_keys:

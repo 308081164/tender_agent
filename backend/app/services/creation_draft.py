@@ -14,6 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import CompanyProfile, FieldDef, Qualification, Template, TenderProject
 from app.services import storage, template_detect, word
+from app.services.doc_engine.compose_policy import should_generate_ai_narrative
 from app.services.docx_ooxml import document_text, paragraph_records
 from app.services.field_defaults import fill_field_defaults
 
@@ -184,6 +185,8 @@ def _empty_sections(data: bytes) -> list[str]:
         nxt = records[idx + 1] if idx + 1 < len(records) else None
         nxt_text = ((nxt or {}).get("text") or "").strip()
         if nxt is not None and len(nxt_text) > 30:
+            continue
+        if not should_generate_ai_narrative(text, data):
             continue
         titles.append(text)
     return titles
@@ -537,6 +540,17 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
 
     rendered = _fill_parenthesis_form_tokens(rendered, fields, highlight=False)
 
+    from app.services.doc_engine.manifest import get_manifest
+    from app.services.doc_engine.parser import parse_template_manifest
+    from app.services.doc_engine.table_compose import apply_table_rows_to_docx, seed_table_field_rows
+
+    manifest = get_manifest(tpl.placeholders) or parse_template_manifest(data)
+    stored_fields = dict(stored)
+    stored_fields.update(fields)
+    stored_fields = seed_table_field_rows(db, manifest, stored_fields, company)
+    fields = dict(stored_fields)
+    rendered = apply_table_rows_to_docx(rendered, manifest, fields)
+
     draft_key = f"projects/{project.id}/creation_draft.docx"
     storage.upload_bytes(
         draft_key,
@@ -567,6 +581,9 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
     stored["_creation_prepared"] = True
     project.fields = stored
     flag_modified(project, "fields")
+    from app.services.agent_document_tools import refresh_project_document_map
+
+    refresh_project_document_map(db, project, rendered, manifest)
     _bind_session(session, project, filename)
     db.commit()
     db.refresh(project)

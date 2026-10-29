@@ -14,6 +14,10 @@ from app.services.word import PLACEHOLDER_RE
 TABLE_ROW_BIND_RE = re.compile(r"^\{\{(.+?)\}\}$")
 
 
+def _clean_cell_text(text: str) -> str:
+    return (text or "").replace("\x07", "").replace("\a", "").strip()
+
+
 def _load(docx_bytes: bytes) -> aw.Document:
     ensure_license()
     return aw.Document(BytesIO(docx_bytes))
@@ -33,7 +37,7 @@ def infer_table_slots(index: dict[str, Any]) -> list[dict[str, Any]]:
             keys: list[str] = []
             seen: set[str] = set()
             for cell in row:
-                text = (cell.get("text") or "").strip()
+                text = _clean_cell_text(cell.get("text") or "")
                 for ph in cell.get("placeholders") or PLACEHOLDER_RE.findall(text):
                     if ph not in seen:
                         seen.add(ph)
@@ -46,17 +50,29 @@ def infer_table_slots(index: dict[str, Any]) -> list[dict[str, Any]]:
                 template_row = r
                 columns = keys
                 break
-        if template_row < 0:
+        header_join = ""
+        if template_row < 0 and rows:
+            header_cells = rows[0]
+            header_texts = [_clean_cell_text(cell.get("text") or "") for cell in header_cells]
+            header_join = "".join(header_texts)
+            if any(token in header_join for token in ("序号", "认证", "名称", "编号", "备注")):
+                columns = [text or f"列{i + 1}" for i, text in enumerate(header_texts)]
+                template_row = 1 if len(rows) > 1 else 0
+        if template_row < 0 or not columns:
             continue
+        bind = columns[0] if len(columns) == 1 else f"table_{t_idx}_rows"
+        if any(k in "".join(columns) for k in ("认证", "许可", "证书")):
+            bind = f"cert_table_{t_idx}_rows"
         first_cell_loc = rows[template_row][0].get("location") if rows[template_row] else f"tbl:{t_idx}:r{template_row}:c0"
         blocks.append({
             "id": f"table.{t_idx}",
             "type": "table_slot",
-            "bind": columns[0] if len(columns) == 1 else f"table_{t_idx}_rows",
+            "bind": bind,
             "columns": columns,
             "table_index": t_idx,
-            "header_rows": template_row,
+            "header_rows": min(template_row, 1),
             "template_row": template_row,
+            "title": header_join,
             "anchor": {"kind": "location", "location": first_cell_loc},
             "required": False,
         })
@@ -132,7 +148,9 @@ def fill_table_slot(
             cell = new_row.cells[c]
             cell.remove_all_children()
             para = aw.Paragraph(doc)
-            para.append_child(aw.Run(doc, str(row_data.get(col) or "")))
+            col_key = _clean_cell_text(col)
+            val = str(row_data.get(col) or row_data.get(col_key) or "")
+            para.append_child(aw.Run(doc, val))
             cell.append_child(para)
         tbl.rows.add(new_row)
 

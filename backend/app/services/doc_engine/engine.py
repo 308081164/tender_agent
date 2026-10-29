@@ -66,10 +66,13 @@ async def render_project_document(
     )
     if doc_mode in ("create", "hybrid") and requirements and not has_saved_chapters:
         plan = await build_composition_plan(
-            manifest, fields, requirements, company_context, db=db
+            manifest, fields, requirements, company_context, db=db,
+            docx_bytes=docx_bytes,
         )
         block_contents, table_updates = await generate_block_contents(
-            plan, fields, requirements, company_context, db=db
+            plan, fields, requirements, company_context, db=db,
+            docx_bytes=docx_bytes,
+            manifest=manifest,
         )
         if table_updates:
             fields = dict(fields)
@@ -127,6 +130,13 @@ async def render_project_document(
                 meta["qual_insert"] = "append_end"
 
     meta["mode"] = doc_mode
+    from app.services.doc_engine.document_map import build_document_map, compact_outline_for_agent
+
+    try:
+        doc_map = build_document_map(docx_bytes, manifest)
+        meta["document_outline"] = compact_outline_for_agent(doc_map)
+    except Exception:
+        meta["document_outline"] = {}
     return data, meta
 
 

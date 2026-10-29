@@ -284,6 +284,10 @@ def test_duckduckgo_timeout_falls_back_to_keyless_bing(monkeypatch):
             raise httpx.ReadTimeout("duckduckgo hung")
 
     monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    monkeypatch.setattr(
+        "app.services.web_search.resolve_search_settings",
+        lambda db=None: ("duckduckgo", ""),
+    )
     result = asyncio.run(search_web("今天open AI有没有更新"))
     assert any("duckduckgo.com" in url for url in requested)
     assert result["ok"] is True
@@ -304,6 +308,10 @@ def test_real_timeout_tells_user_search_failed(monkeypatch):
             raise httpx.ReadTimeout("all endpoints hung")
 
     monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    monkeypatch.setattr(
+        "app.services.web_search.resolve_search_settings",
+        lambda db=None: ("duckduckgo", ""),
+    )
     result = asyncio.run(search_web("今天open AI有没有更新"))
     assert result["ok"] is False
     assert result["results"] == []
@@ -435,6 +443,10 @@ def test_general_web_question_skips_intake_and_cites_fixture(monkeypatch):
     _patch_chat_llm(monkeypatch)
     monkeypatch.setattr("app.services.ai.chat_completion", cited)
     monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    monkeypatch.setattr(
+        "app.services.web_search.resolve_search_settings",
+        lambda db=None: ("duckduckgo", ""),
+    )
 
     response = client.post(
         f"/api/chat/sessions/{ids['session_id']}/messages",
@@ -476,6 +488,10 @@ def test_general_web_question_timeout_has_no_intake_card(monkeypatch):
 
     _patch_chat_llm(monkeypatch)
     monkeypatch.setattr("app.services.web_search._httpx_client", lambda timeout=15: Client())
+    monkeypatch.setattr(
+        "app.services.web_search.resolve_search_settings",
+        lambda db=None: ("duckduckgo", ""),
+    )
     response = client.post(
         f"/api/chat/sessions/{ids['session_id']}/messages",
         json={

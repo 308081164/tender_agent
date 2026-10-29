@@ -11,8 +11,15 @@ sys.path.insert(0, str(BACKEND))
 
 from docx import Document
 
+from app.services.doc_engine.compose_policy import (
+    certification_table_data_rows,
+    count_letter_body_blocks,
+    find_ai_narrative_above_empty_form_table,
+)
 from app.services.word import is_heading_style_name, is_toc_entry_text, paragraph_is_toc_like
 
+MIN_CERT_TABLE_DATA_ROWS = 1
+MAX_DUPLICATE_LETTER_BODIES = 0
 MIN_AI_PARA_CHARS = 80
 MIN_SECTION_BODY_CHARS = 60
 STUB_PATTERNS = ("待填写", "TBD", "xxx")
@@ -71,7 +78,17 @@ def _collect_text(doc: Document) -> str:
     return "\n".join(parts)
 
 
-def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
+def _section_table_fill(raw_bytes: bytes, title: str) -> tuple[bool, int]:
+    """纯表格章节：表内已有数据行即视为已填写。"""
+    from app.services.doc_engine.compose_policy import table_section_data_rows
+
+    rows = table_section_data_rows(raw_bytes, title)
+    if rows > 0:
+        return True, rows * 80
+    return False, 0
+
+
+def _section_has_body(doc: Document, title: str, raw_bytes: bytes | None = None) -> tuple[bool, int]:
     """标题段落后有实质性正文（LLM 撰写不必含「针对招标项目」套话）。"""
     paras = doc.paragraphs
     for i, p in enumerate(paras):
@@ -105,11 +122,14 @@ def _section_has_body(doc: Document, title: str) -> tuple[bool, int]:
     ]
     if hits:
         return True, norm_len(hits[0])
+    if raw_bytes and ("表" in title or "设备" in title):
+        return _section_table_fill(raw_bytes, title)
     return False, 0
 
 
 def main() -> int:
     path = Path(sys.argv[1] if len(sys.argv) > 1 else "/cursor/stores/self/media/acceptance-full-bid-sample.docx")
+    raw_bytes = path.read_bytes()
     doc = Document(str(path))
     full = _collect_text(doc)
     total = norm_len(full)
@@ -157,7 +177,7 @@ def main() -> int:
 
     report_lines.append("")
     for title in AI_TITLES:
-        ok, sample_len = _section_has_body(doc, title)
+        ok, sample_len = _section_has_body(doc, title, raw_bytes)
         flag = "OK" if ok else "FAIL"
         report_lines.append(f"{flag} {title} (body_chars={sample_len})")
         if not ok:
@@ -169,6 +189,22 @@ def main() -> int:
         failures.append("toc_substantive_body")
     if legacy_left:
         failures.append(f"legacy_template_text:{legacy_left}")
+
+    letter_dup = count_letter_body_blocks(raw_bytes, "竞标函")
+    cert_rows = certification_table_data_rows(raw_bytes)
+    table_narrative = find_ai_narrative_above_empty_form_table(raw_bytes)
+    report_lines.extend([
+        "",
+        f"竞标函_ai_narrative_blocks={letter_dup}",
+        f"certification_table_data_rows={cert_rows}",
+        f"ai_above_empty_form_table={len(table_narrative)}",
+    ])
+    if letter_dup > MAX_DUPLICATE_LETTER_BODIES:
+        failures.append(f"duplicate_竞标函_body:{letter_dup}")
+    if cert_rows < MIN_CERT_TABLE_DATA_ROWS:
+        failures.append(f"cert_table_rows<{MIN_CERT_TABLE_DATA_ROWS}")
+    if table_narrative:
+        failures.append("ai_paragraph_above_empty_form_table")
 
     print("\n".join(report_lines))
     if failures or total < 5000:

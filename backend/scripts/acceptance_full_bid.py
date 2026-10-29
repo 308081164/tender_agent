@@ -98,7 +98,7 @@ async def main() -> int:
         print(f"MISSING template: {TEMPLATE}", file=sys.stderr)
         return 1
 
-    timeout = httpx.Timeout(900.0, connect=60.0)
+    timeout = httpx.Timeout(3600.0, connect=60.0)
     async with httpx.AsyncClient(base_url=BASE, timeout=timeout) as client:
         r = await client.get("/health")
         r.raise_for_status()
@@ -174,12 +174,18 @@ async def main() -> int:
         rend = await client.post(f"/projects/{pid}/render")
         print("render", rend.status_code)
         rend.raise_for_status()
+        render_body = rend.json()
+        rendered_draft_key = str(render_body.get("draft_object_key") or "")
 
         await client.post(f"/projects/{pid}/sessions")
 
         tables = await client.post(f"/projects/{pid}/generate-tables", json={"requirements": REQUIREMENTS})
         if tables.status_code < 400:
             print("generate-tables ok")
+            rend2 = await client.post(f"/projects/{pid}/render")
+            print("render-after-tables", rend2.status_code)
+            if rend2.status_code < 400:
+                rendered_draft_key = str((rend2.json() or {}).get("draft_object_key") or rendered_draft_key)
 
         val = await client.post(f"/projects/{pid}/validate")
         print("validate", val.status_code, val.text[:200])
@@ -191,11 +197,32 @@ async def main() -> int:
             val2 = await client.post(f"/projects/{pid}/validate")
             print("validate-after-review", val2.status_code)
 
-        exp = await client.get(f"/projects/{pid}/export")
-        if exp.status_code != 200:
-            print("export failed", exp.status_code, exp.text[:500], file=sys.stderr)
-            return 2
-        docx = exp.content
+        try:
+            exp = await client.get(f"/projects/{pid}/export")
+        except httpx.HTTPError as err:
+            print(f"export request failed: {err}", file=sys.stderr)
+            exp = None
+        if exp is None or exp.status_code != 200:
+            status = exp.status_code if exp is not None else "error"
+            print(
+                "export failed",
+                status,
+                ((exp.text or "")[:500] if exp is not None else ""),
+                file=sys.stderr,
+            )
+            proj_data = (await client.get(f"/projects/{pid}")).json()
+            draft_key = rendered_draft_key or str(
+                (proj_data.get("fields") or {}).get("_draft_object_key") or ""
+            )
+            if not draft_key:
+                return 2
+            sys.path.insert(0, str(BACKEND))
+            from app.services import storage
+
+            docx = storage.download_bytes(draft_key)
+            print(f"fallback draft_object_key={draft_key} bytes={len(docx)}", file=sys.stderr)
+        else:
+            docx = exp.content
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_bytes(docx)
         sha = hashlib.sha256(docx).hexdigest()

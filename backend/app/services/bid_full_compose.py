@@ -10,6 +10,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.models import ChatSession, CompanyProfile, TenderProject
 from app.services import storage, word
 from app.services.ai import generate_chapter, local_chapter_text
+from app.services.doc_engine.compose_policy import should_generate_ai_narrative
 from app.services.docx_ooxml import document_text, paragraph_records, write_section_bodies
 from app.services.field_defaults import fill_field_defaults
 
@@ -165,6 +166,8 @@ async def compose_full_bid_bytes(
     headings = list_heading_sections(rendered)
     bodies: dict[str, str] = {}
     for title in headings:
+        if not should_generate_ai_narrative(title, rendered):
+            continue
         bodies[title] = await _section_body(
             title, fields, company_body, requirements, db,
         )
