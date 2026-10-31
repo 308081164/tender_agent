@@ -1063,7 +1063,18 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
     path = str(args.get("path") or ctx.get("mention_path") or "").strip()
     if not path and file_mention and not selected and not block_id and index is None:
         path = file_mention.get("path") or ""
-    if not selected and not block_id and index is None and not path:
+    from app.services.document_anchor import merge_anchor_context_fields, normalize_table_location
+
+    extra = merge_anchor_context_fields(ctx, args, nested)
+    location = str(extra.get("location") or "").strip()
+    if not location and block_id.startswith("tbl:"):
+        location = block_id
+    has_table = bool(location.startswith("tbl:")) or (
+        extra.get("table_index") is not None
+        and extra.get("row") is not None
+        and extra.get("col") is not None
+    )
+    if not selected and not block_id and index is None and not path and not has_table:
         hint = str(ctx.get("instruction") or ctx.get("content") or "").strip()
         auto_title = _infer_section_from_hint(hint)
         if auto_title:
@@ -1077,18 +1088,25 @@ def resolve_document_anchor(context: dict | None, arguments: dict | None = None)
                 "auto_section": True,
             }
         return {"ok": False, "message": ANCHOR_MISSING}
-    return {
+    anchor = {
         "ok": True,
         "message": "",
         "selected_text": selected,
         "block_id": block_id,
         "paragraph_index": index,
         "path": path,
+        "location": location,
+        "table_index": extra.get("table_index"),
+        "row": extra.get("row"),
+        "col": extra.get("col"),
     }
+    return normalize_table_location(anchor)
 
 
 def anchor_can_insert(anchor: dict[str, Any]) -> bool:
-    return bool(anchor.get("ok") and anchor.get("paragraph_index") is not None)
+    from app.services.document_anchor import anchor_can_insert_at
+
+    return anchor_can_insert_at(anchor)
 
 
 def normalize_mentions(raw: Any) -> list[dict[str, str]]:

@@ -432,15 +432,25 @@ async def _handle_insert_image(text: str, context: dict | None, workspace: dict 
             "mode": "action",
             "metadata": {"intent": "insert_image", "anchor_missing": True},
         }
+    loc = anchor.get("location") or ""
+    where = (
+        f"表格单元格 {loc}"
+        if str(loc).startswith("tbl:")
+        else f"第 {anchor.get('paragraph_index')} 段"
+    )
     return {
-        "answer": f"正在将图片插入选中位置（第 {anchor['paragraph_index']} 段）…",
+        "answer": f"正在将图片插入{where}…",
         "mode": "action",
         "metadata": {
             "intent": "insert_image",
             "needs_workspace_insert_image": True,
-            "paragraph_index": anchor["paragraph_index"],
+            "paragraph_index": anchor.get("paragraph_index"),
             "block_id": anchor.get("block_id") or "",
             "selected_text": anchor.get("selected_text") or "",
+            "location": anchor.get("location") or "",
+            "table_index": anchor.get("table_index"),
+            "row": anchor.get("row"),
+            "col": anchor.get("col"),
             "attachment_object_key": ctx.get("attachment_object_key"),
         },
     }
@@ -462,13 +472,23 @@ async def _handle_edit_fragment(text: str, context: dict | None) -> dict[str, An
         }
     selected = anchor.get("selected_text") or ""
     preview = selected[:120] + ("…" if len(selected) > 120 else "")
-    where = f"「{preview}」" if selected else f"第 {anchor.get('paragraph_index')} 段"
+    loc = str(anchor.get("location") or "")
+    if loc.startswith("tbl:"):
+        where = f"表格单元格 {loc}" + (f"「{preview}」" if preview else "")
+    elif preview:
+        where = f"「{preview}」"
+    else:
+        where = f"第 {anchor.get('paragraph_index')} 段"
     meta = {
         "intent": "edit_fragment",
         "needs_workspace_edit": True,
         "instruction": text,
         "selected_text": selected,
         "block_id": anchor.get("block_id") or "",
+        "location": loc,
+        "table_index": anchor.get("table_index"),
+        "row": anchor.get("row"),
+        "col": anchor.get("col"),
     }
     if anchor.get("paragraph_index") is not None:
         meta["paragraph_index"] = anchor["paragraph_index"]

@@ -527,11 +527,15 @@ async def _edit_document_anchor(db, session, args, context, default_project_id) 
         doc_bytes = storage.download_bytes(doc_key)
     if not doc_bytes:
         return {"ok": False, "error": "工作区没有可修改的文档"}
+    from app.services.document_anchor import finalize_document_anchor
+
+    anchor = finalize_document_anchor(anchor, doc_bytes)
     new_bytes, revised, meta = await document_agent.edit_document_fragment(
         doc_bytes,
         instruction or "按锚点修订",
         selected_text=anchor.get("selected_text") or "",
         paragraph_index=anchor.get("paragraph_index"),
+        location=str(anchor.get("location") or ""),
         db=db,
         company_context=memory,
     )
@@ -560,6 +564,10 @@ async def _edit_document_anchor(db, session, args, context, default_project_id) 
             "paragraph_index": anchor.get("paragraph_index"),
             "block_id": anchor.get("block_id") or "",
             "selected_text": anchor.get("selected_text") or "",
+            "location": anchor.get("location") or "",
+            "table_index": anchor.get("table_index"),
+            "row": anchor.get("row"),
+            "col": anchor.get("col"),
             "path": path,
         },
         "mode": meta.get("mode"),
@@ -587,6 +595,7 @@ async def _insert_table_tool(db, session, args, context) -> dict[str, Any]:
 
 async def _insert_image_tool(db, session, args, context) -> dict[str, Any]:
     from app.services import document_agent, storage
+    from app.services.document_anchor import anchor_has_table_cell, finalize_document_anchor
 
     anchor = resolve_document_anchor(context, args)
     if not anchor_can_insert(anchor):
@@ -597,7 +606,24 @@ async def _insert_image_tool(db, session, args, context) -> dict[str, Any]:
     doc_bytes, doc_key, ws = _load_open_docx(session)
     if doc_bytes is None:
         return {"ok": False, "error": "请先打开标书草稿"}
+    anchor = finalize_document_anchor(anchor, doc_bytes)
     image_bytes = storage.download_bytes(image_key)
+    if anchor_has_table_cell(anchor):
+        from app.services.doc_engine.indexer import insert_image_in_table_cell
+
+        loc = str(anchor.get("location") or "")
+        ti = int(anchor.get("table_index", 0))
+        row = int(anchor.get("row", 0))
+        col = int(anchor.get("col", 0))
+        new_bytes = insert_image_in_table_cell(doc_bytes, ti, row, col, image_bytes)
+        saved = _store_open_docx(db, session, ws, doc_key, new_bytes, "cell_image")
+        return {
+            "ok": True,
+            "modified": True,
+            "object_key": saved,
+            "anchor": {"location": loc, "table_index": ti, "row": row, "col": col},
+            "message": f"已在表格单元格 {loc} 插入图片。",
+        }
     new_bytes, meta = document_agent.insert_image_in_document(
         doc_bytes, image_bytes, paragraph_index=int(anchor["paragraph_index"]),
     )

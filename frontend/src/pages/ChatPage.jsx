@@ -482,11 +482,17 @@ export default function ChatPage() {
               ))}
             </ul>
           ) : null}
-          {selectedText ? (
+          {(selectedText || anchor?.location) ? (
             <div className="chat-selection-hint">
-              将修改选中文本：
-              <em>{selectedText.slice(0, 60)}{selectedText.length > 60 ? '…' : ''}</em>
-              <button type="button" className="ghost tiny" onClick={() => setSelectedText('')}>清除</button>
+              {anchor?.location?.startsWith('tbl:') ? (
+                <>当前选中表格单元格：<em>{anchor.location}</em></>
+              ) : selectedText ? (
+                <>
+                  将修改选中文本：
+                  <em>{selectedText.slice(0, 60)}{selectedText.length > 60 ? '…' : ''}</em>
+                </>
+              ) : null}
+              <button type="button" className="ghost tiny" onClick={() => { setSelectedText(''); setAnchor(null) }}>清除</button>
             </div>
           ) : null}
           <ChatComposer

@@ -117,12 +117,18 @@ async def edit_document_fragment(
     *,
     selected_text: str = "",
     paragraph_index: int | None = None,
+    location: str = "",
     db: Session | None = None,
     company_context: str = "",
     reference_snippets: list[str] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     """根据用户指令修改文档片段（多轮对话场景）。"""
+    loc = (location or "").strip()
+    from app.services.document_anchor import read_cell_text_at_location
+
     context_text = selected_text
+    if loc.startswith("tbl:") and not context_text:
+        context_text = read_cell_text_at_location(docx_bytes, loc)
     if paragraph_index is not None and not context_text:
         preview = word.extract_preview(docx_bytes, max_paragraphs=500)
         paras = preview.get("paragraphs") or []
@@ -149,7 +155,12 @@ async def edit_document_fragment(
     if not revised:
         raise ValueError("AI 未返回有效修订内容")
 
+    from app.services.doc_engine.indexer import replace_at_location
     from app.services.docx_ooxml import aspose_available, replace_text
+
+    if loc.startswith("tbl:"):
+        new_bytes = replace_at_location(docx_bytes, loc, revised)
+        return new_bytes, revised, {"mode": "table_cell", "location": loc, "paragraph_index": paragraph_index}
 
     if aspose_available():
         if selected_text and selected_text in (context_text or selected_text):
