@@ -31,3 +31,10 @@ def test_railway_template_skips_bid_letter_and_cert_narrative():
 def test_generic_ai_sections_still_allowed():
     assert should_generate_ai_narrative("技术方案")
     assert should_generate_ai_narrative("售后服务方案")
+
+
+@pytest.mark.skipif(not TEMPLATE.is_file(), reason="customer template missing")
+def test_tech_spec_section_allows_narrative():
+    data = TEMPLATE.read_bytes()
+    assert should_generate_ai_narrative("竞标物资技术规格书", data)
+    assert should_infer_ai_section_block("竞标物资技术规格书", data)

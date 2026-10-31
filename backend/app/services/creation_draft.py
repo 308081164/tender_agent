@@ -86,6 +86,74 @@ def apply_railway_blank_cover_lines(docx_bytes: bytes, fields: dict[str, Any]) -
     return word.apply_literal_replacements(docx_bytes, pairs, highlight=False)
 
 
+def apply_structured_template_tokens(docx_bytes: bytes, fields: dict[str, Any]) -> bytes:
+    """铁路空白模板：授权委托书、法定代表人证明等括号/冒号占位 → 项目字段。"""
+    legal = str(fields.get("legal_name") or "").strip()
+    bidder = str(fields.get("bidder_name") or fields.get("bidder") or "").strip()
+    agent = str(
+        fields.get("agent_name")
+        or fields.get("project_manager")
+        or fields.get("authorized_agent")
+        or ""
+    ).strip()
+    pname = str(fields.get("project_name") or "").strip()
+    tender_no = str(fields.get("tender_no") or "").strip()
+    package_no = str(fields.get("package_no") or "").strip()
+    material = str(fields.get("material_type") or "").strip()
+    bid_date = _format_bid_date_line(fields) or str(fields.get("bid_date") or "").strip()
+    legal_id = str(fields.get("legal_id_no") or "").strip()
+    agent_id = str(fields.get("agent_id_no") or legal_id).strip()
+
+    pairs: list[tuple[str, str]] = []
+    if legal and bidder:
+        pairs.append(("本人（姓名）系（竞标人名称）", f"本人{legal}系{bidder}"))
+    if agent:
+        pairs.append(("现委托（姓名）为我方代理人", f"现委托{agent}为我方代理人"))
+    if pname:
+        pairs.append(("（建设项目名称）", pname))
+    if tender_no:
+        pairs.append(("（谈判编号）", tender_no))
+    if material:
+        pairs.append(("（物资类别/名称）", material))
+    if package_no:
+        pairs.append(("（包件号）", package_no))
+    pairs.append(
+        (
+            "委托期限：。",
+            "委托期限：自本授权签署之日起至本项目谈判响应及合同签订事宜办理完毕之日止。",
+        )
+    )
+    if bidder:
+        pairs.extend([
+            ("竞标人名称：（盖单位章）", f"竞标人名称：{bidder}（盖单位章）"),
+            ("竞标人名称(盖单位章)", f"竞标人名称：{bidder}（盖单位章）"),
+        ])
+    if legal:
+        pairs.append(("法定代表人：（签字）", f"法定代表人：{legal}（签字）"))
+    if agent:
+        pairs.append(("委托代理人：（签字）", f"委托代理人：{agent}（签字）"))
+    if legal_id:
+        pairs.append(("身份证号码：\n委托代理人", f"身份证号码：{legal_id}\n委托代理人"))
+    if agent_id and agent:
+        pairs.append(("委托代理人：（签字）\n身份证号码：", f"委托代理人：{agent}（签字）\n身份证号码：{agent_id}"))
+    if bid_date:
+        pairs.append(("年  月  日\n资格证明资料", f"{bid_date}\n资格证明资料"))
+    if legal and bidder:
+        pairs.append(
+            (
+                "姓名：性别：年龄：职务：\n系（竞标人名称）的法定代表人",
+                f"姓名：{legal}  性别：男  年龄：45  职务：总经理\n系{bidder}的法定代表人",
+            )
+        )
+    if bidder:
+        pairs.append(("法定代表人身份证明\n竞标人名称：\n单位性质", f"法定代表人身份证明\n竞标人名称：{bidder}\n单位性质"))
+
+    filtered = [(a, b) for a, b in pairs if a and b and a != b]
+    if not filtered:
+        return docx_bytes
+    return word.apply_literal_replacements(docx_bytes, filtered, highlight=False)
+
+
 def _deterministic_field_mappings(docx_bytes: bytes, fields: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         text = document_text(docx_bytes)
@@ -510,6 +578,7 @@ async def materialize_creation_draft(db: Session, project: TenderProject, sessio
         source_snapshot=snapshot or None,
     )
     rendered = apply_railway_blank_cover_lines(rendered, fields)
+    rendered = apply_structured_template_tokens(rendered, fields)
     try:
         rendered_text = document_text(rendered)
     except Exception:
