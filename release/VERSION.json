@@ -1,13 +1,13 @@
 {
-  "version": "1.2.7",
-  "display_version": "v1.2.7",
+  "version": "1.2.8",
+  "display_version": "v1.2.8",
   "product": "标书智能体 Desktop",
-  "release_date": "2026-10-22",
+  "release_date": "2026-10-31",
   "baseline_note": "含 #58 第二步保存并进入 Agent 对话、#59 epmd 失败时仍启动内置 RabbitMQ；正式发版 tag desktop-v1.2.7",
   "artifacts": {
-    "windows_installer": "TenderAgentSetup-v1.2.7.exe",
-    "user_manual": "tender-agent-manual-v1.2.7.md",
-    "docs_zip": "tender-agent-release-v1.2.7.zip",
-    "test_materials_zip": "tender-agent-test-materials-v1.2.7.zip"
+    "windows_installer": "TenderAgentSetup-v1.2.8.exe",
+    "user_manual": "tender-agent-manual-v1.2.8.md",
+    "docs_zip": "tender-agent-release-v1.2.8.zip",
+    "test_materials_zip": "tender-agent-test-materials-v1.2.8.zip"
   }
 }
