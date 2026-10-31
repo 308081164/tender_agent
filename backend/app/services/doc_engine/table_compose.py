@@ -71,6 +71,9 @@ async def generate_table_rows_for_slot(
     existing = resolve_table_rows({"bind": bind, "columns": columns}, fields)
     if existing:
         return existing
+    if table_slot_skip_llm(slot):
+        seeded = seed_rows_for_slot(slot, fields, db=db)
+        return seeded or []
     seeded = seed_rows_for_slot(slot, fields, db=db)
     if seeded:
         return seeded
@@ -143,6 +146,134 @@ def _parse_json_array(raw: str | None) -> list[dict]:
         return []
 
 
+def _slot_blob(slot: dict[str, Any]) -> str:
+    title = str(slot.get("title") or "")
+    bind = str(slot.get("bind") or "")
+    return f"{title}\n{bind}"
+
+
+def table_slot_skip_llm(slot: dict[str, Any]) -> bool:
+    """业绩/报价/资质类表格只用确定性填表，避免 LLM 写入当前标段信息。"""
+    blob = _slot_blob(slot)
+    if any(k in blob for k in ("认证", "许可", "资质", "证书")):
+        return True
+    if any(k in blob for k in ("业绩", "供货", "合同")):
+        return True
+    if any(k in blob for k in ("报价", "竞标物资报价", "物资描述", "成本分析")):
+        return True
+    return False
+
+
+_HISTORICAL_PERFORMANCE_PROJECTS: list[dict[str, str]] = [
+    {
+        "project_name": "京沪高铁信号系统更新改造工程",
+        "tender_no": "ZGTL-2019-SX-G01",
+        "year": "2020",
+        "amount": "1260万元",
+        "owner": "中国铁路北京局集团有限公司",
+        "material": "铁路信号监测与联锁设备",
+    },
+    {
+        "project_name": "深圳地铁16号线弱电系统维保服务",
+        "tender_no": "SZDT-16-WB-2021",
+        "year": "2022",
+        "amount": "860万元",
+        "owner": "深圳地铁集团有限公司",
+        "material": "弱电及通信系统维保",
+    },
+    {
+        "project_name": "成兰铁路四电集成工程信号子系统",
+        "tender_no": "CLTL-4D-2018-07",
+        "year": "2019",
+        "amount": "2150万元",
+        "owner": "成兰铁路有限责任公司",
+        "material": "四电集成信号设备",
+    },
+]
+
+
+def _performance_projects_for_fields(fields: dict[str, Any]) -> list[dict[str, str]]:
+    cur_name = str(fields.get("project_name") or "").strip()
+    cur_no = str(fields.get("tender_no") or "").strip()
+    out: list[dict[str, str]] = []
+    for proj in _HISTORICAL_PERFORMANCE_PROJECTS:
+        pname = proj.get("project_name") or ""
+        tno = proj.get("tender_no") or ""
+        if cur_name and cur_name in pname:
+            continue
+        if cur_no and cur_no == tno:
+            continue
+        out.append(proj)
+    return out[:6]
+
+
+def _cell_from_fields(col: str, fields: dict[str, Any]) -> str:
+    c = _clean_col(col)
+    if "谈判" in c or "招标编号" in c or "项目编号" in c:
+        return str(fields.get("tender_no") or "").strip()
+    if "包件" in c:
+        return str(fields.get("package_no") or "").strip()
+    if any(k in c for k in ("竞标人", "投标人", "供应商", "单位名称")):
+        return str(fields.get("bidder_name") or fields.get("bidder") or "").strip()
+    if "物资" in c and "类别" in c:
+        return str(fields.get("material_type") or "").strip()
+    if "物资" in c or "名称" in c and "项目" not in c:
+        return str(fields.get("material_type") or fields.get("project_name") or "").strip()
+    if any(k in c for k in ("报价", "总价", "金额", "单价")):
+        lower = str(fields.get("bid_amount_lower") or fields.get("bid_amount") or "").strip()
+        upper = str(fields.get("bid_amount_upper") or "").strip()
+        if lower and upper:
+            return f"{lower}（{upper}）"
+        return lower or upper
+    if "采购人" in c or "招标人" in c:
+        return str(fields.get("tenderer") or "").strip()
+    if "工期" in c or "供货期" in c:
+        return str(fields.get("duration") or "").strip()
+    if "质保" in c:
+        return str(fields.get("warranty_period") or "").strip()
+    return ""
+
+
+def _cell_from_performance(col: str, index: int, proj: dict[str, str]) -> str:
+    c = _clean_col(col)
+    if "序号" in c:
+        return str(index)
+    if any(k in c for k in ("项目", "工程", "合同")):
+        return proj.get("project_name") or ""
+    if "编号" in c or "谈判" in c:
+        return proj.get("tender_no") or ""
+    if any(k in c for k in ("物资", "产品", "设备")):
+        return proj.get("material") or ""
+    if "时间" in c or "年份" in c or "年度" in c:
+        return proj.get("year") or ""
+    if any(k in c for k in ("金额", "总价", "合同价")):
+        return proj.get("amount") or ""
+    if any(k in c for k in ("采购人", "业主", "招标人", "甲方")):
+        return proj.get("owner") or ""
+    return ""
+
+
+def _seed_performance_rows(columns: list[str], fields: dict[str, Any]) -> list[dict[str, Any]]:
+    projects = _performance_projects_for_fields(fields)
+    if not projects:
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, proj in enumerate(projects, 1):
+        row = {_clean_col(col): _cell_from_performance(col, idx, proj) for col in columns}
+        if any(str(v).strip() for v in row.values()):
+            rows.append(row)
+    return rows
+
+
+def _seed_quote_rows(columns: list[str], fields: dict[str, Any]) -> list[dict[str, Any]]:
+    if not columns:
+        return []
+    row = {_clean_col(col): _cell_from_fields(col, fields) for col in columns}
+    if not any(str(v).strip() for v in row.values()):
+        return []
+    return [row]
+
+
 def _clean_col(col: str) -> str:
     return (col or "").replace("\x07", "").replace("\a", "").strip()
 
@@ -181,6 +312,15 @@ def seed_rows_for_slot(
     if not columns or not bind:
         return []
     title = str(slot.get("title") or bind)
+    blob = f"{title}\n{bind}"
+    if any(k in blob for k in ("业绩", "供货", "合同")):
+        perf = _seed_performance_rows(columns, fields)
+        if perf:
+            return perf
+    if any(k in blob for k in ("报价", "竞标物资报价", "物资描述", "成本分析")):
+        quote = _seed_quote_rows(columns, fields)
+        if quote:
+            return quote
     if not any(k in title or k in bind for k in ("认证", "许可", "资质", "证书")):
         return []
     quals = []

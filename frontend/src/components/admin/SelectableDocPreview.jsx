@@ -48,10 +48,21 @@ export default function SelectableDocPreview({
     const host = el?.closest?.('[data-paragraph-index]')
     if (!host && !text) return null
     const index = host ? Number(host.getAttribute('data-paragraph-index')) : undefined
+    const location = host?.getAttribute('data-location') || ''
+    const tableIndex = host?.getAttribute('data-table-index')
+    const row = host?.getAttribute('data-row')
+    const col = host?.getAttribute('data-col')
+    const blockId = location || host?.getAttribute('data-block-id') || ''
     return {
       selected_text: text || '',
       paragraph_index: Number.isNaN(index) ? undefined : index,
-      block_id: host?.getAttribute('data-block-id') || '',
+      block_id: blockId,
+      ...(location ? { location } : {}),
+      ...(tableIndex != null && row != null && col != null ? {
+        table_index: Number(tableIndex),
+        row: Number(row),
+        col: Number(col),
+      } : {}),
       source: 'document',
     }
   }
@@ -80,11 +91,23 @@ export default function SelectableDocPreview({
         <div
           key={p.index ?? i}
           data-paragraph-index={p.index}
-          data-block-id={p.is_heading ? `section:${p.index}` : `p:${p.index}`}
+          data-block-id={p.location || (p.is_heading ? `section:${p.index}` : `p:${p.index}`)}
+          {...(p.location ? { 'data-location': p.location } : {})}
+          {...(p.table_index != null ? {
+            'data-table-index': p.table_index,
+            'data-row': p.row,
+            'data-col': p.col,
+          } : {})}
           onClick={() => onSelectAnchor?.({
             selected_text: selectedText || p.text || '',
             paragraph_index: p.index,
-            block_id: p.is_heading ? `section:${p.index}` : `p:${p.index}`,
+            block_id: p.location || (p.is_heading ? `section:${p.index}` : `p:${p.index}`),
+            ...(p.location ? { location: p.location } : {}),
+            ...(p.table_index != null ? {
+              table_index: p.table_index,
+              row: p.row,
+              col: p.col,
+            } : {}),
             source: 'document',
           })}
         >

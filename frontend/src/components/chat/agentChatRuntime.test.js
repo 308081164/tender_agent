@@ -32,7 +32,8 @@ test('at-mention query and anchor payload do not invent paragraph 0', () => {
   assert.deepEqual(buildAnchorPayload(null), {})
   assert.deepEqual(buildAnchorPayload({}), {})
   assert.equal(buildAnchorPayload({ paragraph_index: 0 }).paragraph_index, 0)
-  assert.equal(buildAnchorPayload({ block_id: 'section:3' }).block_id, 'section:3')
+  assert.equal(buildAnchorPayload({ location: 'tbl:1:r0:c2' }).location, 'tbl:1:r0:c2')
+  assert.equal(buildAnchorPayload({ table_index: 1, row: 0, col: 2 }).table_index, 1)
   assert.equal('paragraph_index' in buildAnchorPayload({ selected_text: '工期' }), false)
 })
 

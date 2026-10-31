@@ -396,6 +396,17 @@ def test_anchor_is_required_for_rewrite_table_and_image():
     ))
     assert image["answer"] == ANCHOR_MISSING
 
+    table_image = asyncio.run(_handle_insert_image(
+        "插入图片",
+        {
+            "attachment_object_key": "img/a.png",
+            "location": "tbl:0:r1:c2",
+        },
+        {"draft_object_key": "drafts/a.docx"},
+    ))
+    assert table_image["metadata"]["location"] == "tbl:0:r1:c2"
+    assert "needs_workspace_insert_image" in table_image["metadata"]
+
     edit = asyncio.run(_handle_edit_fragment("改为更正式", {}))
     assert edit["answer"] == ANCHOR_MISSING
     anchored = asyncio.run(_handle_edit_fragment("改为更正式", {"selected_text": "工期90天", "paragraph_index": 2}))

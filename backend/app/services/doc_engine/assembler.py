@@ -76,9 +76,10 @@ def assemble_document(
         source_snapshot,
         highlight=highlight,
     )
-    from app.services.creation_draft import apply_railway_blank_cover_lines
+    from app.services.creation_draft import apply_railway_blank_cover_lines, apply_structured_template_tokens
 
     data = apply_railway_blank_cover_lines(data, fields)
+    data = apply_structured_template_tokens(data, fields)
 
     # AI 章节与块内容写入（结构化函件/表单章节不写入整段叙事，避免重复）
     ch = dict(filter_chapters_for_render(chapters or {}, docx_bytes))

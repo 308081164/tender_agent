@@ -27,19 +27,38 @@ export function buildAnchorPayload(anchor) {
   if (!anchor || typeof anchor !== 'object') return {}
   const selected = String(anchor.selected_text || '').trim()
   const blockId = String(anchor.block_id || anchor.section_id || '').trim()
+  const location = String(anchor.location || '').trim()
   const hasIndex = anchor.paragraph_index !== undefined
     && anchor.paragraph_index !== null
     && anchor.paragraph_index !== ''
     && !Number.isNaN(Number(anchor.paragraph_index))
-  if (!selected && !blockId && !hasIndex) return {}
+  const hasTable = anchor.table_index !== undefined
+    && anchor.table_index !== null
+    && anchor.row !== undefined
+    && anchor.row !== null
+    && anchor.col !== undefined
+    && anchor.col !== null
+  if (!selected && !blockId && !hasIndex && !location && !hasTable) return {}
   const payload = {}
   if (selected) payload.selected_text = selected
   if (blockId) payload.block_id = blockId
   if (hasIndex) payload.paragraph_index = Number(anchor.paragraph_index)
+  if (location) payload.location = location
+  if (hasTable) {
+    payload.table_index = Number(anchor.table_index)
+    payload.row = Number(anchor.row)
+    payload.col = Number(anchor.col)
+  }
   payload.anchor = {
     ...(selected ? { selected_text: selected } : {}),
     ...(blockId ? { block_id: blockId } : {}),
     ...(hasIndex ? { paragraph_index: Number(anchor.paragraph_index) } : {}),
+    ...(location ? { location } : {}),
+    ...(hasTable ? {
+      table_index: Number(anchor.table_index),
+      row: Number(anchor.row),
+      col: Number(anchor.col),
+    } : {}),
   }
   return payload
 }
@@ -69,6 +88,39 @@ export function onlyOfficeSelectionCommand() {
     selected = ''
   }
   if (!paragraph && doc.GetCurrentParagraph) paragraph = doc.GetCurrentParagraph()
+  var tableIndex = null
+  var row = null
+  var col = null
+  var location = ''
+  try {
+    if (paragraph && paragraph.GetParentTableCell) {
+      var cell = paragraph.GetParentTableCell()
+      if (cell) {
+        var table = paragraph.GetParentTable ? paragraph.GetParentTable() : null
+        if (table && doc.GetAllTables) {
+          var tables = doc.GetAllTables() || []
+          for (var ti = 0; ti < tables.length; ti += 1) {
+            if (tables[ti] === table) {
+              tableIndex = ti
+              break
+            }
+          }
+        }
+        var tableRow = cell.GetParentRow ? cell.GetParentRow() : null
+        if (tableRow && cell.GetIndex) {
+          row = tableRow.GetIndex ? tableRow.GetIndex() : null
+          col = cell.GetIndex()
+        }
+      }
+    }
+  } catch (tableErr) {
+    tableIndex = null
+    row = null
+    col = null
+  }
+  if (tableIndex !== null && row !== null && col !== null) {
+    location = 'tbl:' + tableIndex + ':r' + row + ':c' + col
+  }
   var index = -1
   if (paragraph && paragraph.GetPosInParent) {
     var pos = paragraph.GetPosInParent()
@@ -86,12 +138,16 @@ export function onlyOfficeSelectionCommand() {
       }
     }
   }
-  if (!String(selected).trim() && index < 0) return ''
-  var blockId = index >= 0 ? ('p:' + index) : ''
+  if (!String(selected).trim() && index < 0 && !location) return ''
+  var blockId = location || (index >= 0 ? ('p:' + index) : '')
   return JSON.stringify({
     selected_text: String(selected || '').trim(),
     paragraph_index: index >= 0 ? index : null,
     block_id: blockId,
+    location: location || '',
+    table_index: tableIndex,
+    row: row,
+    col: col,
   })
 }
 
@@ -105,16 +161,31 @@ export function onlyOfficeAnchorFromCommand(raw) {
   if (!data || typeof data !== 'object') return null
   const selected = String(data.selected_text || data.text || '').trim()
   const blockId = String(data.block_id || '').trim()
+  const location = String(data.location || '').trim()
   const hasIndex = data.paragraph_index !== undefined
     && data.paragraph_index !== null
     && data.paragraph_index !== ''
     && Number(data.paragraph_index) >= 0
-  if (!selected && !blockId && !hasIndex) return null
+  const hasTable = data.table_index !== undefined
+    && data.table_index !== null
+    && data.table_index !== ''
+    && Number(data.table_index) >= 0
+    && data.row !== undefined
+    && data.row !== null
+    && data.col !== undefined
+    && data.col !== null
+  if (!selected && !blockId && !hasIndex && !location && !hasTable) return null
   return {
     source: 'onlyoffice',
     ...(selected ? { selected_text: selected } : {}),
     ...(blockId ? { block_id: blockId } : {}),
     ...(hasIndex ? { paragraph_index: Number(data.paragraph_index) } : {}),
+    ...(location ? { location } : {}),
+    ...(hasTable ? {
+      table_index: Number(data.table_index),
+      row: Number(data.row),
+      col: Number(data.col),
+    } : {}),
   }
 }
 

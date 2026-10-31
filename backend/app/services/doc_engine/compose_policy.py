@@ -48,6 +48,12 @@ NARRATIVE_AI_MARKERS = (
     "作如下说明",
     "我方将严格遵循招标文件",
 )
+NARRATIVE_BODY_TITLE_TOKENS = ("技术规格书",)
+
+
+def title_requires_narrative_body(title: str) -> bool:
+    t = (title or "").strip()
+    return any(tok in t for tok in NARRATIVE_BODY_TITLE_TOKENS)
 
 
 def title_is_structured_letter(title: str) -> bool:
@@ -196,6 +202,8 @@ def section_has_letter_skeleton(docx_bytes: bytes, heading_title: str) -> bool:
 
 
 def section_followed_by_form_table(docx_bytes: bytes, heading_title: str) -> bool:
+    if title_requires_narrative_body(heading_title):
+        return False
     if title_prefers_table_fill(heading_title):
         return True
     parts = section_slice_after_heading(docx_bytes, heading_title)
@@ -258,6 +266,8 @@ def should_apply_ai_section_content(
     title = str(block.get("title") or "").strip()
     if not should_generate_ai_narrative(title, docx_bytes):
         return False
+    if title_requires_narrative_body(title):
+        return True
     if manifest and _table_slot_covers_section(manifest, title):
         return False
     return True

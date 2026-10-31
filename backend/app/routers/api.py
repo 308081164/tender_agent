@@ -2001,34 +2001,57 @@ async def _finalize_chat_message_turn(
 
     # 工作区：插入图片（必须有明确锚点，不用段落 0 兜底）
     if meta.get("needs_workspace_insert_image"):
-        from app.services.agent_capabilities import ANCHOR_MISSING as _ANCHOR_MISSING
+        from app.services.agent_capabilities import ANCHOR_MISSING as _ANCHOR_MISSING, anchor_can_insert, resolve_document_anchor
+        from app.services.document_anchor import anchor_has_table_cell, finalize_document_anchor
 
         doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
         att_key = meta.get("attachment_object_key") or (body.context or {}).get("attachment_object_key")
-        raw_idx = meta.get("paragraph_index")
-        if raw_idx is None:
-            raw_idx = (body.context or {}).get("paragraph_index")
-        if doc_key and att_key and raw_idx is not None and str(raw_idx) != "":
-            doc_bytes = storage.download_bytes(doc_key)
-            img_bytes = storage.download_bytes(att_key)
-            pidx = int(raw_idx)
-            new_bytes, ins_meta = document_agent.insert_image_in_document(
-                doc_bytes, img_bytes, paragraph_index=pidx,
-            )
-            new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_image.docx"
-            storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            ws["draft_object_key"] = new_key
-            ws["version"] = int(ws.get("version") or 0) + 1
-            ws["last_action"] = "insert_image"
-            s.workspace = ws
-            result["answer"] = f"✅ 图片已插入文档（版本 v{ws['version']}）。"
-            meta["workspace_updated"] = True
-            meta["insert_meta"] = ins_meta
-        elif not att_key:
+        ctx_sel = body.context or {}
+        if not att_key:
             result["answer"] = "请先通过 📎 上传图片，再选中插入位置。"
-        else:
+        elif not doc_key:
             result["answer"] = _ANCHOR_MISSING
             meta["anchor_missing"] = True
+        else:
+            doc_bytes = storage.download_bytes(doc_key)
+            img_bytes = storage.download_bytes(att_key)
+            anchor = finalize_document_anchor(resolve_document_anchor(ctx_sel, meta), doc_bytes)
+            if anchor_has_table_cell(anchor):
+                from app.services.doc_engine.indexer import insert_image_in_table_cell
+
+                new_bytes = insert_image_in_table_cell(
+                    doc_bytes,
+                    int(anchor["table_index"]),
+                    int(anchor["row"]),
+                    int(anchor["col"]),
+                    img_bytes,
+                )
+                new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_cell_image.docx"
+                storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                ws["draft_object_key"] = new_key
+                ws["version"] = int(ws.get("version") or 0) + 1
+                ws["last_action"] = "insert_image_cell"
+                s.workspace = ws
+                result["answer"] = f"✅ 图片已插入表格单元格 {anchor.get('location')}（版本 v{ws['version']}）。"
+                meta["workspace_updated"] = True
+                meta["insert_meta"] = {"location": anchor.get("location")}
+            elif anchor_can_insert(anchor):
+                pidx = int(anchor["paragraph_index"])
+                new_bytes, ins_meta = document_agent.insert_image_in_document(
+                    doc_bytes, img_bytes, paragraph_index=pidx,
+                )
+                new_key = f"chat/{session_id}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_image.docx"
+                storage.upload_bytes(new_key, new_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                ws["draft_object_key"] = new_key
+                ws["version"] = int(ws.get("version") or 0) + 1
+                ws["last_action"] = "insert_image"
+                s.workspace = ws
+                result["answer"] = f"✅ 图片已插入文档（版本 v{ws['version']}）。"
+                meta["workspace_updated"] = True
+                meta["insert_meta"] = ins_meta
+            else:
+                result["answer"] = _ANCHOR_MISSING
+                meta["anchor_missing"] = True
 
     # 工作区：局部修改
     if meta.get("needs_workspace_edit"):
@@ -2042,11 +2065,16 @@ async def _finalize_chat_message_turn(
             refs = ctx_sel.get("reference_snippets") or []
             if isinstance(refs, str):
                 refs = [refs]
+            from app.services.agent_capabilities import resolve_document_anchor
+            from app.services.document_anchor import finalize_document_anchor
+
+            anchor = finalize_document_anchor(resolve_document_anchor(ctx_sel, meta), doc_bytes)
             new_bytes, revised, edit_meta = await document_agent.edit_document_fragment(
                 doc_bytes,
                 meta.get("instruction") or content,
-                selected_text=meta.get("selected_text") or ctx_sel.get("selected_text") or "",
-                paragraph_index=meta.get("paragraph_index") if meta.get("paragraph_index") is not None else ctx_sel.get("paragraph_index"),
+                selected_text=meta.get("selected_text") or ctx_sel.get("selected_text") or anchor.get("selected_text") or "",
+                paragraph_index=meta.get("paragraph_index") if meta.get("paragraph_index") is not None else ctx_sel.get("paragraph_index") if ctx_sel.get("paragraph_index") is not None else anchor.get("paragraph_index"),
+                location=str(meta.get("location") or ctx_sel.get("location") or anchor.get("location") or ""),
                 db=db,
                 company_context=ctx,
                 reference_snippets=refs,
@@ -2590,6 +2618,9 @@ def get_chat_workspace(session_id: int, db: Session = Depends(get_db)):
             doc_bytes = storage.download_bytes(doc_key)
             preview = word.extract_preview(doc_bytes, max_paragraphs=800)
             paragraphs = preview.get("paragraphs") or []
+            from app.services.document_anchor import augment_preview_paragraphs
+
+            paragraphs = augment_preview_paragraphs(doc_bytes, paragraphs)
         except Exception:
             doc_bytes = b""
     from app.services import onlyoffice as oo_svc
