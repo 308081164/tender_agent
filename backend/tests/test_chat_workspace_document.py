@@ -174,6 +174,52 @@ def test_workspace_preview_and_download_non_empty(monkeypatch):
     assert len(text) > 2400
 
 
+def test_ooxml_preview_blocks_heading_and_table():
+    from app.services.docx_ooxml import build_table_docx, preview_blocks
+
+    table_doc = build_table_docx([["姓名", "职务"], ["李四", "工程师"]])
+    preview = preview_blocks(table_doc, max_paragraphs=20)
+    tables = [p for p in preview["paragraphs"] if p.get("is_table")]
+    assert tables and tables[0]["table_rows"][0] == ["姓名", "职务"]
+
+    styled = build_styled_docx([
+        ("投标函", "Heading1"),
+        ("二级标题样例", "Heading2"),
+        ("正文段落", None),
+    ])
+    preview2 = preview_blocks(styled, max_paragraphs=20)
+    h1 = next(p for p in preview2["paragraphs"] if p.get("is_heading") and p.get("text") == "投标函")
+    h2 = next(p for p in preview2["paragraphs"] if p.get("text") == "二级标题样例")
+    assert h1["level"] == 1
+    assert h2["is_heading"] and h2["level"] == 2
+
+
+def test_workspace_preview_html_endpoint():
+    from app.services.docx_ooxml import build_styled_docx
+
+    _seed()
+    docx = build_styled_docx([("HTML 预览段", None)])
+    uploaded = client.post(
+        "/api/templates/upload",
+        params={"kind": "skeleton"},
+        files={"file": ("preview-html.docx", docx, DOCX)},
+    )
+    assert uploaded.status_code == 200
+    project = _project(uploaded.json()["id"])
+    bound = client.post(f"/api/projects/{project['id']}/sessions")
+    session_id = bound.json()["session"]["id"]
+
+    ws = client.get(f"/api/chat/sessions/{session_id}/workspace")
+    assert ws.status_code == 200
+    assert ws.json().get("html_preview_url")
+
+    html = client.get(f"/api/chat/sessions/{session_id}/workspace/preview.html")
+    assert html.status_code in (200, 503)
+    if html.status_code == 200:
+        assert b"doc-html-preview" in html.content or b"<html" in html.content.lower()
+        assert html.headers.get("content-type", "").startswith("text/html")
+
+
 def test_compose_full_bid_section_thresholds():
     _seed()
     uploaded = client.post(

@@ -290,6 +290,220 @@ def paragraph_records(docx_bytes: bytes) -> list[dict]:
     return records
 
 
+def _twips_to_pt(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return round(int(value) / 20.0, 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _alignment_from_ppr(ppr: ET.Element | None) -> str:
+    if ppr is None:
+        return "left"
+    jc = ppr.find(f"{{{W}}}jc")
+    if jc is None:
+        return "left"
+    val = (jc.get(f"{{{W}}}val") or "left").lower()
+    mapping = {
+        "left": "left",
+        "center": "center",
+        "right": "right",
+        "both": "justify",
+        "distribute": "justify",
+    }
+    return mapping.get(val, "left")
+
+
+def _font_size_pt_from_rpr(rpr: ET.Element | None) -> float | None:
+    if rpr is None:
+        return None
+    sz = rpr.find(f"{{{W}}}sz")
+    if sz is None:
+        return None
+    return _twips_to_pt(sz.get(f"{{{W}}}val"))
+
+
+def _run_is_on(rpr: ET.Element | None, tag: str) -> bool:
+    if rpr is None:
+        return False
+    node = rpr.find(f"{{{W}}}{tag}")
+    if node is None:
+        return False
+    val = node.get(f"{{{W}}}val")
+    return val is None or val not in ("0", "false", "off")
+
+
+def _runs_from_paragraph(node: ET.Element) -> list[dict]:
+    runs: list[dict] = []
+    for run in node.findall(f"{{{W}}}r"):
+        text = "".join((t.text or "") for t in run.findall(f"{{{W}}}t"))
+        if not text:
+            continue
+        rpr = run.find(f"{{{W}}}rPr")
+        runs.append({
+            "text": text,
+            "bold": _run_is_on(rpr, "b"),
+            "italic": _run_is_on(rpr, "i"),
+            "font_size_pt": _font_size_pt_from_rpr(rpr),
+        })
+    return runs
+
+
+def _paragraph_format(node: ET.Element) -> dict:
+    ppr = node.find(f"{{{W}}}pPr")
+    runs = _runs_from_paragraph(node)
+    font_name = ""
+    font_size = None
+    bold = False
+    italic = False
+    if runs:
+        font_size = runs[0].get("font_size_pt")
+        bold = bool(runs[0].get("bold"))
+        italic = bool(runs[0].get("italic"))
+    if ppr is not None:
+        rpr = ppr.find(f"{{{W}}}rPr")
+        if rpr is not None:
+            rfonts = rpr.find(f"{{{W}}}rFonts")
+            if rfonts is not None:
+                font_name = (
+                    rfonts.get(f"{{{W}}}eastAsia")
+                    or rfonts.get(f"{{{W}}}ascii")
+                    or rfonts.get(f"{{{W}}}hAnsi")
+                    or ""
+                ).strip()
+            if font_size is None:
+                font_size = _font_size_pt_from_rpr(rpr)
+            if not bold:
+                bold = _run_is_on(rpr, "b")
+            if not italic:
+                italic = _run_is_on(rpr, "i")
+    indent_pt = None
+    first_line_indent_pt = None
+    if ppr is not None:
+        ind = ppr.find(f"{{{W}}}ind")
+        if ind is not None:
+            indent_pt = _twips_to_pt(ind.get(f"{{{W}}}left"))
+            first_line_indent_pt = _twips_to_pt(ind.get(f"{{{W}}}firstLine"))
+    return {
+        "font_name": font_name or "默认",
+        "font_size_pt": font_size,
+        "bold": bold,
+        "italic": italic,
+        "alignment": _alignment_from_ppr(ppr),
+        "indent_pt": indent_pt,
+        "first_line_indent_pt": first_line_indent_pt,
+        "runs": runs,
+    }
+
+
+def _heading_level_from_style(style_name: str) -> int:
+    level = 1
+    for ch in style_name or "":
+        if ch.isdigit():
+            level = int(ch)
+            break
+    return level
+
+
+def _is_heading_style(style_name: str) -> bool:
+    from app.services.word import is_heading_style_name
+
+    return is_heading_style_name(style_name)
+
+
+def preview_blocks(docx_bytes: bytes, *, max_paragraphs: int = 800) -> dict:
+    """OOXML 结构化预览：段落格式、runs、表格块（与 Aspose extract_preview 对齐）。"""
+    from app.services.word import (
+        _clean_display_text,
+        is_field_code_text,
+        paragraph_is_toc_like,
+    )
+
+    root = _document_root(docx_bytes)
+    paragraphs: list[dict] = []
+    headings: list[dict] = []
+    heading_formats: dict[int, dict] = {}
+    body_format_samples: list[dict] = []
+    para_idx = 0
+    truncated = False
+
+    for child in list(_body(root)):
+        if truncated:
+            break
+        if child.tag == f"{{{W}}}p":
+            style = _paragraph_style(child)
+            raw_text = _paragraph_text(child)
+            text = _clean_display_text(raw_text)
+            if (
+                not text
+                or paragraph_is_toc_like(style, text)
+                or is_field_code_text(text)
+            ):
+                continue
+            fmt = _paragraph_format(child)
+            is_heading = _is_heading_style(style)
+            level = _heading_level_from_style(style) if is_heading else 0
+            item = {
+                "index": para_idx,
+                "text": text,
+                "style": style or "Normal",
+                "is_heading": is_heading,
+                "level": level,
+                **{k: v for k, v in fmt.items() if k != "runs"},
+            }
+            if fmt.get("runs"):
+                item["runs"] = fmt["runs"]
+            if is_heading:
+                headings.append({"level": level, "text": text, **item})
+                heading_formats[level] = {k: v for k, v in item.items() if k not in ("text", "index", "style", "is_heading", "level", "runs")}
+            elif len(body_format_samples) < 5:
+                body_format_samples.append({k: v for k, v in item.items() if k not in ("text", "index", "style", "is_heading", "level", "runs")})
+            paragraphs.append(item)
+            para_idx += 1
+        elif child.tag == f"{{{W}}}tbl":
+            rows: list[list[str]] = []
+            for tr in child.findall(f"{{{W}}}tr"):
+                cells: list[str] = []
+                for tc in tr.findall(f"{{{W}}}tc"):
+                    parts = [
+                        _clean_display_text(_paragraph_text(p))
+                        for p in tc.findall(f"{{{W}}}p")
+                    ]
+                    cells.append("".join(part for part in parts if part))
+                if any(cells):
+                    rows.append(cells)
+            if not rows:
+                continue
+            paragraphs.append({
+                "index": para_idx,
+                "text": "",
+                "style": "Table",
+                "is_heading": False,
+                "is_table": True,
+                "table_rows": rows,
+                "level": 0,
+            })
+            para_idx += 1
+        if len(paragraphs) >= max_paragraphs:
+            truncated = True
+
+    default_body = body_format_samples[0] if body_format_samples else {}
+    return {
+        "headings": headings,
+        "paragraphs": paragraphs,
+        "truncated": truncated,
+        "format_info": {
+            "default_body": default_body,
+            "heading_styles": [
+                {"level": lvl, **heading_formats[lvl]}
+                for lvl in sorted(heading_formats.keys())
+            ],
+        },
+    }
+
+
 def build_table_docx(rows: list[list[str]]) -> bytes:
     """只有一张表的 docx，用来覆盖单元格里的旧事实。"""
     width = max((len(row) for row in rows), default=1)

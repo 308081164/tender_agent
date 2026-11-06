@@ -396,6 +396,27 @@ def _table_preview_rows(table: aw.Table) -> list[list[str]]:
     return rows
 
 
+def _paragraph_runs(para: aw.Paragraph) -> list[dict]:
+    runs: list[dict] = []
+    try:
+        for i in range(para.runs.count):
+            run = para.runs[i]
+            text = run.get_text() or ""
+            if not text:
+                continue
+            font = run.font
+            runs.append({
+                "text": text,
+                "bold": bool(font.bold),
+                "italic": bool(font.italic),
+                "font_size_pt": _points(font.size),
+                "font_name": (font.name or "").strip() or None,
+            })
+    except Exception:
+        pass
+    return runs
+
+
 def _append_preview_paragraph(
     paragraphs: list[dict],
     headings: list[dict],
@@ -410,59 +431,103 @@ def _append_preview_paragraph(
     if not text or re.fullmatch(r"[\s\W_]+", text) or is_field_code_text(text):
         return False
     fmt = _paragraph_run_format(para)
-    is_heading = style.startswith("Heading") or style.startswith("标题")
+    is_heading = is_heading_style_name(style)
     level = _heading_level(style) if is_heading else 0
+    runs = _paragraph_runs(para)
+    if paragraph_is_toc_like(style, text):
+        return False
     if is_heading:
         headings.append({"level": level, "text": text, **fmt})
         heading_formats[level] = fmt
     elif len(body_format_samples) < 5:
         body_format_samples.append(fmt)
-    paragraphs.append({
+    item = {
         "index": idx,
         "text": text,
         "style": style,
         "is_heading": is_heading,
         "level": level,
         **fmt,
-    })
+    }
+    if runs:
+        item["runs"] = runs
+    paragraphs.append(item)
     return True
 
 
 def _extract_preview_ooxml(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:
-    from app.services.docx_ooxml import paragraph_records
+    from app.services.docx_ooxml import preview_blocks
 
     try:
-        records = paragraph_records(docx_bytes)
+        return preview_blocks(docx_bytes, max_paragraphs=max_paragraphs)
     except Exception:
         return {"headings": [], "paragraphs": [], "truncated": False, "format_info": {}}
-    paragraphs = []
-    headings = []
-    truncated = False
-    for idx, rec in enumerate(records):
-        text = (rec.get("text") or "").strip()
-        if not text:
-            continue
-        style = rec.get("style") or ""
-        is_heading = style.lower().startswith("heading") or "标题" in style
-        item = {
-            "index": idx,
-            "text": text,
-            "style": style or "Normal",
-            "is_heading": is_heading,
-            "level": 1 if is_heading else 0,
-        }
-        paragraphs.append(item)
-        if is_heading:
-            headings.append({"level": 1, "text": text})
-        if len(paragraphs) >= max_paragraphs:
-            truncated = True
-            break
-    return {
-        "headings": headings,
-        "paragraphs": paragraphs,
-        "truncated": truncated,
-        "format_info": {},
-    }
+
+
+_PREVIEW_BRIDGE_SCRIPT = """
+<script>
+(function () {
+  var idx = 0;
+  var blocks = document.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6');
+  blocks.forEach(function (el) {
+    var t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (!t || t.length < 1) return;
+    if (/^PAGE\\\\|^TOC\\\\|^HYPERLINK/i.test(t)) return;
+    el.setAttribute('data-paragraph-index', String(idx++));
+  });
+  function post(type, payload) {
+    try { parent.postMessage(Object.assign({ type: type, source: 'doc-html-preview' }, payload || {}), '*'); } catch (e) {}
+  }
+  document.addEventListener('mouseup', function () {
+    var sel = window.getSelection();
+    var text = (sel && sel.toString() || '').trim();
+    if (text.length < 2) return;
+    var node = sel.anchorNode;
+    if (node && node.nodeType === 3) node = node.parentElement;
+    var host = node && node.closest('[data-paragraph-index]');
+    var pi = host ? host.getAttribute('data-paragraph-index') : null;
+    post('doc-preview-select', {
+      selected_text: text,
+      paragraph_index: pi != null && pi !== '' ? Number(pi) : undefined
+    });
+  });
+  window.addEventListener('message', function (ev) {
+    if (!ev.data || ev.data.type !== 'doc-preview-scroll') return;
+    var target = document.querySelector('[data-paragraph-index="' + ev.data.paragraph_index + '"]');
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+})();
+</script>
+"""
+
+
+def _strip_foreign_scripts(html: str) -> str:
+    return re.sub(r"<script\b[^>]*>[\s\S]*?</script>", "", html, flags=re.I)
+
+
+def docx_to_preview_html(docx_bytes: bytes) -> bytes:
+    """Aspose DOCX→HTML（内嵌字体/图片），并注入选区/滚动桥接脚本。"""
+    if not _aspose_ready():
+        raise RuntimeError("HTML 预览需要 Aspose 许可证")
+    doc = _load_document(docx_bytes)
+    _prepare_doc_for_preview(doc)
+    options = aw.saving.HtmlSaveOptions(aw.SaveFormat.HTML)
+    try:
+        options.export_font_resources = True
+        options.embedded_fonts = True
+        options.export_images_as_base64 = True
+        options.pretty_format = True
+    except Exception:
+        pass
+    out = BytesIO()
+    doc.save(out, options)
+    html = out.getvalue().decode("utf-8", errors="replace")
+    html = _strip_foreign_scripts(html)
+    if "</body>" in html.lower():
+        html = re.sub(r"</body>", _PREVIEW_BRIDGE_SCRIPT + "</body>", html, count=1, flags=re.I)
+    else:
+        html = html + _PREVIEW_BRIDGE_SCRIPT
+    return html.encode("utf-8")
 
 
 def extract_preview(docx_bytes: bytes, max_paragraphs: int = 800) -> dict:

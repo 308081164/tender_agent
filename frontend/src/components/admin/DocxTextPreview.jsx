@@ -116,6 +116,27 @@ export function renderPlaceholderText(text, highlightTexts, opts = {}) {
   return renderTokenizedText(text, opts)
 }
 
+function runInlineStyle(run) {
+  const style = {}
+  if (run.font_name) style.fontFamily = run.font_name
+  if (run.font_size_pt) style.fontSize = `${run.font_size_pt}pt`
+  if (run.bold) style.fontWeight = 'bold'
+  if (run.italic) style.fontStyle = 'italic'
+  return Object.keys(style).length ? style : undefined
+}
+
+function renderParagraphContent(p, highlightTexts, renderOpts) {
+  const runs = p.runs
+  if (!runs?.length) {
+    return renderPlaceholderText(p.display_text ?? p.text, highlightTexts, renderOpts)
+  }
+  return runs.map((run, ri) => (
+    <span key={`run-${ri}`} style={runInlineStyle(run)}>
+      {renderPlaceholderText(run.text, highlightTexts, renderOpts)}
+    </span>
+  ))
+}
+
 export function renderPreviewBlock(p, i, {
   highlightTexts = [],
   activePlaceholderKey = '',
@@ -144,7 +165,7 @@ export function renderPreviewBlock(p, i, {
     )
   }
 
-  const content = renderPlaceholderText(p.display_text ?? p.text, highlightTexts, renderOpts)
+  const content = renderParagraphContent(p, highlightTexts, renderOpts)
   return p.is_heading ? (
     <div
       key={i}
