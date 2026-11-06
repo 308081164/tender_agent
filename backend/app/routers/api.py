@@ -2631,6 +2631,7 @@ def get_chat_workspace(session_id: int, db: Session = Depends(get_db)):
         "paragraphs": paragraphs,
         "doc_size": len(doc_bytes),
         "pdf_preview_url": f"/api/chat/sessions/{session_id}/workspace/preview.pdf" if doc_key else None,
+        "html_preview_url": f"/api/chat/sessions/{session_id}/workspace/preview.html" if doc_key else None,
         "download_url": f"/api/chat/sessions/{session_id}/workspace/download" if doc_key else None,
         "preview_fallback": {
             "onlyoffice_ready": bool(oo.get("enabled") and oo.get("healthy")),
@@ -2666,6 +2667,40 @@ def chat_workspace_preview_pdf(session_id: int, db: Session = Depends(get_db)):
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{quote(fname.replace(".docx", ".pdf"))}"'},
+    )
+
+
+@router.get("/chat/sessions/{session_id}/workspace/preview.html")
+def chat_workspace_preview_html(session_id: int, db: Session = Depends(get_db)):
+    from app.services.project_sessions import ensure_session_workspace_document
+
+    s = get_session_or_404(db, session_id)
+    ws = ensure_session_workspace_document(db, s, commit=False)
+    doc_key = ws.get("draft_object_key") or ws.get("template_object_key")
+    if not doc_key:
+        raise HTTPException(404, "工作区暂无文档")
+    try:
+        data = storage.download_bytes(doc_key)
+    except Exception as err:
+        raise HTTPException(404, f"文档读取失败：{err}") from err
+    if not data or len(data) < 200:
+        raise HTTPException(404, "工作区文档为空或损坏")
+    try:
+        html_bytes = word.docx_to_preview_html(data)
+    except RuntimeError as err:
+        raise HTTPException(503, str(err)) from err
+    except Exception as err:
+        raise HTTPException(503, f"HTML 预览生成失败：{err}") from err
+    if not html_bytes or len(html_bytes) < 100:
+        raise HTTPException(503, "HTML 预览生成失败")
+    fname = (ws.get("filename") or "workspace").replace(".docx", ".html")
+    return Response(
+        content=html_bytes,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{quote(fname)}"',
+            "X-Frame-Options": "SAMEORIGIN",
+        },
     )
 
 
